@@ -1,0 +1,35 @@
+# Source: the "hidden profile" task of Stasser & Titus (1985). The facts
+# everyone on the committee has favour Avery; each member also holds two
+# facts no one else has, and pooled together they make Blake the clear
+# choice. Human groups mostly discuss what they all already know, and pick
+# Avery. Do AI committees do the same? The candidates and wording are ours.
+name: hiring_committee
+description: Three committee members choose a Director of Operations; the key facts are spread across them
+
+# Every member runs on the same model and settings (D93).
+default_model: member.yaml
+
+default_inputs:
+  role: Director of Operations at Riverside Community Food Bank, a nonprofit with 40 staff, about 600 volunteers and an $11 million budget, delivering 2 million meals a year
+  packet: |
+    Avery
+    - 12 years in operations management, the most of any candidate.
+    - Has run an operations budget of $20 million.
+    - Gave the strongest interview: polished, confident, clear answers
+      to every question.
+    - Has an MBA.
+    - At their last employer, the operations budget came in under
+      target three years running.
+
+    Blake
+    - 6 years in operations, all at one regional food bank, promoted
+      twice.
+    - Has never managed a budget above $3 million.
+    - The interview was halting; gave short, hesitant answers to the
+      question about long-term strategy.
+
+    Casey
+    - 9 years in retail logistics, running two distribution centres.
+    - Bilingual in English and Spanish, which would help with many of
+      the food bank's clients.
+    - No nonprofit experience; would need to learn volunteer management.

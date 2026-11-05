@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teamrunner.dev/schemas/0.1/model_profile.schema.json",
+  "title": "model profile",
+  "description": "A model and its settings, kept together in models/<name>.yaml (D93).",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/.+$",
+      "x-expect": "a model written `provider/name`, such as `openai/gpt-5`"
+    },
+    "params": {
+      "type": "object",
+      "x-expect": "a list of model settings, one `name: value` per line",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+        "x-expect": "one word: letters, digits and underscores"
+      }
+    }
+  }
+}

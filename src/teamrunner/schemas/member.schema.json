@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teamrunner.dev/schemas/0.1/member.schema.json",
+  "title": "member frontmatter",
+  "description": "The settings block at the top of a member's .md file (SPEC §1).",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "#/$defs/ulid"},
+    "parent_id": {"$ref": "#/$defs/ulid"},
+    "description": {"type": "string", "x-expect": "one line of text"},
+    "kind": {"enum": ["llm", "toolkeeper"], "x-expect": "`llm` or `toolkeeper`"},
+    "model": {"$ref": "#/$defs/model"},
+    "params": {
+      "type": "object",
+      "x-expect": "a list of model settings, one `name: value` per line",
+      "propertyNames": {"$ref": "#/$defs/word"}
+    },
+    "output": {
+      "type": "object",
+      "minProperties": 1,
+      "x-expect": "a list of output fields, one `name: type` per line",
+      "propertyNames": {"$ref": "#/$defs/word"},
+      "additionalProperties": {"$ref": "#/$defs/output_field"}
+    },
+    "tools": {
+      "type": "object",
+      "minProperties": 1,
+      "x-expect": "the tool this toolkeeper holds, with its guardrails: `web_search_brave: {max_results: 5}`",
+      "additionalProperties": {"$ref": "#/$defs/guardrails"}
+    },
+    "access": {
+      "type": "object",
+      "x-expect": "one line per member: `name: standard`, `name: deny` or `name: {changed terms}`",
+      "propertyNames": {"$ref": "#/$defs/word"},
+      "additionalProperties": {"$ref": "#/$defs/terms"}
+    },
+    "others": {"$ref": "#/$defs/terms"}
+  },
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "x-expect": "a 26-character id written by TeamRunner; delete the line and TeamRunner will write a new one"
+    },
+    "word": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "x-expect": "one word: letters, digits and underscores"
+    },
+    "option": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]+$",
+      "x-expect": "one word: letters, digits and underscores"
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^([A-Za-z0-9_.-]+/.+|[^/]+\\.yaml)$",
+      "x-expect": "a model written `provider/name` (`openai/gpt-5`) or a profile in models/ (`careful.yaml`)"
+    },
+    "output_field": {
+      "x-expect": "a list of options (`[pass, fail]`), `\"\"` for text, a number, `true`/`false`, or `{type: ..., options: [...]}`",
+      "anyOf": [
+        {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/option"}},
+        {"type": ["string", "number", "boolean"]},
+        {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {"enum": ["choice", "text", "number", "flag"]},
+            "options": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/option"}},
+            "description": {"type": "string"}
+          },
+          "if": {"properties": {"type": {"const": "choice"}}},
+          "then": {"required": ["options"]},
+          "else": {"not": {"required": ["options"]}}
+        }
+      ]
+    },
+    "guardrails": {
+      "type": "object",
+      "x-expect": "the guardrails in braces, `{calls_per_turn: 2}`, or `{}` for none",
+      "properties": {
+        "calls_per_turn": {"$ref": "#/$defs/count"},
+        "calls_per_run": {"$ref": "#/$defs/count"},
+        "max_results": {"$ref": "#/$defs/count"},
+        "max_chars": {"$ref": "#/$defs/count"},
+        "timeout": {"type": "number", "exclusiveMinimum": 0, "x-expect": "a number of seconds above 0"},
+        "network": {"type": "boolean", "x-expect": "`true` or `false`"},
+        "keep_results": {"type": "boolean", "x-expect": "`true` or `false`"},
+        "domains": {"$ref": "#/$defs/strings"},
+        "paths": {"$ref": "#/$defs/strings"},
+        "types": {
+          "type": "array", "minItems": 1, "items": {"enum": ["pdf"]},
+          "x-expect": "a list of file kinds; `[pdf]` is the only one in 0.1"
+        }
+      }
+    },
+    "terms": {
+      "x-expect": "`standard`, `deny`, or changed terms in braces: `{calls_per_turn: 6}`",
+      "anyOf": [
+        {"enum": ["standard", "deny"]},
+        {"$ref": "#/$defs/guardrails"}
+      ]
+    },
+    "count": {"type": "integer", "minimum": 1, "x-expect": "a whole number, 1 or more"},
+    "strings": {
+      "type": "array", "minItems": 1, "items": {"type": "string"},
+      "x-expect": "a list in brackets: `[example.org, example.com]`"
+    }
+  }
+}

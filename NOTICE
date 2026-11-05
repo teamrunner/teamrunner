@@ -1,0 +1,29 @@
+TeamRunner
+Copyright 2026 Kumar Muthuraman
+
+TeamRunner is licensed under GPL-3.0-or-later (see LICENSE). The shipped
+examples, the files `teamrunner new` writes and the authoring guide are
+MIT-0 (see examples/LICENSE).
+
+TeamRunner bundles no third-party code. It depends on these packages, which
+pip installs separately, each under its own licence:
+
+  LiteLLM        MIT
+  mcp            MIT
+  deno           MIT          (the Deno runtime, for run_code's sandbox)
+  ruamel.yaml    MIT
+  jsonschema     MIT
+  pypdf          BSD-3-Clause
+  httpx          BSD-3-Clause
+
+and on what those depend on, all under permissive licences (MIT, BSD,
+Apache-2.0, MPL-2.0, PSF).
+
+Downloaded when first used, not installed with TeamRunner:
+
+  Pyodide        MPL-2.0      fetched from npm the first time run_code runs,
+                              with any Python packages the code imports
+  Mermaid        MIT          loaded from cdn.jsdelivr.net by the diagram
+                              `teamrunner explain` writes, when it is opened
+
+Web search uses the Brave Search API with your own key, under Brave's terms.

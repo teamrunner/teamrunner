@@ -1,0 +1,9 @@
+# Source: recast from sciwrite-lint by Sergey V. Samsonau (arXiv 2604.08501, CC BY 4.0;
+# code at github.com/authentic-research-partners/sciwrite-lint, MIT). The wording here is ours.
+name: reference_check
+description: Checks every reference in a paper — that it exists, that its details are right, and that the cited paper says what the citing sentence claims it says
+
+message_goes_to: paper
+
+default_inputs:
+  paper: "https://arxiv.org/pdf/2604.08501"   # the sciwrite-lint paper this team is recast from

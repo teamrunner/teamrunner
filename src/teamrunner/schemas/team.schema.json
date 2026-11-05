@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teamrunner.dev/schemas/0.1/team.schema.json",
+  "title": "team.yaml",
+  "description": "A team's charter: what the team is and what inputs it takes (SPEC §2).",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "#/$defs/ulid"},
+    "parent_id": {"$ref": "#/$defs/ulid"},
+    "name": {"type": "string", "minLength": 1, "x-expect": "a short name"},
+    "description": {"type": "string", "x-expect": "one line of text"},
+    "default_model": {"$ref": "#/$defs/model"},
+    "message_goes_to": {"$ref": "#/$defs/word"},
+    "default_inputs": {
+      "type": "object",
+      "x-expect": "a list of inputs, one `name: value` per line",
+      "propertyNames": {"$ref": "#/$defs/word"},
+      "additionalProperties": {
+        "type": ["string", "number", "boolean", "array", "object"],
+        "x-expect": "a value (put text in quotes); an input with no default is left out"
+      }
+    }
+  },
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "x-expect": "a 26-character id written by TeamRunner; delete the line and TeamRunner will write a new one"
+    },
+    "word": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "x-expect": "one word: letters, digits and underscores"
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^([A-Za-z0-9_.-]+/.+|[^/]+\\.yaml)$",
+      "x-expect": "a model written `provider/name` (`openai/gpt-5`) or a profile in models/ (`careful.yaml`)"
+    }
+  }
+}

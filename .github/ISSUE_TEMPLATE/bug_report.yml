@@ -1,0 +1,37 @@
+name: Bug report
+description: Something went wrong, or did not do what the README says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying TeamRunner. Please **never paste an API key**. A run folder
+        holds everything said in the run, so paste only the parts you are happy to make
+        public. A security problem? Please email security@teamrunner.ai instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got. Paste error messages as text.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: TeamRunner version
+      description: The output of `teamrunner --version`
+      placeholder: teamrunner 0.0.2
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and Python
+      placeholder: macOS 15, Python 3.12
+    validations:
+      required: true
+  - type: textarea
+    id: team
+    attributes:
+      label: The team, if it helps
+      description: The files involved (team.yaml, chair.md, a member's file), or `teamrunner explain` output.
