@@ -37,3 +37,14 @@ def test_show_names_the_members_when_one_is_missing(tmp_path):
     team = debate(tmp_path)
     with pytest.raises(NotAMember, match="its members are against, for, judge"):
         show("jduge", team)
+
+
+def test_show_lists_the_backup_models(tmp_path):
+    team = debate(tmp_path, **{
+        "team.yaml": "default_model: openai/gpt-5, careful.yaml\ndefault_inputs:\n  topic: Cars\n",
+        "models/careful.yaml": "name: anthropic/claude-sonnet-4-5\nparams:\n  temperature: 0.2\n",
+        "for.md": "---\n---\nArgue for {{topic}}.\n",
+    })
+    text, _ = show(str(team / "for.md"), tmp_path)
+    assert "model: openai/gpt-5" in text
+    assert "# if it is not available: careful.yaml — the first one available runs; each brings its own settings" in text

@@ -120,6 +120,8 @@ def print_list(top: Path, records: list[RunRecord], shown: list[RunRecord], out:
         status = r.run.get("status", "?")
         colour = p.green if status == "completed" else p.yellow if status == "stopped" else p.red
         rehearsal = " (rehearsal)" if r.run.get("rehearsal") else ""
+        if r.run.get("backup_models"):
+            rehearsal += " (backup model)"
         out.say(f"{r.shown_when:<13} {r.team:<20} {r.input:<34} {r.result:<26} "
                 f"{colour(f'{status:<9}')} {r.run.get('turns', 0):>3} turns "
                 f"{seconds(r.run.get('latency_ms')):>7} {money(r.run.get('cost_usd')):>9}{rehearsal}")
@@ -153,6 +155,7 @@ def replay(record: RunRecord, out: Console) -> None:
             check = SimpleNamespace(
                 ok=not event.get("problems"), models=event.get("models", []), keys=event.get("keys", []),
                 tools=event.get("tools", []), warnings=event.get("warnings", []),
+                backups=event.get("backups", []),
                 problems=[SimpleNamespace(**p) for p in event.get("problems", [])])
             out.check(check, SimpleNamespace(notes=[]))
         else:

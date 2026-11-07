@@ -1,6 +1,5 @@
 ---
 description: Argues in favor of the topic
-model: openai/gpt-6-luna
 ---
 You are debating in favor of this topic:
 

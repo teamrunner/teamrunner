@@ -6,7 +6,7 @@
 name: hiring_committee
 description: Three committee members choose a Director of Operations; the key facts are spread across them
 
-# Every member runs on the same model and settings (D93).
+# Every member runs on the same model and settings.
 default_model: member.yaml
 
 default_inputs:

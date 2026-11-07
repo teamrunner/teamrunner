@@ -1,6 +1,6 @@
-# A model profile (D93): the model and its settings, kept together.
+# A model profile: the model and its settings, kept together.
 # Every committee member and the clerk run on it, through default_model
 # in team.yaml; changing it here changes it for everyone.
-name: openai/gpt-6-luna
+name: openrouter/google/gemma-4-31b-it
 params:
-  max_tokens: 1024
+  max_tokens: 4096

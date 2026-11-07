@@ -75,23 +75,31 @@ def _member(member: Member, default_model, package: Package) -> ir.Member:
         return out
 
     if "model" in data:
-        model, source = data["model"], "its own `model:`"
+        written, source = data["model"], "its own `model:`"
     else:
-        model, source = default_model, f"`default_model:` in {TEAM_FILE}"
-    if model.endswith(".yaml"):
-        profile = plain(package.models[model].data)
-        where = f"models/{model}"
-        out.model = ir.Setting(profile["name"], f"{where}, named by {source}")
-        out.params = {k: ir.Setting(v, where) for k, v in (profile.get("params") or {}).items()}
-    else:
-        out.model = ir.Setting(model, source)
-    for key, value in (data.get("params") or {}).items():
-        out.params[key] = ir.Setting(value, "its own `params:`")  # key by key (D93)
-
+        written, source = default_model, f"`default_model:` in {TEAM_FILE}"
+    out.choices = [_choice(entry, data, package, source) for entry in ir.model_list(written)]
+    first = out.choices[0]
+    out.model, out.params = first.model, dict(first.params)
     out.output = ir.output_fields(data.get("output"))
     names = [m.group(1) for m in PLACEHOLDER.finditer(member.body)]
     out.inputs = tuple(dict.fromkeys(n for n in names if WORD.match(n)))
     return out
+
+
+def _choice(entry: str, data: dict, package: Package, source: str) -> ir.Choice:
+    """One entry of `model:`, its profile's settings and the agent's own on top (D93, D135)."""
+    params: dict[str, ir.Setting] = {}
+    if entry.endswith(".yaml"):
+        profile = plain(package.models[entry].data)
+        where = f"models/{entry}"
+        model = ir.Setting(profile["name"], f"{where}, named by {source}")
+        params = {k: ir.Setting(v, where) for k, v in (profile.get("params") or {}).items()}
+    else:
+        model = ir.Setting(entry, source)
+    for key, value in (data.get("params") or {}).items():
+        params[key] = ir.Setting(value, "its own `params:`")  # key by key (D93)
+    return ir.Choice(model, params, entry)
 
 
 def _toolkeeper(out: ir.Member, data: dict) -> None:

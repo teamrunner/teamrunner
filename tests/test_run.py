@@ -241,6 +241,41 @@ def test_the_litellm_wrapper_offline():
     assert reply.text == text and reply.usage["output"] > 0
 
 
+@pytest.mark.parametrize("name, with_tools, native_schema", [
+    ("openrouter/google/gemma-4-31b-it", True, False),
+    ("openrouter/google/gemma-4-31b-it", False, True),
+    ("openai/gpt-5", True, True),
+])
+def test_tool_use_keeps_gemma_final_outputs_validated(monkeypatch, name, with_tools, native_schema):
+    import asyncio
+    import litellm
+    from teamrunner.ir import OutputField
+    from teamrunner.litellm_model import LiteLLMModel
+    from teamrunner.turns import output_schema, read_reply
+
+    fields = {"paper": OutputField("paper", "choice", ("full", "not_full"))}
+    schema = output_schema(fields)
+    messages = [{"role": "user", "content": "Read the paper with the library."}]
+    tools = [{"type": "function", "function": {"name": "library", "parameters": {"type": "object"}}}]
+    sent = {}
+
+    async def complete(**kwargs):
+        sent.update(kwargs)
+        return litellm.ModelResponse(model=name, choices=[{"message": {
+            "role": "assistant", "content": fits("Read the PDF.", paper="full")}}])
+
+    monkeypatch.setattr(litellm, "acompletion", complete)
+    reply = asyncio.run(LiteLLMModel({}, {}).complete(name, {}, messages, schema,
+                                                     tools if with_tools else None))
+    assert read_reply(reply.text, fields) == ("Read the PDF.", {"paper": "full"}, [])
+    assert ("response_format" in sent) == native_schema
+    if with_tools:
+        assert sent["tools"] == tools
+    if not native_schema:
+        assert json.dumps(schema) in sent["messages"][-1]["content"]
+    assert messages == [{"role": "user", "content": "Read the paper with the library."}]
+
+
 def test_run_warns_about_links_outside_every_time(tmp_path):
     shared = tmp_path / "shared"
     shared.mkdir()
@@ -352,3 +387,80 @@ def test_run_json_records_the_environment(tmp_path):
     run, _, _ = read_run(outcome.folder)
     assert run["environment"] == {"python": platform.python_version(),
                                   "litellm": version("litellm"), "deno": version("deno")}
+
+
+# --- backup models (D135) -------------------------------------------------------
+
+def _listed(team_files, old, new):
+    return {k: v.replace(old, new) if k.endswith(".md") else v
+            for k, v in team_files.items()}
+
+
+def test_a_member_runs_on_its_first_available_choice_and_says_so(tmp_path):
+    from teamrunner.runs import all_runs, print_list
+    team = debate(tmp_path / "debate", **{**TEAM, "for.md": NAMED["for.md"].replace(
+        "openai/gpt-5", "openai/gpt-9, openai/gpt-5-mini, openai/gpt-5")})
+    outcome, model, printed = go(team, VERDICT)
+    assert outcome.status == "completed"
+    assert "↪ for runs on openai/gpt-5-mini, its 2nd choice — openai/gpt-9: openai does not serve it" in printed
+    assert {m for name, m, *_ in model.calls if name == "for"} == {"openai/gpt-5-mini"}
+    assert {m for name, m, *_ in model.calls if name == "judge"} == {"openai/gpt-5"}
+
+    run, events, _ = read_run(outcome.folder)
+    assert run["backup_models"] == {"for": "openai/gpt-5-mini"}
+    member = next(m for m in events[0]["members"] if m["name"] == "for")
+    assert member["model"] == "openai/gpt-5-mini" and member["model_choice"] == 2
+    assert member["model_choices"] == ["openai/gpt-9", "openai/gpt-5-mini", "openai/gpt-5"]
+    assert member["models_skipped"] == [{"model": "openai/gpt-9", "written": "openai/gpt-9",
+                                         "reason": "openai does not serve it"}]
+    check = next(e for e in events if e["event"] == "check")
+    assert check["backups"][0]["member"] == "for"
+    assert "openai/gpt-5-mini" in run["prices"]["models"]  # priced as it ran
+
+    stream = io.StringIO()
+    records = all_runs(team / "runs")
+    print_list(team, records, records, Console(False, stream))
+    assert "(backup model)" in stream.getvalue()
+
+
+def test_a_missing_key_moves_every_member_to_a_local_model(tmp_path, home):
+    (home / ".env").write_text("", encoding="utf-8")
+    team = debate(tmp_path, **_listed(TEAM, "openai/gpt-5", "openai/gpt-5, ollama/llama3"))
+    listers = {**OPENAI, "ollama": lambda k, s: {"llama3:latest": "sha256:abc"}}
+    outcome, model, printed = go(team, VERDICT, listers=listers)
+    assert outcome.status == "completed"
+    assert "run on ollama/llama3, their 2nd choice — openai/gpt-5: no OPENAI_API_KEY was found" in printed
+    assert {m for _, m, *_ in model.calls} == {"ollama/llama3"}
+    assert "OPENAI_API_KEY" not in read_run(outcome.folder)[0]["keys"]
+
+
+def test_a_first_choice_that_is_available_is_used_quietly(tmp_path):
+    team = debate(tmp_path, **_listed(TEAM, "openai/gpt-5", "openai/gpt-5, anthropic/claude-x"))
+    outcome, model, printed = go(team, VERDICT)  # no Anthropic key, and none needed
+    assert outcome.status == "completed" and "↪" not in printed
+    run, events, _ = read_run(outcome.folder)
+    assert run["backup_models"] == {}
+    assert next(m for m in events[0]["members"] if m["name"] == "for")["model_choice"] == 1
+
+
+def test_when_no_choice_is_available_every_one_is_listed(tmp_path):
+    team = debate(tmp_path, **{**TEAM, "for.md": NAMED["for.md"].replace(
+        "openai/gpt-5", "openai/gpt-9, ollama/llama3")})
+    listers = {**OPENAI, "ollama": lambda k, s: {"mistral:latest": "sha256:abc"}}
+    outcome, model, printed = go(team, listers=listers)
+    assert outcome.exit_code == 1 and model.calls == []
+    assert "openai does not serve `gpt-9`" in printed
+    assert "pull it with `ollama pull llama3`" in printed
+    assert "↪" not in printed
+
+
+def test_a_profile_in_the_list_brings_its_own_settings(tmp_path):
+    team = debate(tmp_path, **{
+        **TEAM, "team.yaml": 'name: debate\ndefault_model: openai/gpt-9, careful.yaml\n'
+                             'default_inputs:\n  topic: "Cars downtown"\n',
+        "models/careful.yaml": "name: openai/gpt-5-mini\nparams:\n  max_tokens: 300\n",
+        "for.md": "---\n---\nfor argues for {{topic}}.\n"})
+    outcome, model, _ = go(team, VERDICT)
+    assert outcome.status == "completed"
+    call = next(c for c in model.calls if c[0] == "for")
+    assert call[1] == "openai/gpt-5-mini" and call[2] == {"max_tokens": 300}

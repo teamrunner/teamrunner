@@ -1,6 +1,5 @@
 ---
 description: Argues against the topic
-model: openai/gpt-6-luna
 ---
 You are debating against this topic:
 

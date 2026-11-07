@@ -1,7 +1,7 @@
-# A model profile (D93): the model and its settings, kept together.
+# A model profile: the model and its settings, kept together.
 # The five engineers all run on it, through default_model in team.yaml.
-# The paper's settings; changing them here changes them for everyone.
-name: anthropic/claude-sonnet-4-5
+# Demo settings; changing them here changes them for everyone.
+name: openrouter/google/gemma-4-31b-it
 params:
-  max_tokens: 768
+  max_tokens: 4096
   temperature: 0.9

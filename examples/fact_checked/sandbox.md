@@ -2,7 +2,7 @@
 description: The sandbox toolkeeper — runs Python to check the numbers in a claim
 kind: toolkeeper
 tools:
-  run_code: {timeout: 10, network: false, calls_per_turn: 2}   # no internet; writes only in the run's work folder (D105)
+  run_code: {timeout: 10, network: false, calls_per_turn: 2}   # no internet; writes only in the run's work folder
 access:
   fact_checker: standard              # only the fact checker does sums
                                       # not listed, so refused: the debaters and the judge

@@ -15,7 +15,7 @@ from pathlib import Path
 from . import vocabulary as V
 from .flow import Cast, check_flow, parse_flow, round_robin
 from .ids import write_member_id, write_team_id
-from .ir import Flow, output_fields
+from .ir import Flow, model_list, output_fields
 from .loader import (CHAIR_FILE, MODELS_DIR, TEAM_FILE, Member, Package, Team,
                      load_package, member_name, read_yaml, split_frontmatter)
 from .problems import Problems
@@ -250,7 +250,19 @@ def _check_names(team: Team, problems: Problems) -> None:
                            f"{seen[sub.folder.name].path.name}", fix="rename one of them")
 
 
-def _check_model_ref(path, model: str, line, package: Package, problems: Problems) -> None:
+def _check_model_ref(path, written: str, line, package: Package, problems: Problems) -> None:
+    """`model:` or `default_model:`: one model, or several tried in order (D135)."""
+    seen = []
+    for model in model_list(written):
+        if model in seen:
+            problems.error(path, f"`{model}` is named twice in this list of models",
+                           line=line, value=model, fix="keep the first and remove the other")
+            continue
+        seen.append(model)
+        _check_one_model(path, model, line, package, problems)
+
+
+def _check_one_model(path, model: str, line, package: Package, problems: Problems) -> None:
     if model.endswith(".yaml"):
         if model not in package.models and not (package.top / MODELS_DIR / model).is_file():
             known = list(package.models)

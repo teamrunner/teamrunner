@@ -219,8 +219,13 @@ params:
 ```
 
   A member's own `params` override the profile's, setting by setting.
+- Backups: `model:` or `default_model:` may name several, separated by
+  commas, in order of preference (`openai/gpt-6-luna, anthropic/claude-sonnet-4-5`).
+  The first one available runs, and the run says so. A profile's own `name:`
+  names one model; to have a backup with settings, list several profiles.
 - Use the model the person asked for. If they named none, use one model for
-  the whole team through `default_model:` in `team.yaml`, and say which.
+  the whole team through `default_model:` in `team.yaml`, and say which. Add
+  backups only when the person asks for them.
 
 ## Not in 0.1
 

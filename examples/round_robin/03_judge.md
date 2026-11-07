@@ -1,6 +1,5 @@
 ---
 description: Decides who argued better
-model: openai/gpt-6-luna
 output:
   winner: [for, against]
   reasoning: ""

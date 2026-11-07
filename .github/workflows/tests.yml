@@ -68,3 +68,12 @@ jobs:
           teamrunner explain debate
           teamrunner run debate --rehearse -m "Should cities ban cars from their centres?"
           teamrunner runs debate
+
+      # The website's tutorial (teamrunner.ai/tutorial.html), replayed with this build:
+      # a change that would break the tutorial fails here, before it is released
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: teamrunner/teamrunner.ai
+          path: website
+      - name: The website's tutorial
+        run: python website/tests/test_tutorial.py website/tutorial.html

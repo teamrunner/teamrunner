@@ -70,8 +70,9 @@ def test_every_shipped_example_validates_clean(name, tmp_path):
     shutil.copytree(EXAMPLES / name, copy)  # validate on a copy: the package's files are never written
     assert validate(copy).problems == []
     from teamrunner.build import load_team
-    from teamrunner.checks import litellm_params
+    from teamrunner.checks import litellm_params, needed_keys
     team, _ = load_team(copy)
+    assert needed_keys(team) == ["OPENROUTER_API_KEY"]
     for m in team.members.values():  # every model takes its member's settings (gpt-5: no temperature)
         if m.model and m.params:
             assert litellm_params(m.model.value, {k: s.value for k, s in m.params.items()}) is None, m.name

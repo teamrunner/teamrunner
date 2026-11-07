@@ -90,6 +90,20 @@ class Setting:
     source: str  # where it came from, for `teamrunner show` (D93)
 
 
+def model_list(written: str) -> list[str]:
+    """`model:` or `default_model:` as written: one model, or several in order of
+    preference, separated by commas (D135). Empty entries are dropped."""
+    return [part.strip() for part in written.split(",") if part.strip()]
+
+
+@dataclass
+class Choice:
+    """One model a member may run on, with its settings resolved (D135)."""
+    model: Setting
+    params: dict[str, Setting] = field(default_factory=dict)
+    written: str = ""  # the entry as written: `openai/gpt-5` or `careful.yaml`
+
+
 @dataclass
 class Terms:
     """What one member may do with a toolkeeper's tool (D77, D95)."""
@@ -104,9 +118,12 @@ class Member:
     id: str | None
     description: str | None
     body: str  # a worker's prompt; a toolkeeper's sign on the door
-    # Workers
+    # Workers. `model` and `params` are the choice it runs on: the first until the
+    # check before the run picks the first one available (D135)
     model: Setting | None = None
     params: dict[str, Setting] = field(default_factory=dict)
+    choices: list[Choice] = field(default_factory=list)  # in order of preference
+    skipped: list[dict] = field(default_factory=list)  # earlier choices passed over, and why
     output: dict[str, OutputField] = field(default_factory=dict)
     inputs: tuple[str, ...] = ()  # the placeholders its prompt uses
     # Toolkeepers

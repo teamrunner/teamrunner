@@ -1,13 +1,19 @@
 ---
-description: The web toolkeeper — searches the web, on different terms for different members
+description: The web toolkeeper — reads public research records and source pages
 kind: toolkeeper
 tools:
-  web_search_brave: {max_results: 5, calls_per_turn: 2}   # base: the strictest terms
+  read_page: {max_chars: 20000, calls_per_turn: 2}   # no search-service key needed
 access:
-  fact_checker: {calls_per_turn: 3}   # a few claims a speech may need checking
-  judge: standard                     # base terms: two searches (one is required, D85)
-                                      # not listed, so refused: the debaters argue from what they know
+  fact_checker: {calls_per_turn: 3}
+  judge: standard
 ---
-I search the web. Send me a search query and I return the top five
-results with their sources. The fact checker gets three searches a turn,
-the judge two — counted per turn, each member on their own card (D86).
+I read public web pages and research records. Send me a URL and I return
+its text. The fact checker gets three reads a turn, the judge two.
+
+To find research, use Crossref's public API, with URL-encoded words:
+https://api.crossref.org/works?query.bibliographic=remote+work+productivity&rows=3
+Change the query to match the claim. Records may include abstracts,
+DOIs and source links; follow those links to check the evidence itself.
+You can also send a known public source URL. Do not invent source URLs.
+A title or search match alone is not evidence that a claim is true.
+If a page is unavailable or the evidence is insufficient, say so.

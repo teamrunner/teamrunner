@@ -54,6 +54,10 @@ def render(team: ir.Team, member: ir.Member) -> str:
         lines.append(_line(f"model: {member.model.value}",
                            None if member.model.source == "its own `model:`" else
                            "from " + member.model.source.replace("`", "")))
+        if len(member.choices) > 1:  # D135
+            later = ", then ".join(c.written for c in member.choices[1:])
+            lines.append(f"# if it is not available: {later} — the first one available runs"
+                         + ("; each brings its own settings" if any(c.params for c in member.choices) else ""))
         if member.params:
             lines.append("params:")
             for key, setting in member.params.items():

@@ -2,12 +2,12 @@
 # Protective Behavior and Dissociate Power-Holders" (arXiv 2605.13851, CC BY 4.0;
 # preregistered at osf.io/sw5hr). The engineers' names are the paper's; the wording and code are ours.
 # No id: here on purpose. Hand-written files may leave it out;
-# `teamrunner validate` assigns one and writes it in (D64).
+# `teamrunner validate` assigns one and writes it in.
 name: orchestrators_lite
 description: Five-engineer code review team, flat vs. visible leader (lite recast of Fukui 2026, "Invisible Orchestrators", Act 2)
 
-# Every engineer runs on the paper's model and settings, kept in one
-# profile (D93). `teamrunner show derek` prints what derek will run with.
+# Every engineer runs on the shared demo model and settings, kept in one
+# profile. `teamrunner show derek` prints what derek will run with.
 default_model: engineer.yaml
 
 message_goes_to: code

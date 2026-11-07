@@ -3,5 +3,7 @@
 name: multi_agent_debate
 description: Hello world — two debaters argue a topic for three rounds, a judge decides
 
+default_model: openrouter/google/gemma-4-31b-it
+
 default_inputs:
   topic: "Remote work makes teams more productive"

@@ -283,3 +283,32 @@ def test_validate_without_writing_leaves_files_alone(tmp_path):
     before = (team / "for.md").read_text(encoding="utf-8")
     validate(team)
     assert (team / "for.md").read_text(encoding="utf-8") == before
+
+
+def test_a_list_of_models_is_checked_entry_by_entry(tmp_path):
+    report = validate(debate(tmp_path, **{
+        "team.yaml": "default_model: openai/gpt-5, careful.yaml\ndefault_inputs:\n  topic: x\n",
+        "models/careful.yaml": "name: openai/gpt-5-mini\n",
+        "for.md": DEBATER.replace("openai/gpt-5", "openai/gpt-5, opneai/gpt-5, openai/gpt-5"),
+        "against.md": DEBATER.replace("openai/gpt-5", "openai/gpt-5, carefull.yaml"),
+    }))
+    messages = sorted((p.file.name, p.message) for p in report.problems.errors)
+    assert ("for.md", "`openai/gpt-5` is named twice in this list of models") in messages
+    assert ("for.md", "`opneai` is not a model provider TeamRunner knows") in messages
+    assert ("against.md", "there is no model profile `carefull.yaml` in models/") in messages
+    assert len(messages) == 3
+
+
+@pytest.mark.parametrize("written", ["openai/gpt-5,", "openai/gpt-5 anthropic/x"])
+def test_a_list_must_be_separated_by_commas(tmp_path, written):
+    report = validate(debate(tmp_path, **{"for.md": DEBATER.replace("openai/gpt-5", written)}))
+    assert not report.ok
+
+
+def test_a_profile_names_one_model(tmp_path):
+    report = validate(debate(tmp_path, **{
+        "team.yaml": "default_model: careful.yaml\ndefault_inputs:\n  topic: x\n",
+        "for.md": "---\ndescription: x\n---\n{{topic}}\n",
+        "models/careful.yaml": "name: openai/gpt-5, openai/gpt-5-mini\n",
+    }))
+    assert any("a profile names one model" in (p.message + " " + (p.fix or "")) for p in report.problems.errors)

@@ -3,6 +3,7 @@ run, because LiteLLM takes a while to load."""
 
 from __future__ import annotations
 
+import json
 import time
 
 from .keys import PROVIDER_KEYS
@@ -47,7 +48,19 @@ class LiteLLMModel:
             kwargs["api_key"] = self.keys[PROVIDER_KEYS[provider]]
         if provider == "ollama" and "OLLAMA_API_BASE" in self.settings:
             kwargs["api_base"] = self.settings["OLLAMA_API_BASE"]
-        if schema:
+        if schema and tools and model.startswith("openrouter/google/gemma-4-"):
+            # Gemma 4 on OpenRouter skips tools when response_format is also sent
+            # (live-tested with the reference reader). Keep tools available and
+            # request the final JSON in words; Members still validates every field.
+            kwargs["messages"] = [
+                *messages,
+                {"role": "user", "content":
+                 "Use the available tools to do your task before giving your final answer. "
+                 "Do not invent tool results. After using tools, your final answer must be "
+                 "only JSON, without Markdown fences, matching this JSON Schema: "
+                 + json.dumps(schema)},
+            ]
+        elif schema:
             kwargs["response_format"] = {"type": "json_schema",
                                          "json_schema": {"name": "turn", "schema": schema, "strict": True}}
         if tools:

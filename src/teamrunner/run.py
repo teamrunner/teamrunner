@@ -84,6 +84,9 @@ def _members_record(team: ir.Team, inputs: dict) -> list[dict]:
         else:
             record.update(model=m.model.value, model_from=_model_from(m.model),
                           params={k: s.value for k, s in m.params.items()},
+                          **({"model_choices": [c.written for c in m.choices],
+                              "model_choice": len(m.skipped) + 1,
+                              "models_skipped": m.skipped} if len(m.choices) > 1 else {}),
                           output={f.name: {"type": f.type, "options": list(f.options)}
                                   for f in m.output.values()},
                           prompt=instructions(m, inputs))
@@ -262,6 +265,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
                    "output": sum(e["usage"]["output"] for e in said + retries if "usage" in e)},
         "keys": keys.sources,
         "rehearsal": rehearsal,
+        "backup_models": {b["member"]: b["model"] for b in check.backups},  # D135: not each first choice
         "cost_is_estimate": True,  # D120: exact token counts times list prices, not what was charged
         "prices": price_list,
     }

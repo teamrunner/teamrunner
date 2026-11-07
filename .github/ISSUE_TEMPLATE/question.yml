@@ -15,4 +15,4 @@ body:
     id: version
     attributes:
       label: TeamRunner version, if it matters
-      placeholder: teamrunner 0.0.2
+      placeholder: teamrunner 0.0.3

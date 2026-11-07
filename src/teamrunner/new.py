@@ -17,7 +17,7 @@ from pathlib import Path
 from .ids import new_ulid, write_team_id
 from .loader import MODELS_DIR, RUNS_DIR, TEAM_FILE, split_frontmatter
 
-GITIGNORE = "# Runs are kept here, outside version control (D69)\nruns/\n"
+GITIGNORE = "# Runs are kept here, outside version control\nruns/\n"
 ID_LINE = re.compile(r"^(id|parent_id):.*\n?", re.MULTILINE)
 COMMENT = "  # added by teamrunner — keeps this {what}'s history together"
 
@@ -110,7 +110,7 @@ def copy_from(source: Path, folder: Path) -> tuple[Path, list[str]]:
                 or (here == source and n == RUNS_DIR)}
         if ".env" in names:
             warnings.append(f"{(here / '.env').relative_to(source.parent)} was not copied: "
-                            "keys live in ~/.teamrunner/.env (D99)")
+                            "keys live in ~/.teamrunner/.env")
         return left
 
     shutil.copytree(source, folder, ignore=skip, symlinks=False)  # links become real copies (D94)

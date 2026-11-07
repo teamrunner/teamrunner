@@ -83,6 +83,8 @@ class Console:
             for prob in check.problems:
                 self.say(f"  {p.bold(prob.what):<28} {prob.wrong}")
                 self.say(f"  {'':<28} {p.dim(prob.fix)}")
+        for line in backup_lines(getattr(check, "backups", None) or []):
+            self.say(p.yellow(line))
         for warning in check.warnings:
             self.say(p.yellow(f"! {warning}"))
 
@@ -212,3 +214,23 @@ class Console:
         self.say(p.dim(str(folder)))
         self.say()
         self.say(output.rstrip())
+
+
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def backup_lines(backups: list[dict]) -> list[str]:
+    """Members on a later choice of model, grouped when they share it (D135):
+    `↪ for and against run on anthropic/claude-sonnet-4-5, their 2nd choice — openai/gpt-6-luna: openai does not serve it`."""
+    groups: dict[tuple, list[str]] = {}
+    for b in backups:
+        skipped = tuple((s["model"], s["reason"]) for s in b["skipped"])
+        groups.setdefault((b["model"], b["choice"], skipped), []).append(b["member"])
+    lines = []
+    for (model, choice, skipped), who in groups.items():
+        names = who[0] if len(who) == 1 else ", ".join(who[:-1]) + " and " + who[-1]
+        verb, whose = ("runs", "its") if len(who) == 1 else ("run", "their")
+        why = "; ".join(f"{m}: {reason}" for m, reason in skipped)
+        lines.append(f"↪ {names} {verb} on {model}, {whose} {_ordinal(choice)} choice — {why}")
+    return lines

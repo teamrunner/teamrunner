@@ -3,6 +3,8 @@
 name: reference_check
 description: Checks every reference in a paper — that it exists, that its details are right, and that the cited paper says what the citing sentence claims it says
 
+default_model: openrouter/google/gemma-4-31b-it
+
 message_goes_to: paper
 
 default_inputs:

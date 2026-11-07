@@ -4,6 +4,30 @@ TeamRunner is in preview: 0.0.x versions are a soft launch, and until 0.1.0
 is announced a version may change in ways that break teams and run folders
 made with an earlier one. Each such change is listed here.
 
+## 0.0.3
+
+- **Backup models**: `model:` and `default_model:` may name several models,
+  separated by commas, in order of preference
+  (`default_model: openai/gpt-6-luna, anthropic/claude-sonnet-4-5`). Before the
+  first turn each member gets the first one available, for the whole run; the
+  console says so whenever a member is not on its first choice, and `run.json`,
+  `events.jsonl` and `teamrunner runs` record it. A profile's `name:` still
+  names one model.
+- The examples name their model once, as `default_model:` in `team.yaml`.
+- All six examples use Gemma 4 31B through OpenRouter with one API key.
+  The fact checker reads public sources instead of requiring Brave Search;
+  reference lookups use Crossref without a catalogue key. Reference lists
+  and findings are shared in the meeting messages so the next checker and
+  the editor can read them.
+- Gemma 4 tool calls on OpenRouter no longer compete with strict JSON
+  formatting: during tool use the final format is requested in the prompt,
+  and the runner still validates the declared outputs.
+- The README's tutorial and its five ideas hold only what works today; what is
+  designed but not built yet (experiments, the whiteboard) is in `PREVIEW.md`.
+  The README installs with uv or pip and needs one key.
+- Comments in the examples, and the `.gitignore` `teamrunner new` writes, no
+  longer cite internal design notes.
+
 ## 0.0.2 — the first preview
 
 What the roadmap calls 0.1, the org package: a folder of text files that gets

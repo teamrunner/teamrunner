@@ -1,7 +1,9 @@
 """The check before the first turn (D99, D100): every key found, every
 model reachable — every problem at once, in one table, before any tokens.
 
-A model is never swapped for another: close names are suggested, never used.
+A model is never swapped for one the team did not name: close names are
+suggested, never used. A member that names several models, in order of
+preference, runs on the first one available, and the check says so (D135).
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ class Check:
     tools: list[dict] = field(default_factory=list)
     problems: list[Problem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    backups: list[dict] = field(default_factory=list)  # members on a later choice, and why (D135)
 
     @property
     def ok(self) -> bool:
@@ -43,13 +46,14 @@ class Check:
 
     def event(self) -> dict:
         return {"event": "check", "models": self.models, "keys": self.keys, "tools": self.tools,
-                "problems": [p.__dict__ for p in self.problems], "warnings": self.warnings}
+                "problems": [p.__dict__ for p in self.problems], "warnings": self.warnings,
+                "backups": self.backups}
 
 
 def needed_keys(team: ir.Team) -> list[str]:
     from .builtin_tools import TOOL_KEYS
     names = []
-    for model in _models(team):
+    for model in _candidates(team):  # a backup's key too: it may be the one that runs (D135)
         name = PROVIDER_KEYS.get(model.split("/", 1)[0])
         if name and name not in names:
             names.append(name)
@@ -66,6 +70,16 @@ def _models(team: ir.Team) -> dict[str, list[str]]:
         if m.model is not None:
             used.setdefault(m.model.value, []).append(m.name)
     return used
+
+
+def _candidates(team: ir.Team) -> list[str]:
+    """Every model any member may run on, first choices first."""
+    found: list[str] = []
+    for depth in range(max((len(m.choices) for m in team.members.values()), default=0)):
+        for m in team.members.values():
+            if depth < len(m.choices) and m.choices[depth].model.value not in found:
+                found.append(m.choices[depth].model.value)
+    return found
 
 
 def _join(names: list[str]) -> str:
@@ -110,54 +124,52 @@ def run_check(team: ir.Team, keys: Keys, listers: dict[str, Lister], settings: d
               model_data: Callable[[str], dict] | None = None,
               params_check: ParamCheck | None = None) -> Check:
     check = Check()
-    used = _models(team)
     for name, source in keys.sources.items():
         check.keys.append({"name": name, "source": source})
     check.warnings += keys.warnings
 
-    for model, who in used.items():
-        provider, _, name = model.partition("/")
-        row = {"model": model, "members": who, "available": None, "retires_on": None}
-        check.models.append(row)
-        key_name = PROVIDER_KEYS.get(provider)
-        if key_name in keys.missing:
-            check.problems.append(Problem(
-                key_name, who, f"{_join(who)} use{'s' if len(who) == 1 else ''} {model}, which needs "
-                f"{key_name}; not found in ~/.teamrunner/.env, your shell or the package",
-                f"add `{key_name}=…` to ~/.teamrunner/.env"))
+    lists: dict[str, object] = {}  # provider -> its model list, asked once
+    probes: dict[str, Probe] = {}
+
+    def probe(model: str) -> Probe:
+        if model not in probes:
+            probes[model] = _probe(model, keys, listers, settings, lists)
+        return probes[model]
+
+    runs_on: dict[str, list[str]] = {}  # model -> the members who will run on it
+    stuck: dict[str, list[str]] = {}  # model -> members none of whose choices is available
+    for m in team.members.values():
+        if not m.choices:
             continue
-        if provider in SET_UP_ELSEWHERE:
-            check.warnings.append(f"{model} is not checked before the run; "
-                                  f"{provider} is set up as LiteLLM documents it")
+        skipped = []
+        for number, choice in enumerate(m.choices, 1):
+            found = probe(choice.model.value)
+            if found.problem is None:
+                break
+            skipped.append({"model": choice.model.value, "written": choice.written,
+                            "reason": found.reason})
+        else:
+            for choice in m.choices:
+                stuck.setdefault(choice.model.value, []).append(m.name)
             continue
-        lister = listers.get(provider)
-        if lister is None:
-            check.warnings.append(f"{model} cannot be checked before the run")
+        m.model, m.params, m.skipped = choice.model, dict(choice.params), skipped
+        runs_on.setdefault(choice.model.value, []).append(m.name)
+        if skipped:
+            check.backups.append({"member": m.name, "model": choice.model.value, "choice": number,
+                                  "of": len(m.choices), "skipped": skipped})
+
+    for model in [*runs_on, *(m for m in stuck if m not in runs_on)]:
+        who = runs_on.get(model, []) + [n for n in stuck.get(model, []) if n not in runs_on.get(model, [])]
+        found = probe(model)
+        check.models.append({"model": model, "members": who, **found.row})
+        if found.problem is not None:
+            if model in stuck:
+                check.problems.append(found.problem(who))
             continue
-        try:
-            available = lister(keys.values.get(key_name) if key_name else None, settings)
-        except Exception as e:
-            check.problems.append(Problem(model, who, f"could not reach {provider} to check it: {e}",
-                                          "check your connection" +
-                                          (", and that Ollama is running" if provider in NO_KEY else
-                                           f", and that {key_name} is right")))
-            continue
-        if available is None:
-            continue
-        row["available"] = served(name, available)
-        if isinstance(available, dict) and row["available"]:  # a local model's exact build (Ollama's digest)
-            row["digest"] = next((available[a] for a in (name, name + ":latest") if a in available), None)
-        if not row["available"]:
-            close = difflib.get_close_matches(name, sorted(available), n=1, cutoff=0.6)
-            check.problems.append(Problem(
-                model, who, f"{provider} does not serve `{name}`" +
-                (" (pulled models are listed by `ollama list`)" if provider in NO_KEY else ""),
-                f"did you mean `{provider}/{close[0]}`?" if close else
-                (f"pull it with `ollama pull {name}`" if provider in NO_KEY else "check the model's name")))
-            continue
-        data = (model_data or (lambda m: {}))(model)
+        check.warnings += found.warnings
+        data = (model_data or (lambda m: {}))(model) if found.row.get("available") else {}
         if data.get("deprecation_date"):
-            row["retires_on"] = data["deprecation_date"]
+            check.models[-1]["retires_on"] = data["deprecation_date"]
             check.warnings.append(f"{model} retires on {data['deprecation_date']} ({_join(who)})")
         deciders = [m.name for m in team.members.values()
                     if m.model and m.model.value == model and m.output]
@@ -167,6 +179,60 @@ def run_check(team: ir.Team, keys: Keys, listers: dict[str, Lister], settings: d
     _check_params(team, check, params_check)
     _check_tools(team, keys, check)
     return check
+
+
+@dataclass
+class Probe:
+    """What the check found out about one model, before knowing who runs on it."""
+    row: dict  # `available`, `retires_on`, and a local model's `digest`
+    problem: Callable[[list[str]], Problem] | None = None  # who -> the problem, if it can't run
+    reason: str = ""  # why it was passed over, in a few words (D135)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _probe(model: str, keys: Keys, listers: dict[str, Lister], settings: dict, lists: dict) -> Probe:
+    provider, _, name = model.partition("/")
+    row = {"available": None, "retires_on": None}
+    key_name = PROVIDER_KEYS.get(provider)
+    if key_name in keys.missing:
+        return Probe(row, lambda who: Problem(
+            key_name, who, f"{_join(who)} use{'s' if len(who) == 1 else ''} {model}, which needs "
+            f"{key_name}; not found in ~/.teamrunner/.env, your shell or the package",
+            f"add `{key_name}=…` to ~/.teamrunner/.env"), f"no {key_name} was found")
+    if provider in SET_UP_ELSEWHERE:
+        return Probe(row, warnings=[f"{model} is not checked before the run; "
+                                    f"{provider} is set up as LiteLLM documents it"])
+    lister = listers.get(provider)
+    if lister is None:
+        return Probe(row, warnings=[f"{model} cannot be checked before the run"])
+    if provider not in lists:
+        try:
+            lists[provider] = lister(keys.values.get(key_name) if key_name else None, settings)
+        except Exception as e:
+            lists[provider] = e
+    available = lists[provider]
+    if isinstance(available, Exception):
+        e = available
+        return Probe(row, lambda who: Problem(
+            model, who, f"could not reach {provider} to check it: {e}",
+            "check your connection" + (", and that Ollama is running" if provider in NO_KEY else
+                                       f", and that {key_name} is right")),
+            f"{provider} could not be reached")
+    if available is None:
+        return Probe(row)
+    row["available"] = served(name, available)
+    if not row["available"]:
+        close = difflib.get_close_matches(name, sorted(available), n=1, cutoff=0.6)
+        local = provider in NO_KEY
+        return Probe(row, lambda who: Problem(
+            model, who, f"{provider} does not serve `{name}`" +
+            (" (pulled models are listed by `ollama list`)" if local else ""),
+            f"did you mean `{provider}/{close[0]}`?" if close else
+            (f"pull it with `ollama pull {name}`" if local else "check the model's name")),
+            "it is not pulled in Ollama" if local else f"{provider} does not serve it")
+    if isinstance(available, dict):  # a local model's exact build (Ollama's digest)
+        row["digest"] = next((available[a] for a in (name, name + ":latest") if a in available), None)
+    return Probe(row)
 
 
 def _check_params(team: ir.Team, check: Check, params_check: ParamCheck | None) -> None:

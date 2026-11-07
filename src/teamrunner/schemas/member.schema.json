@@ -54,8 +54,8 @@
     },
     "model": {
       "type": "string",
-      "pattern": "^([A-Za-z0-9_.-]+/.+|[^/]+\\.yaml)$",
-      "x-expect": "a model written `provider/name` (`openai/gpt-5`) or a profile in models/ (`careful.yaml`)"
+      "pattern": "^\\s*([A-Za-z0-9_.-]+/[^,\\s]+|[^/,\\s]+\\.yaml)(\\s*,\\s*([A-Za-z0-9_.-]+/[^,\\s]+|[^/,\\s]+\\.yaml))*\\s*$",
+      "x-expect": "a model written `provider/name` (`openai/gpt-5`) or a profile in models/ (`careful.yaml`); several, separated by commas, are tried in order"
     },
     "output_field": {
       "x-expect": "a list of options (`[pass, fail]`), `\"\"` for text, a number, `true`/`false`, or `{type: ..., options: [...]}`",

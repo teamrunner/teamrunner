@@ -18,7 +18,7 @@ experiments/advocate_model/  [v0.2]
 └── experiment.yaml          ← base: ../../debate — GPT vs. Claude as advocate, 20 replications
 ```
 
-> Everything unmarked is in the first release, **0.1**. **[v0.2]** arrives with experiments; **[v0.3]** with richer organizations (managers, private information, subteams, parallel work).
+> Everything unmarked works today, in the preview. Marked parts are designed but not built yet: **[v0.2]** arrives with experiments; **[v0.3]** with richer organizations (managers, private information, subteams, parallel work).
 
 ```bash
 teamrunner run debate --message "Remote work makes teams more productive"
@@ -33,13 +33,13 @@ No Python. No graph-building API. No framework vocabulary. If you can edit a tex
 - [Why we built it](#why-we-built-it)
 - [The five ideas](#the-five-ideas)
 - [Tutorial: your first debate in 10 minutes](#tutorial-your-first-debate-in-10-minutes)
-- [Tutorial part 2: your first experiment](#tutorial-part-2-your-first-experiment)
 - [What lands in a run folder](#what-lands-in-a-run-folder)
   - [What your runs keep, and where your words go](#what-your-runs-keep-and-where-your-words-go)
 - [Going further: the worked examples](#going-further-the-worked-examples)
 - [What TeamRunner is not](#what-teamrunner-is-not)
 - [Status and roadmap](#status-and-roadmap)
 - [Questions, bugs and ideas](#questions-bugs-and-ideas)
+- [What's coming](PREVIEW.md): designed, not built yet
 
 ---
 
@@ -107,7 +107,7 @@ not your own opinion of the motion.
 
 **2. A folder is a team if it contains `team.yaml`.** Everything inside is a member, and a member is one of three things: a **worker** (an agent with a goal), a **team** (**[v0.3]** a subfolder with its own `team.yaml` — just another node in its parent's flow: *its turn means running its own internal flow to completion*, like a subcommittee: it deliberates on its own whiteboard, and the parent hears only its report — `report_from:` in its `team.yaml` says whose words those are), or a **toolkeeper** (the member who holds the keys to a tool). Complexity is contained by hierarchy, not by syntax. There is no registry file listing your agents; the file browser is the org chart.
 
-Tools are not members. An organization doesn't hand every worker every tool; a factory has a tool crib, with someone at the window who checks who may take what, and everyone else asks there. So the only members who touch tools are toolkeepers — a toolkeeper holds the guardrails (timeouts, no network, which folders), decides by a plain access list rather than a prompt, and its text body is simply what the team is told about it. Who may use a toolkeeper, and on what terms, is up to the toolkeeper's own access list — one toolkeeper can give different members different terms, the way a library gives professors and students different cards. The whole folder — team and toolkeepers — is a **package**: copy it anywhere and it gets the same job done. The work itself comes from outside: you hand the team a topic when you run it, or it uses the default written in `team.yaml`.
+The whole folder — team and toolkeepers — is a **package**: copy it anywhere and it gets the same job done. The work itself comes from outside: you hand the team a topic when you run it, or it uses the default written in `team.yaml`.
 
 **3. Every team has a chair, and there are no hidden if-statements.** Someone always decides who acts next, and TeamRunner makes you say who:
 
@@ -117,45 +117,38 @@ Tools are not members. An organization doesn't hand every worker every tool; a f
 
 Every routing decision is logged as an event attributed to whoever made it. Which means *protocol vs. discretion* — a script vs. a manager exercising judgment — is itself something you can A/B test by swapping one file for the other (**[v0.3]**).
 
-**4. One whiteboard for who sees what.** Everything an agent knows arrives through one of:
+**4. Tools sit with a toolkeeper.** Tools are not members. An organization doesn't hand every worker every tool; a factory has a tool crib, with someone at the window who checks who may take what, and everyone else asks there. So the only members who touch tools are toolkeepers — a toolkeeper holds the guardrails (timeouts, no network, which folders), decides by a plain access list rather than a prompt, and its text body is simply what the team is told about it. Who may use a toolkeeper, and on what terms, is up to the toolkeeper's own access list — one toolkeeper can give different members different terms, the way a library gives professors and students different cards.
 
-| Layer | Org analogue | Who reads | Who writes |
-|---|---|---|---|
-| **The whiteboard** (`whiteboard.yaml`) | the meeting, and the official record | everyone, unless a `read_by` line says otherwise | per item `written_by`; whatever anyone says is posted automatically; always logged |
-| **Memory** | what you were in the room for | you | nobody — history is append-only |
+**5. Every run is kept, and no agent can touch the record.** Every run gets its own folder in `runs/` with every prompt, everything said, every decision about who acts next, every tool call, the model that answered, tokens, time and cost (see [What lands in a run folder](#what-lands-in-a-run-folder)). The run log is the researcher's camera, outside the simulation: **no agent can ever read or write it** — a hard guarantee, without which every study of who knows what leaks.
 
-Everything said is posted on the whiteboard, open to all by default, so a team with no whiteboard file is a meeting room — and that is all of v0.1. **[v0.3]** `whiteboard.yaml` adds the rest: seal the reviewers from each other, or make the team a relay where each person hears only who spoke before them, with a `read_by` line for what was said — one line each.
-
-Information asymmetry is not a feature we had to invent; it is a narrow `read_by`. Incentives are numeric items on the whiteboard. Private briefs are items only one party can read.
-
-And one thing that is emphatically *not* a layer: the run log. It is the researcher's camera, outside the simulation. **No agent can ever read or write it** — a hard guarantee, without which every asymmetry design leaks.
-
-**5. Experiments are overlays.** **[v0.2]** Your package stays clean and runnable. An `experiment.yaml` lives *outside* it, names it with `base:`, and declares factors as *patches* against it, plus replications and a seed. Single runs and 200-run factorials go through the same engine. When a variant wins, `teamrunner promote` copies the exact version that ran back into the package — same agent, new version — and `export` hands you a standalone copy for production.
+Two more ideas are designed but not built yet — a whiteboard for who sees what, and experiments as overlays — and are described in [PREVIEW.md](PREVIEW.md).
 
 ---
 
 ## Tutorial: your first debate in 10 minutes
 
-We'll build a three-agent debate, run it, give it rounds, a fact checker and the web, and then (**[v0.2]**) turn it into a 40-run experiment. Zero code throughout.
+We'll build a three-agent debate, run it, give it rounds, a fact checker and the web. Zero code throughout. Turning it into a 40-run experiment comes with 0.2: see [PREVIEW.md](PREVIEW.md#experiments-v02).
 
-> Everything in this tutorial not marked **[v0.2]** or **[v0.3]** works in the preview. See [Status](#status-and-roadmap).
+> Everything in this tutorial works in the preview. See [Status](#status-and-roadmap).
 
 ### Step 0 — install
 
 ```bash
-pip install teamrunner
+uv tool install teamrunner      # uv fetches the right Python for you: https://docs.astral.sh/uv/
+pip install teamrunner          # or this, if you already have Python 3.10 or later
 ```
 
-Put your provider keys in TeamRunner's key file, `~/.teamrunner/.env` (in your home folder, outside every team):
+Put your key in TeamRunner's key file, `~/.teamrunner/.env` (in your home folder, outside every team). One key is enough: the one for the provider your team's model uses. This tutorial's team runs on OpenAI:
 
 ```
 OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+A team on another provider takes that provider's key instead (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, …). The shipped examples run on OpenRouter, so they need only `OPENROUTER_API_KEY`. If a key is missing, the run stops before spending anything and says which one. You can try every step without a key: `teamrunner run --rehearse` runs the whole team with no model, for free.
 
 Keys stay with you, never with your teams: team folders get copied, zipped and sent to people, and a key inside one goes with it. If you already have a key set in your shell, TeamRunner offers to save it to the key file the first time it needs it (or to use it just this once). If it finds a `.env` inside a team folder, it offers to move the key out and delete it there. And it will **refuse to run** if it finds something that looks like an API key inside a spec file.
 
-Models on your own machine work too, free: install [Ollama](https://ollama.com), pull a model (`ollama pull llama3.2`), and write `model: ollama/llama3.2`. If Ollama runs somewhere other than this computer, put its address in the key file as `OLLAMA_API_BASE`. A word of warning: the smallest models often fail at exactly what teams need most — answering in a fixed form and asking toolkeepers properly — so they test the wiring better than they stand in for a real team. Before the first turn of every run, TeamRunner checks that each model your team names is available and lists every problem it finds in one table, so you never pay for half a run. `teamrunner validate --online` runs the same check without a run.
+Models on your own machine work too, free: install [Ollama](https://ollama.com), pull a model (`ollama pull gpt-oss:20b`), and write `default_model: ollama/gpt-oss:20b` in `team.yaml`. If Ollama runs somewhere other than this computer, put its address in the key file as `OLLAMA_API_BASE`. Choose one of about 20 billion parameters or more: the smallest models often fail at exactly what teams need most — answering in a fixed form and asking toolkeepers properly — so they test the wiring better than they stand in for a real team. Before the first turn of every run, TeamRunner checks that each model your team names is available and lists every problem it finds in one table, so you never pay for half a run. `teamrunner validate --online` runs the same check without a run.
 
 ### Step 1 — make a team
 
@@ -173,12 +166,14 @@ Two other ways to start, when you'd rather not begin from nothing:
 
 This tutorial starts from nothing, so you see every file.
 
-`team.yaml` is the only required file. It marks the folder as a team and says what the team does:
+`team.yaml` is the only required file. It marks the folder as a team, says what the team does, and names the model its agents run on:
 
 ```yaml
 # team.yaml
 name: debate
 description: Two debaters argue a topic; a judge decides
+
+default_model: openai/gpt-6-luna
 ```
 
 Two things worth knowing now:
@@ -194,7 +189,6 @@ An agent file is Markdown. Frontmatter configures, body prompts.
 <!-- advocate.md -->
 ---
 description: Argues in favor of the topic
-model: openai/gpt-6-luna
 ---
 You are debating in favor of this topic:
 
@@ -209,7 +203,6 @@ recent point before adding your own. Be persuasive but honest.
 <!-- critic.md -->
 ---
 description: Argues against the topic
-model: openai/gpt-6-luna
 ---
 You are debating against this topic:
 
@@ -224,7 +217,6 @@ Be persuasive but honest.
 <!-- judge.md -->
 ---
 description: Decides who argued better
-model: openai/gpt-6-luna
 output:
   winner: [advocate, critic]
   reasoning: ""
@@ -240,7 +232,7 @@ explain your decision in one paragraph.
 
 Four things just happened:
 
-**Every agent names its model.** The model is part of the agent — it's who you hired. When a whole team uses the same one, `team.yaml` can say it once (`default_model: openai/gpt-6-luna`), and a model with its settings can live in a profile, `models/careful.yaml`, that agents name as `model: careful.yaml`. `teamrunner show judge` prints exactly which model and settings the judge will run with. `examples/orchestrators_lite` does both: its five engineers share one profile, `models/engineer.yaml`, named once as the team's `default_model:`.
+**The team names the model once.** No agent above names a model, so all three run on `default_model:` from `team.yaml`. An agent that should run on a different one says so itself (`model: anthropic/…`), and its own line wins. A model with its settings can live in a profile, `models/careful.yaml`, named as `default_model: careful.yaml` or `model: careful.yaml`. `teamrunner show judge` prints exactly which model and settings the judge will run with, and where each came from. `examples/orchestrators_lite` does both: its five engineers share one profile, `models/engineer.yaml`, named once as the team's `default_model:`. Models churn, so either line can name backups in order of preference, separated by commas: `default_model: openai/gpt-6-luna, anthropic/claude-sonnet-4-5`. Before the first turn TeamRunner picks the first one available, keeps it for the whole run, and says so whenever it isn't the first (`↪ judge runs on anthropic/claude-sonnet-4-5, its 2nd choice — …`); the run's record says so too.
 
 **Alphabetical order is the flow.** With no `chair.md`, members act in alphabetical filename order, one turn each — here `advocate → critic → judge`. That is also why the files above have no `name:` line: an agent's name is its filename. The folder listing *is* the running order, visible in any file browser. Rename to reorder.
 
@@ -347,7 +339,6 @@ Suppose we want each speech fact-checked before it stands. Write a fact checker 
 <!-- fact_checker.md -->
 ---
 description: Checks the factual claims in the latest speech
-model: openai/gpt-6-luna
 output:
   verdict: [pass, fail]
   reasons: ""
@@ -435,111 +426,6 @@ A toolkeeper step means the member just before it must end its turn with a reque
 
 TeamRunner 0.1 has four built-in tools: `web_search_brave` (Brave Search), `read_page` (a link in, the page's text out), `read_file` (a file the run was given with `--file`, its text out) and `run_code` (Python in a sandbox: no internet unless the toolkeeper allows it, and files written only in the run's own work folder). The sandbox is Python running in WebAssembly, and it installs with TeamRunner — nothing else to set up; it can use packages built for it (numpy, pandas, scipy, sympy and many more), but not every package. `examples/fact_checked` gives the fact checker a second toolkeeper, `sandbox.md`, so it can check the sums in a claim by running them. A toolkeeper holds one tool in 0.1, so its limits always mean one thing; a member who needs two tools asks two toolkeepers, as the fact checker does here. `examples/reference_check` uses `read_page` and `read_file`: it checks every reference in a paper.
 
-### Step 8 — private information and shared records **[v0.3]**
-
-The debate doesn't need this, but the moment you study organizations you will. `whiteboard.yaml` is the team's whiteboard: declared, typed items, each with who may read and write it. Everything anyone says is posted there too, open to all unless a `read_by` line says otherwise.
-
-```yaml
-# whiteboard.yaml
-
-# Bare list = a choice, starting at the first option.
-# Read by everyone, written by the chair — those are the defaults.
-stage: [opening, rebuttal, counter, closing, done]
-
-# A bare value = a starting value, read and written by the defaults.
-rounds_left: 3
-
-# Spell it out only when you change who reads or writes it.
-score:
-  starts_as: 0
-  written_by: [judge]
-
-# Information asymmetry IS a read permission.
-buyer_ceiling:
-  starts_as: 850
-  read_by: [buyer]
-```
-
-Every field is declared up front — no ad-hoc keys appearing mid-run. Every write is harness-mediated and logged as a `state_write` event: an agent listed in `written_by` returns the new value as a declared output field; nothing pokes state directly. Agents reference readable fields in their prompts as `{{whiteboard.buyer_ceiling}}`, and the validator checks that permission before you spend a cent.
-
-This one file is doing a surprising amount of work. Private valuations, confidential negotiating briefs, payoffs and incentives, task inputs, an artifact handed from one department to the next — all of them are just whiteboard items with the right permissions.
-
----
-
-## Tutorial part 2: your first experiment **[v0.2]**
-
-Here's the question that motivated the whole project: **does it matter which model plays the advocate?**
-
-Don't touch the debate. Make a folder next to it with one file:
-
-> **[v0.2]** Experiments are built after the package is right. The file below is the agreed shape: it lives *outside* the package (`experiments/advocate_model/experiment.yaml`) and names it with `base:`.
-
-```yaml
-# experiments/advocate_model/experiment.yaml
-name: advocate-model-ab
-base: ../../debate
-task: tasks/remote_work
-
-factors:
-  advocate_model:
-    - label: gpt
-      patch: {advocate.model: "openai/gpt-6-luna"}
-    - label: claude
-      patch: {advocate.model: "anthropic/claude-sonnet-4-5"}
-
-replications: 20        # 2 conditions × 20 = 40 runs
-seed: 42
-
-limits:
-  max_concurrent: 4
-  max_cost_usd: 40.00
-```
-
-```bash
-teamrunner experiment .
-```
-
-What just became possible:
-
-**Factors are patches, so the base spec stays clean.** `advocate.model` means "the `model` field of the component `advocate`". Patch paths address any field of any component, including the prompt body (the field is called `prompt`), and any value can be `file:<path>` to swap in a whole file. `patch: {}` is the *unmodified base spec* — the control condition, written honestly as a level rather than smuggled in as "the normal run."
-
-**Anything in a file is a factor.** That's not a slogan, it's the mechanism. A few real examples from our worked recasts:
-
-```yaml
-# A prompt/strategy A/B — same agent, two personalities
-- {label: tough, patch: {buyer.prompt: file:variants/buyer_tough.md}}
-
-# A treatment: one member is secretly self-interested
-- {label: saboteur, patch: {council.prompt: file:variants/saboteur.md}}
-
-# The communication structure ITSELF as the factor:
-# same reviewers, same paper — only who can read whose review changes
-- label: public
-  patch:
-    whiteboard.said.reviewer_1.read_by: everyone
-    whiteboard.said.reviewer_2.read_by: everyone
-    whiteboard.said.reviewer_3.read_by: everyone
-```
-
-That last one is the founding claim of the product. Studying whether peer reviewers herd when they can see each other's reviews is, in TeamRunner, a two-level factor on who may read what each reviewer says.
-
-**`replications` has a minimum of 2.** Writing `replications: 1` requires an explicit `allow_single_run: true`. LLMs are stochastic; single runs are anecdotes; we made the anecdote the awkward thing to write.
-
-**One master `seed` fixes everything the harness controls** — condition assignment, ordering, per-run seed derivation. It does not, and cannot, make the model deterministic. See [Why we built it](#3-almost-nothing-published-about-multi-agent-systems-is-reproducible).
-
-**`limits` is a real budget ceiling.** `max_cost_usd` stops the experiment; `max_concurrent` keeps you inside your rate limits.
-
-Then get the data out:
-
-```bash
-teamrunner runs                     # browse what you've run
-teamrunner export --experiment advocate-model-ab --format csv
-```
-
-Long format, one row per observation, straight into R, Stata, or pandas. Your analysis never lives inside our dashboard — that's a promise, not an oversight.
-
-The declarative metrics layer (ground truth, LLM-as-judge with a separately pinned judge model, cost and time) is specified but its file format is still open. Today's `metrics:` references in the examples are placeholders.
-
 ---
 
 ## What lands in a run folder
@@ -599,7 +485,17 @@ replays that exact spec. Every run folder is a self-contained replication packag
 
 ## Going further: the worked examples
 
-Six examples ship with TeamRunner, in `examples/`, simplest first — each adds something the one before it doesn't have. Copy one by name to start from it: `teamrunner new my_team --from orchestrators_lite`. Most are published multi-agent papers or projects, recast as TeamRunner files.
+Six examples ship with TeamRunner, in `examples/`, simplest first — each adds something the one before it doesn't have. Copy one by name to start from it: `teamrunner new my_team --from orchestrators_lite`. Most are published multi-agent papers or projects, recast as TeamRunner files. All six use `openrouter/google/gemma-4-31b-it` and need only an OpenRouter API key, with credits for model usage. They do not require OpenAI, Anthropic, Brave or catalogue keys.
+
+Set the key outside the team folder (never commit it):
+
+```bash
+export OPENROUTER_API_KEY="your-openrouter-key"
+teamrunner new my_debate --from round_robin
+teamrunner run my_debate
+```
+
+On PowerShell, set `$env:OPENROUTER_API_KEY="your-openrouter-key"` instead. You can also keep `OPENROUTER_API_KEY` in `~/.teamrunner/.env`. Add `--rehearse` to check a flow without calling a model; a rehearsal does not verify live model or tool behavior. The two source-checking examples read public pages and Crossref without extra keys; access restrictions, rate limits and missing abstracts or PDFs can still limit their evidence. The fact checker's Python sandbox downloads its runtime on first use. The code-review example uses demo model settings rather than the source paper's model.
 
 | Example | Recast of | What it adds |
 |---|---|---|
@@ -607,7 +503,7 @@ Six examples ship with TeamRunner, in `examples/`, simplest first — each adds 
 | **`multi_agent_debate/`** | muthuspark/multi-agent-debate | A chair: the debate as a script, with a repeated block of rounds. |
 | **`hiring_committee/`** | Stasser & Titus 1985 (hidden profile) | A committee picks a candidate when the key facts are spread across its members: facts only one member knows, kept in that member's own file; a stage in the chair; a clerk who records the decision; and both meeting formats in one `chair.md`, one commented out. |
 | **`orchestrators_lite/`** | Fukui 2026 (lite) | Five engineers review code against planted bugs: a model profile the whole team shares, and two inputs. |
-| **`fact_checked/`** | — | The debate with a fact checker: decisions that send a speech back, counted tries, and toolkeepers — a web search with different terms for different members, a required search step, and a Python sandbox. |
+| **`fact_checked/`** | — | The debate with a fact checker: decisions that send a speech back, counted tries, and toolkeepers — a public-source reader with different terms for different members, a required source-reading step, and a Python sandbox. |
 | **`reference_check/`** | sciwrite-lint (Samsonau 2026) | Checks every reference in a paper: that it exists, that its details are right, and that the cited paper says what the citing sentence claims. A paper given as a link or a file (`--file`), toolkeepers holding `read_page` and `read_file`, the same tool under two toolkeepers with different `domains`, a decision that can stop the run, and batches of ten as a loop with a counted exit. |
 
 **Coming with 0.3**, recast on paper and waiting for the features they need: **Deb8flow** (subteams — each side a debater plus its own fact checker), **NegotiationGym** (private valuations, a loop either side can end), **LLM-Deliberation** (four parties, confidential briefs, one secretly given a hidden agenda), **AgentReview** (three reviewers at once, sealed reviews — do reviewers herd when reviews are public?), **ChatDev** (a three-level company, each department on its own whiteboard), and the full **Invisible Orchestrators** study (a hidden orchestrator whose words reach the team only as unsigned "policy updates").
@@ -630,7 +526,7 @@ The recasting campaign is the point, not decoration: each one is run *before* th
 
 ## Status and roadmap
 
-**Preview.** What the roadmap calls 0.1 is out as a soft launch, numbered 0.0.x: every command in the tutorial not marked **[v0.2]** or **[v0.3]** works. It may still change in ways that break earlier teams and runs until 0.1.0 is announced. What changed in each version is in the [changelog](https://github.com/teamrunner/teamrunner/blob/main/CHANGELOG.md).
+**Preview.** What the roadmap calls 0.1 is out as a soft launch, numbered 0.0.x: every command in the tutorial works; what is designed but not built yet is in [PREVIEW.md](PREVIEW.md). It may still change in ways that break earlier teams and runs until 0.1.0 is announced. What changed in each version is in the [changelog](https://github.com/teamrunner/teamrunner/blob/main/CHANGELOG.md).
 
 | Version | |
 |---|---|

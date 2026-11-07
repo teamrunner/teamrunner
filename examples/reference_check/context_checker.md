@@ -1,9 +1,7 @@
 ---
 description: Checks that each cited paper says what the citing sentences claim
-model: openai/gpt-6-luna
 output:
   status: [more, done]
-  findings: ""
 ---
 You check the reader's list of references, ten a turn, in order. Your
 earlier turns show which you have done; start after the last one. Skip
@@ -26,3 +24,6 @@ abstract alone is never stronger than "partly supported" unless the
 abstract states the claim outright.
 
 Set status to more if references remain after this batch, else done.
+Put every finding and its reference number in your message to the team
+(the JSON `said` field), including skipped references and what evidence
+was unavailable. The editor reads that message to build the report.

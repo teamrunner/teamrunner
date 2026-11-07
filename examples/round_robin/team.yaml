@@ -1,5 +1,7 @@
 name: round_robin
 description: The debate with no chair file — one turn each, in filename order (for, against, judge)
 
+default_model: openrouter/google/gemma-4-31b-it
+
 default_inputs:
   topic: "Remote work makes teams more productive"
