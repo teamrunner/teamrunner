@@ -193,9 +193,9 @@ def test_edit_conflict_validate_and_resolved_member(ui_team):
         problem = next(p for p in report["problems"] if p["value"] == "unknown_word")
         assert problem["file"] == path and problem["line"] and problem["fix"]
         assert post(server, "/api/save", original)[0] == 409
-        assert (ui_team / path).read_text() == broken
+        assert (ui_team / path).read_bytes().decode("utf-8") == broken  # as saved: Windows checkouts have \r\n
         assert post(server, "/api/save", {**saved, "text": original["text"]})[0] == 200
-        (ui_team / path).write_text(original["text"] + "# edited outside the browser\n")
+        (ui_team / path).write_text(original["text"] + "# edited outside the browser\n", encoding="utf-8")
         latest = json.loads(get(server, "/api/file?path=" + path)[2])
         assert latest["revision"] != original["revision"]
         assert post(server, "/api/save", original)[0] == 409

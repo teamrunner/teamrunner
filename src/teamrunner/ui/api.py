@@ -20,6 +20,8 @@ def visible(path: Path) -> bool:
 
 
 def inside(root: Path, written: str) -> Path:
+    if "\x00" in written:  # refused everywhere; Windows on Python 3.13+ would only say "not found"
+        raise OutsideRoot("Choose a file inside the opened folder.")
     relative = Path(written)
     if relative.is_absolute() or ".." in relative.parts or not visible(relative):
         raise OutsideRoot("Choose a file inside the opened folder.")
