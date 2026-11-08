@@ -27,11 +27,14 @@ class RunFolder:
         base = Path(runs_dir) if runs_dir else package_top / RUNS_DIR
         stamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
         name = f"{stamp}_{entry.replace('/', '_')}"
+        base.mkdir(parents=True, exist_ok=True)
         path, n = base / name, 2
-        while path.exists():
-            path, n = base / f"{name}_{n}", n + 1
-        path.mkdir(parents=True)
-        return cls(path)
+        while True:  # creating the folder is the check, so runs started in the same second never share one
+            try:
+                path.mkdir()
+                return cls(path)
+            except FileExistsError:
+                path, n = base / f"{name}_{n}", n + 1
 
     def write_event(self, event: dict) -> None:
         """One line per event, flushed at once, so a crash keeps the log so far."""
@@ -77,6 +80,6 @@ def fingerprint(package_top: Path) -> dict:
     return result
 
 
-def version_hash(path: Path) -> str:
+def version_hash(path: Path, content: bytes | None = None) -> str:
     """A member file's fingerprint: the hash of its exact text (D90)."""
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    return "sha256:" + hashlib.sha256(path.read_bytes() if content is None else content).hexdigest()

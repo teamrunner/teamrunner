@@ -23,6 +23,15 @@ from .keys import NO_KEY, PROVIDER_KEYS, SET_UP_ELSEWHERE, Keys
 Lister = Callable[[str | None, dict], "set[str] | None"]
 
 
+def online_check(report):
+    """The explicit CLI/browser online check, without printing or prompting."""
+    from .build import load_team
+    from .keys import extra_settings, find_keys
+    team, _ = load_team(report.package.team.folder)
+    keys = find_keys(needed_keys(team), team.package_top, None)
+    return run_check(team, keys, LISTERS, extra_settings(), litellm_data, litellm_params), keys
+
+
 @dataclass
 class Problem:
     what: str  # the model or key
@@ -213,8 +222,12 @@ def _probe(model: str, keys: Keys, listers: dict[str, Lister], settings: dict, l
     available = lists[provider]
     if isinstance(available, Exception):
         e = available
+        reason = str(e)
+        for secret in keys.values.values():
+            if secret:
+                reason = reason.replace(secret, "[key hidden]")
         return Probe(row, lambda who: Problem(
-            model, who, f"could not reach {provider} to check it: {e}",
+            model, who, f"could not reach {provider} to check it: {reason}",
             "check your connection" + (", and that Ollama is running" if provider in NO_KEY else
                                        f", and that {key_name} is right")),
             f"{provider} could not be reached")

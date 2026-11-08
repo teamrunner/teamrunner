@@ -153,6 +153,8 @@ I search the web. Send me a query and I return the top five results.
 | `read_page` | a link → the page's text, PDFs too | `domains`, `max_chars`, `types: [pdf]` |
 | `read_file` | a file the run was given with `--file` → its text | `max_chars`, `types: [pdf]` |
 | `run_code` | Python → its output and errors, in a sandbox | `network: true` (off by default), `paths: [folder]` to read — the code finds it at `/package/<folder>` |
+| `read_email` | an email's id → its sender, recipients, date, subject and text, from a folder of `.eml` files in the package | `mailbox: <folder>` (`mailbox` if not written), `max_chars` |
+| `save_draft` | an email's id and a reply → the reply saved in the run's `work/outbox/`, never sent; it answers only the email's sender | `mailbox: <folder>`, `max_chars`, `reply_only: false` (lets a draft name any address) |
 
   Every tool also understands `calls_per_turn` (5 if not written),
   `calls_per_run` and `timeout` (seconds). Any other limit is an error.

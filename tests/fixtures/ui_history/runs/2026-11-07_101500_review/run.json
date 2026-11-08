@@ -1,0 +1,26 @@
+{
+  "run_id": "fixture-3",
+  "team": "review",
+  "entry": "fixture_package/review",
+  "started_at": "2026-11-07T09:00:00Z",
+  "status": "failed",
+  "turns": 2,
+  "inputs": {
+    "topic": {
+      "value": "Budget review",
+      "source": "given"
+    }
+  },
+  "latency_ms": 1900,
+  "cost_usd": 0.006,
+  "cost_known_usd": 0.006,
+  "tokens": {
+    "input": 200,
+    "output": 70
+  },
+  "fingerprint": {
+    "content_hash": "sha256:fixture-package"
+  },
+  "reason": "Provider unavailable after retries.",
+  "rehearsal": false
+}

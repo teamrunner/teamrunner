@@ -298,6 +298,97 @@ async def run_code(args: dict, guardrails: dict, ctx: Context) -> Answer:
                   service=f"pyodide {sandbox.PYODIDE} (Python {ran.python}), deno {version('deno')}")
 
 
+# --- read_email and save_draft: a mailbox folder of .eml files --------------------------
+
+EMAIL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
+DEFAULT_MAILBOX = "mailbox"
+
+
+def mailbox_folder(guardrails: dict, ctx: Context) -> Path:
+    """The mailbox this toolkeeper reads: a folder of .eml files, written relative to the package."""
+    written = str(guardrails.get("mailbox", DEFAULT_MAILBOX))
+    folder = Path(written).expanduser()
+    if not folder.is_absolute() and ctx.package_top is not None:
+        folder = ctx.package_top / folder
+    if not folder.is_dir():
+        raise Refused(f"the mailbox {written} that this toolkeeper reads does not exist")
+    return folder
+
+
+def find_email(asked: str, guardrails: dict, ctx: Context):
+    """One email in the mailbox, by its id (its file name without .eml)."""
+    from email import policy
+    from email.parser import BytesParser
+    asked = asked.strip().removesuffix(".eml")
+    if not EMAIL_ID.fullmatch(asked):
+        raise Refused("an email is asked for by its id, such as m001")
+    path = mailbox_folder(guardrails, ctx) / f"{asked}.eml"
+    if not path.is_file():
+        raise Refused(f"there is no email {asked} in the mailbox")
+    return asked, BytesParser(policy=policy.default).parsebytes(path.read_bytes())
+
+
+def email_text(message) -> str:
+    """The headers a reader needs, the body as plain text, and the names of any attachments."""
+    lines = [f"{h}: {message[h]}" for h in ("From", "To", "Cc", "Date", "Subject") if message[h]]
+    part = message.get_body(preferencelist=("plain", "html"))
+    body = "" if part is None else part.get_content()
+    if part is not None and part.get_content_type() == "text/html":
+        body = html_text(body)
+    attached = [p.get_filename() or p.get_content_type() for p in message.iter_attachments()]
+    if attached:
+        lines.append("Attachments: " + ", ".join(attached))
+    return "\n".join(lines) + "\n\n" + body.strip()
+
+
+async def read_email(args: dict, guardrails: dict, ctx: Context) -> Answer:
+    _, message = find_email(str(args.get("id", "")), guardrails, ctx)
+    return Answer(cut(email_text(message), guardrails), service="mailbox folder")
+
+
+async def save_draft(args: dict, guardrails: dict, ctx: Context) -> Answer:
+    """A reply saved to the run's work/outbox/, never sent. By default it goes to the
+    email's sender and no one else (`reply_only`)."""
+    from email.message import EmailMessage
+    from email.utils import getaddresses
+    asked, original = find_email(str(args.get("reply_to", "")), guardrails, ctx)
+    body = str(args.get("body", "")).strip()
+    if not body:
+        raise Refused("the draft was empty")
+    limit = guardrails.get("max_chars", DEFAULT_MAX_CHARS)
+    if len(body) > limit:
+        raise Refused(f"the draft is {len(body)} characters; this outbox takes at most {limit}")
+    sender = original.get("Reply-To") or original.get("From") or ""
+    sender_address = next((a for _, a in getaddresses([sender]) if a), "")
+    wanted = str(args.get("to") or "").strip()
+    wanted_addresses = [a for _, a in getaddresses([wanted]) if a]
+    if wanted and guardrails.get("reply_only", True):
+        if [a.lower() for a in wanted_addresses] != [sender_address.lower()]:
+            raise Refused("this outbox only answers the sender of the email "
+                          f"({sender_address}); it does not write to other addresses")
+    to = wanted if wanted and not guardrails.get("reply_only", True) else sender
+    if not to:
+        raise Refused(f"email {asked} has no sender to answer")
+    outbox = ctx.work_dir / "outbox"
+    path = outbox / f"{asked}.eml"
+    if path.exists():
+        raise Refused(f"a draft answering {asked} is already in the outbox")
+    draft = EmailMessage()
+    draft["To"] = to
+    if original["To"]:
+        draft["From"] = original["To"]
+    subject = str(original.get("Subject") or "")
+    draft["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}".strip()
+    if original["Message-ID"]:
+        draft["In-Reply-To"] = original["Message-ID"]
+    draft["X-TeamRunner"] = "draft, not sent"
+    draft.set_content(body + "\n", cte="8bit")  # readable as it is, in any text editor
+    outbox.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(draft))
+    return Answer(f"Saved a draft to {to} in the outbox as outbox/{asked}.eml. It has not been sent.",
+                  service="outbox folder")
+
+
 TOOLS: dict[str, Tool] = {
     "web_search_brave": Tool("web_search_brave", "Searches the web: a query in, titles, links and snippets out.",
                        {"type": "object", "properties": {"query": {"type": "string"}},
@@ -312,6 +403,18 @@ TOOLS: dict[str, Tool] = {
                      "errors out. Files it writes in the current folder are kept for the rest of the run.",
                      {"type": "object", "properties": {"code": {"type": "string"}},
                       "required": ["code"], "additionalProperties": False}, run_code),
+    "read_email": Tool("read_email", "Reads one email from the mailbox: its id in, its sender, "
+                       "recipients, date, subject and text out.",
+                       {"type": "object", "properties": {"id": {"type": "string"}},
+                        "required": ["id"], "additionalProperties": False}, read_email),
+    "save_draft": Tool("save_draft", "Saves a reply to an email in the outbox, where a person reads it "
+                       "before anything is sent: the id of the email it answers and the reply's text in. "
+                       "Nothing is sent.",
+                       {"type": "object", "properties": {
+                           "reply_to": {"type": "string", "description": "the id of the email this answers"},
+                           "body": {"type": "string", "description": "the reply's text"},
+                           "to": {"type": "string", "description": "who it goes to; leave out to answer the sender"}},
+                        "required": ["reply_to", "body"], "additionalProperties": False}, save_draft),
 }
 NOT_BUILT: dict[str, str] = {}  # tool -> why this version cannot run it yet
 TOOL_KEYS = {"web_search_brave": BRAVE_KEY}

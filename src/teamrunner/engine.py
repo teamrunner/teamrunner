@@ -13,6 +13,7 @@ from typing import Awaitable, Callable, Protocol
 
 from . import ir
 from .ir import DONE, STOP
+from .flowgraph import done_id, entry_id, step_id
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class Turn:
     attempts_of: int | None  # the counted bound that limits the tries, if any
     asker: "Result | None" = None  # for a toolkeeper step: the turn that must ask it
     must_ask: ir.Member | None = None  # the toolkeeper step right after this turn (D85)
+    flow_node: str | None = None
 
 
 @dataclass
@@ -62,11 +64,13 @@ class Outcome:
 
 
 class Engine:
-    def __init__(self, team: ir.Team, actor: Actor | Callable[[Turn], Awaitable[Result]], sink: Sink):
+    def __init__(self, team: ir.Team, actor: Actor | Callable[[Turn], Awaitable[Result]], sink: Sink,
+                 trace: Callable[[str], None] | None = None):
         self.team = team
         self.actor = actor
         self.emit = sink
         self.turns = 0
+        self.trace = trace or (lambda node: None)
 
     async def run(self) -> Outcome:
         end = await self._block(self.team.flow.main, ())
@@ -74,6 +78,7 @@ class Engine:
 
     async def _block(self, block: ir.Block, passes: tuple[Pass, ...]) -> str:
         """Run one pass of a block to its end. Returns DONE or STOP."""
+        self.trace(entry_id(block))
         counts: dict[int, int] = {}  # times each decider has decided in this run of the block
         tries: dict[int, int] = {}  # the try a step is on: 1, plus each time a decider sent the flow back to it
         bound_into: dict[int, int] = {}  # step index -> the count limiting its tries
@@ -82,9 +87,11 @@ class Engine:
         while i < len(block.steps):
             step = block.steps[i]
             if step.kind in (DONE, STOP):
+                self.trace(step_id(block,i))
                 return step.kind
 
             for number in range(1, step.repeat + 1):
+                self.trace(step_id(block,i))
                 if step.kind == "block" or step.repeat > 1:
                     inner = passes + (Pass(step.name, number, step.repeat),)
                 else:
@@ -97,7 +104,7 @@ class Engine:
                     member = self.team.members[step.name]
                     turn = Turn(step, member, inner, tries.get(i, 1), bound_into.get(i),
                                 asker=last if member.kind == "toolkeeper" else None,
-                                must_ask=self._toolkeeper_after(block, i))
+                                must_ask=self._toolkeeper_after(block, i), flow_node=step_id(block,i))
                     self.turns += 1
                     last = await self.actor(turn)
 
@@ -106,6 +113,7 @@ class Engine:
                 counts[i] = counts.get(i, 0) + 1
                 route = self._decide(block, i, decision, counts[i], last, passes)
                 if route in (DONE, STOP):
+                    self.trace("stop" if route == STOP else done_id(block))
                     return route
                 if route <= i:
                     tries[route] = tries.get(route, 1) + 1
@@ -114,8 +122,10 @@ class Engine:
                 i = route
                 continue
             if i + 1 >= block.sequence_length:  # end of the line, or a step reached by a decision only
+                self.trace(done_id(block))
                 return DONE
             i += 1
+        self.trace(done_id(block))
         return DONE
 
     def _toolkeeper_after(self, block: ir.Block, i: int) -> ir.Member | None:

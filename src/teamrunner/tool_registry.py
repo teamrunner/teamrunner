@@ -12,6 +12,8 @@ TOOLS: dict[str, frozenset[str]] = {
     "read_page": frozenset({"domains", "max_chars", "types"}),
     "read_file": frozenset({"max_chars", "types"}),
     "run_code": frozenset({"network", "paths"}),
+    "read_email": frozenset({"mailbox", "max_chars"}),
+    "save_draft": frozenset({"mailbox", "max_chars", "reply_only"}),
 }
 
 # The kinds of file `types` may list; PDF is the only one in 0.1.

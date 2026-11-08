@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Callable
 
 from .console import Console, money, seconds
 from .loader import RUNS_DIR, TEAM_FILE, find_top
@@ -31,7 +32,7 @@ class RunRecord:
 
     @property
     def team(self) -> str:
-        return self.run.get("team") or self.run.get("entry", "").rsplit("/", 1)[-1] or self.folder.name
+        return self.run.get("team") or (self.run.get("entry") or "").rsplit("/", 1)[-1] or self.folder.name
 
     @property
     def input(self) -> str:
@@ -82,18 +83,40 @@ def runs_folder(start: Path, runs_dir: Path | None = None) -> tuple[Path, Path]:
     return top, Path(runs_dir) if runs_dir else top / RUNS_DIR
 
 
-def all_runs(runs: Path) -> list[RunRecord]:
+def load_run(folder: Path, warnings: list[str] | None = None) -> RunRecord | None:
+    """Read a recorded run, without requiring the current team to validate."""
+    record = folder / "run.json"
+    if not record.is_file():
+        return None
+    try:
+        when = datetime.strptime(folder.name[:17], STAMP)
+        run = json.loads(record.read_text(encoding="utf-8"))
+        if not isinstance(run, dict) or not isinstance(run.get("inputs") or {}, dict):
+            raise ValueError("not a run record")
+        if not all(isinstance(v, dict) for v in (run.get("inputs") or {}).values()):
+            raise ValueError("invalid input record")
+        for field in ("team", "entry", "status"):
+            if run.get(field) is not None and not isinstance(run[field], str):
+                raise ValueError("invalid run label")
+        for field in ("cost_usd", "cost_known_usd", "latency_ms", "turns"):
+            if run.get(field) is not None and not isinstance(run[field], (int, float)):
+                raise ValueError("invalid run total")
+    except (ValueError, OSError, UnicodeError):
+        if warnings is not None:
+            warnings.append(f"{folder.name}: run.json could not be read; this run was skipped.")
+        return None
+    return RunRecord(folder, when, run)
+
+
+def all_runs(runs: Path, *, allowed: Callable[[Path], bool] | None = None,
+             warnings: list[str] | None = None) -> list[RunRecord]:
     found = []
     for folder in runs.iterdir() if runs.is_dir() else []:
-        record = folder / "run.json"
-        if not record.is_file():
+        if allowed is not None and not allowed(folder):
             continue
-        try:
-            when = datetime.strptime(folder.name[:17], STAMP)
-            run = json.loads(record.read_text(encoding="utf-8"))
-        except ValueError:
-            continue
-        found.append(RunRecord(folder, when, run))
+        record = load_run(folder, warnings)
+        if record is not None:
+            found.append(record)
     return sorted(found, key=lambda r: (r.when, r.folder.name), reverse=True)
 
 
@@ -127,13 +150,58 @@ def print_list(top: Path, records: list[RunRecord], shown: list[RunRecord], out:
                 f"{seconds(r.run.get('latency_ms')):>7} {money(r.run.get('cost_usd')):>9}{rehearsal}")
 
 
-def _events(folder: Path):
+def read_events(folder: Path, warnings: list[str] | None = None):
+    """Stream recorded events; a damaged/unfinished line does not hide the rest."""
     path = folder / "events.jsonl"
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            yield json.loads(line)
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for number, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+                if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+                    raise ValueError("not an event")
+            except ValueError:
+                if warnings is not None:
+                    warnings.append(f"events.jsonl:{number}: unreadable or unfinished event; this line was skipped.")
+                continue
+            yield event
+
+
+def _events(folder: Path):
+    yield from read_events(folder)
+
+
+def member_identity(member: dict, record: RunRecord) -> str:
+    return str(member.get("component_id") or member.get("instance_path")
+               or f"{record.run.get('entry') or record.team}/{member.get('name', '?')}")
+
+
+def member_versions(records: list[RunRecord]) -> dict:
+    """D90: number each fingerprint by its first recorded appearance, per member."""
+    versions = {}
+
+    def started(record):
+        try:
+            return datetime.fromisoformat(record.run["started_at"].replace("Z", "+00:00")).timestamp()
+        except (KeyError, ValueError, TypeError, AttributeError):
+            return record.when.timestamp()
+
+    for record in sorted(records, key=lambda r: (started(r), r.folder.name)):
+        first = next((e for e in read_events(record.folder) if e["event"] == "run_started"), {})
+        members = first.get("members")
+        for member in members if isinstance(members, list) else []:
+            if not isinstance(member, dict) or not isinstance(member.get("version_hash"), str):
+                continue
+            hashes = versions.setdefault(member_identity(member, record), {})
+            fingerprint = member["version_hash"]
+            if fingerprint not in hashes:
+                hashes[fingerprint] = {"number": len(hashes) + 1,
+                                       "first_run": record.when.isoformat(),
+                                       "first_run_shown": f"{record.when.day} {record.when:%b}"}
+    return versions
 
 
 def replay(record: RunRecord, out: Console) -> None:

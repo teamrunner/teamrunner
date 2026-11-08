@@ -52,13 +52,9 @@ def print_problems(report: Report, out: Style) -> None:
 def _online_check(report, out, quiet: bool):
     """validate --online (D100): the same key and model check as `run`, and no run.
     It never asks: a key found only in the shell is used for the check, not saved."""
-    from .build import load_team
-    from .checks import LISTERS, litellm_data, litellm_params, needed_keys, run_check
+    from .checks import online_check
     from .console import Console
-    from .keys import extra_settings, find_keys
-    team, _ = load_team(report.package.team.folder)
-    keys = find_keys(needed_keys(team), team.package_top, None)
-    check = run_check(team, keys, LISTERS, extra_settings(), litellm_data, litellm_params)
+    check, keys = online_check(report)
     if not quiet:
         Console(False, sys.stdout).check(check, keys)
     return check
@@ -356,6 +352,11 @@ def cmd_skill(args) -> int:
     return 1 if failed else 0
 
 
+def cmd_ui(args) -> int:
+    from .ui.server import serve
+    return serve(Path(args.folder))
+
+
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):  # Windows sends piped output in its old code page, without ✓ or ≈
         if hasattr(stream, "reconfigure") and (stream.encoding or "").lower().replace("-", "") != "utf8":
@@ -364,6 +365,10 @@ def main(argv=None) -> int:
                                      description="Run teams of agents from text files.")
     parser.add_argument("--version", action="version", version=f"teamrunner {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    ui = commands.add_parser("ui", aliases=["gui"], help="open this folder in the local browser interface")
+    ui.add_argument("folder", nargs="?", default=".", help="the folder to open (default: this folder)")
+    ui.set_defaults(func=cmd_ui)
 
     v = commands.add_parser("validate", help="check a team's files before running it")
     v.add_argument("team", nargs="?", default=".", help="the team folder (default: this folder)")

@@ -20,7 +20,7 @@ body:
     attributes:
       label: TeamRunner version
       description: The output of `teamrunner --version`
-      placeholder: teamrunner 0.0.3
+      placeholder: teamrunner 0.0.4
     validations:
       required: true
   - type: input

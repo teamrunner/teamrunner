@@ -1,0 +1,5 @@
+CodeMirror 5.65.21 (MIT)
+Source: https://registry.npmjs.org/codemirror/-/codemirror-5.65.21.tgz
+Archive SHA256: b26d9d7ae0f42e34b44a8f7667d29a3ab0d3df88d0e79c0dad39dc03ba43f6dc
+editor.js concatenates, in order: lib/codemirror.js, mode/xml/xml.js, mode/markdown/markdown.js, mode/yaml/yaml.js, mode/yaml-frontmatter/yaml-frontmatter.js
+editor.css is lib/codemirror.css, with trailing whitespace removed. No other modifications.

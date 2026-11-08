@@ -16,16 +16,18 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 from typing import Callable
 
 from . import __version__, ir
 from .environment import environment
 from .build import load_team
 from .builtin_tools import Context
-from .checks import Problem, LISTERS, litellm_data, litellm_params, needed_keys, rehearsal_check, run_check
+from .checks import Check, Problem, LISTERS, litellm_data, litellm_params, needed_keys, rehearsal_check, run_check
 from .console import Console
 from .engine import Engine, FlowError
 from .events import Log
+from .flowgraph import declared_graph
 from .inputs import InputError, copy_files, resolve
 from .keys import Ask, Keys, extra_settings, find_keys
 from .minutes import MissingInput, instructions
@@ -58,6 +60,35 @@ class Outcome:
     folder: Path | None = None
     report: Report | None = None
     reason: str | None = None
+    check: Check | None = None
+
+
+class RunStopped(Exception):
+    """Cooperative cancellation, with the same final record as Ctrl-C."""
+
+
+async def _run_until_stopped(engine, cancel: Event | None):
+    if cancel is None:
+        return await engine.run()
+    if cancel.is_set():
+        raise RunStopped()
+    task = asyncio.create_task(engine.run())
+
+    async def watch():
+        while not cancel.is_set():
+            await asyncio.sleep(0.05)
+        task.cancel()
+
+    watcher = asyncio.create_task(watch())
+    try:
+        return await task
+    except asyncio.CancelledError:
+        if cancel.is_set():
+            raise RunStopped() from None
+        raise
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
 
 
 def entry_path(team: ir.Team) -> str:
@@ -75,8 +106,11 @@ def _model_from(setting: ir.Setting) -> str:
 def _members_record(team: ir.Team, inputs: dict) -> list[dict]:
     members = []
     for m in team.members.values():
+        source = m.path.read_bytes()
         record = {"name": m.name, "instance_path": instance_path(team, m), "component_id": m.id,
-                  "version_hash": version_hash(m.path), "kind": m.kind}
+                  "version_hash": version_hash(m.path, source), "kind": m.kind,
+                  "source_file": m.path.relative_to(team.package_top).as_posix(),
+                  "source_text": source.decode("utf-8")}
         if m.kind == "toolkeeper":
             record.update(tool=m.tool, terms=m.base.guardrails,
                           access={k: (v.guardrails if v else "deny") for k, v in m.access.items()},
@@ -131,7 +165,10 @@ def _output_md(team: ir.Team, log: Log, status: str, reason: str | None) -> str:
 
 def run_team(folder: Path, options: Options, model_factory: Callable[..., Model] | None = None,
              listers=None, model_data=None, console: Console | None = None,
-             waits=None) -> Outcome:
+             waits=None, *, cancel: Event | None = None,
+             on_folder: Callable[[Path], None] | None = None,
+             on_event: Callable[[dict], None] | None = None,
+             on_turn: Callable[[dict], None] | None = None) -> Outcome:
     started = time.monotonic()
     team, report = load_team(Path(folder), write_ids=True)
     if team is None:
@@ -185,12 +222,15 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
             for warning in report.problems.warnings:
                 console.say(console.paint.yellow(f"! {warning.where(team.package_top)}  {warning.message}"))
         return Outcome("could_not_start", EXIT["could_not_start"], report=report,
-                       reason="the check before the first turn found problems")
+                       reason="the check before the first turn found problems", check=check)
 
     run = RunFolder.create(team.package_top, team.name, options.runs_dir)
+    if on_folder:
+        on_folder(run.path)
     copy_files(given, run.inputs_dir)
     values = {name: item.value for name, item in given.items()}
-    log = Log(on_event=lambda e: (run.write_event(e), console.on_event(e) if console else None))
+    log = Log(on_event=lambda e: (run.write_event(e), console.on_event(e) if console else None,
+                                 on_event(e) if on_event else None))
     started_at = datetime.now(timezone.utc)
     inputs_record = {name: {"value": item.value, "source": item.source,
                             **({"file": item.file} if item.file else {})} for name, item in given.items()}
@@ -205,7 +245,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
               "entry": entry_path(team),
               "inputs": inputs_record, "fingerprint": print_fp, "flow": team.flow.source,
               "deciders": _deciders(team), "rehearsal": rehearsal,
-              "prices": price_list, "members": members_record})
+              "prices": price_list, "members": members_record, "flow_graph": declared_graph(team)})
     log.emit(check.event())
     for warning in report.problems.warnings:
         log.emit({"event": "warning", "message": warning.message,
@@ -213,30 +253,49 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
     for warning in check.warnings:
         log.emit({"event": "warning", "message": warning})
 
-    if model_factory is None:
-        from .litellm_model import LiteLLMModel
-        model = LiteLLMModel(keys.values, settings, prices)
-    else:
-        model = model_factory(keys.values, settings)
-    context = Context(run.inputs_dir, run.path / "work", keys.values, team.package_top,
-                      rehearsal=options.rehearse, prices=prices)
-    context.work_dir.mkdir(exist_ok=True)
-    actor = Members(team, values, model, log, context=context,
-                    **({"waits": waits} if waits is not None else {}))
-    engine = Engine(team, actor, log.emit)
-
     status, reason = "completed", None
+    flow_path = []
     try:
-        outcome = asyncio.run(engine.run())
+        if model_factory is None:
+            from .litellm_model import LiteLLMModel
+            model = LiteLLMModel(keys.values, settings, prices)
+        else:
+            model = model_factory(keys.values, settings)
+        context = Context(run.inputs_dir, run.path / "work", keys.values, team.package_top,
+                          rehearsal=options.rehearse, prices=prices)
+        context.work_dir.mkdir(exist_ok=True)
+        actor = Members(team, values, model, log, context=context,
+                        **({"waits": waits} if waits is not None else {}))
+
+        async def take_turn(turn):
+            await asyncio.sleep(0)  # Rehearsals must also yield to cancellation.
+            if cancel is not None and cancel.is_set():
+                raise RunStopped()
+            if on_turn:
+                on_turn({"member": turn.member.name, "stage": turn.step.stage,
+                         "kind": turn.member.kind})
+            if cancel is not None and cancel.is_set():
+                raise RunStopped()
+            return await actor(turn)
+
+        engine = Engine(team, take_turn, log.emit, trace=flow_path.append)
+        outcome = asyncio.run(_run_until_stopped(engine, cancel))
         if outcome.status == "stopped_by_flow":
             status = "stopped"
             last = log.of("route_decision")[-1] if log.of("route_decision") else None
             reason = (f"The flow stopped after {last['decider']} answered `{last['option']}`."
                       if last else "The flow reached `stop`.")
+    except RunStopped:
+        status, reason = "stopped", "Stopped by the user; the turn in progress was abandoned."
     except (TurnFailed, FlowError) as e:
         status, reason = "failed", str(e)
     except KeyboardInterrupt:
         status, reason = "stopped", "Stopped with Ctrl-C; the turn in progress was abandoned."
+    except Exception as e:
+        status, reason = "failed", f"{type(e).__name__}: {e}"
+        for secret in keys.values.values():
+            if secret:
+                reason = reason.replace(secret, "[key hidden]")
 
     said = log.of("agent_message")
     retries = log.of("retry")
@@ -270,6 +329,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         "prices": price_list,
     }
     log.emit({"event": "run_finished", "status": status, "reason": reason,
+              "flow_path": flow_path,
               "turns": record["turns"], "tool_calls": record["tool_calls"],
               "latency_ms": record["latency_ms"], "cost_usd": record["cost_usd"],
               "cost_models_usd": record["cost_models_usd"], "cost_tools_usd": record["cost_tools_usd"],

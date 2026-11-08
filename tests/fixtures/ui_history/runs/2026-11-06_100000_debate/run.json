@@ -1,0 +1,26 @@
+{
+  "run_id": "fixture-2",
+  "team": "debate",
+  "entry": "fixture_package/debate",
+  "started_at": "2026-11-06T09:00:00Z",
+  "status": "completed",
+  "turns": 2,
+  "inputs": {
+    "topic": {
+      "value": "Four-day weeks",
+      "source": "given"
+    }
+  },
+  "latency_ms": 1800,
+  "cost_usd": 0.004,
+  "cost_known_usd": 0.004,
+  "tokens": {
+    "input": 200,
+    "output": 70
+  },
+  "fingerprint": {
+    "content_hash": "sha256:fixture-package"
+  },
+  "reason": null,
+  "rehearsal": false
+}

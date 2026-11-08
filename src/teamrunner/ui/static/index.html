@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>TeamRunner · Files</title>
+  <link rel="stylesheet" href="/vendor/editor.css?token=__TOKEN__">
+  <link rel="stylesheet" href="/app.css?token=__TOKEN__">
+  <script defer src="/vendor/editor.js?token=__TOKEN__"></script>
+  <script defer src="/vendor/marked.js?token=__TOKEN__"></script>
+  <script defer src="/vendor/dompurify.js?token=__TOKEN__"></script>
+  <script defer src="/vendor/mermaid.js?token=__TOKEN__"></script>
+  <script defer src="/app.js?token=__TOKEN__"></script>
+  <script defer src="/runs.js?token=__TOKEN__"></script>
+  <script defer src="/diagrams.js?token=__TOKEN__"></script>
+  <script defer src="/run.js?token=__TOKEN__"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="?token=__TOKEN__" aria-label="TeamRunner home"><span class="mark" aria-hidden="true">◉</span> teamrunner</a>
+    <nav aria-label="Workspace view"><button id="files-view" type="button" aria-pressed="true">Files</button><button id="runs-view" type="button" aria-pressed="false">Runs</button></nav>
+    <span class="local"><span aria-hidden="true">●</span> On your computer</span>
+  </header>
+  <main>
+    <aside aria-label="Package files">
+      <div class="sidebar-heading"><span>FILES</span><button id="refresh" type="button">Refresh</button></div>
+      <h1 id="folder-name">Opening folder…</h1>
+      <p class="folder-path" id="folder-path"></p>
+      <div class="file-actions"><button id="new-team" type="button">New team</button><button id="new-member" type="button">New member</button></div>
+      <p id="tree-status" role="status">Loading files…</p>
+      <ul id="files" class="tree" aria-label="Files and folders"></ul>
+      <p class="sidebar-note">Your folder is your team.<br>Run records live in <code>runs/</code>.</p>
+    </aside>
+    <section id="files-workspace" class="workspace" aria-labelledby="welcome-title">
+      <div class="breadcrumb" id="breadcrumb">Your workspace</div>
+      <div class="toolbar">
+        <button id="save" type="button" disabled>Save</button>
+        <button id="validate" type="button">Validate</button>
+        <button id="run-team" type="button">Run…</button>
+        <button id="online" type="button">Check keys and models online</button>
+        <button id="keys" type="button">Set up keys</button>
+        <button id="rename" type="button" disabled>Rename</button>
+        <button id="trash" type="button" disabled>Move to trash</button>
+      </div>
+      <p id="notice" role="status" aria-live="polite"></p>
+      <div id="disk-warning" hidden role="alert">This file changed on disk. Reload it to use the disk version. Unsaved edits will be discarded. <button id="reload-file" type="button">Reload from disk</button></div>
+      <div id="editing" hidden>
+        <div class="editor-tabs"><button id="edit-tab" type="button" aria-pressed="true">Edit</button><button id="show-tab" type="button" aria-pressed="false">Show as it will run</button><button id="flow-tab" type="button" aria-pressed="false">Flow diagram</button><span id="save-state"></span></div>
+        <label class="sr-only" for="editor">File contents</label><textarea id="editor"></textarea>
+        <div id="flow-diagram" class="flow-diagram" hidden></div><pre id="resolved" hidden></pre>
+      </div>
+      <div class="welcome">
+        <span class="eyebrow">A WINDOW ON YOUR FOLDER</span>
+        <h2 id="welcome-title">Your team starts here.</h2>
+        <p id="welcome-text">Browse the files that define your team, and the records of what happened when it ran.</p>
+        <div class="file-detail" id="file-detail" hidden>
+          <span class="eyebrow">SELECTED FILE</span>
+          <h3 id="selected-name"></h3>
+          <p id="selected-description"></p>
+        </div>
+        <div class="guide">
+          <div><span class="guide-number">01</span><h3>The team</h3><p><code>team.yaml</code> describes the team and its model.</p></div>
+          <div><span class="guide-number">02</span><h3>The members</h3><p>Markdown files hold each member’s instructions. <code>chair.md</code> sets the flow.</p></div>
+          <div><span class="guide-number">03</span><h3>The record</h3><p><code>runs/</code> keeps what was said, the output and the cost.</p></div>
+        </div>
+        <p class="slice-note">Select a file to edit. Save, validate, then choose Run… to rehearse or run. Browse the results in Runs.</p>
+      </div>
+      <section id="validation" aria-labelledby="problems-title"><div class="problem-heading"><h3 id="problems-title">Validation</h3><span id="validation-summary">Choose a team and check its files.</span></div><ul id="problems"></ul></section>
+      <footer><span>Same files. Same TeamRunner.</span><code id="command">teamrunner ui</code></footer>
+    </section>
+    <section id="runs-workspace" class="workspace" hidden aria-label="Run history">
+      <div class="runs-heading"><div><span class="eyebrow">THE MINUTES ARCHIVE</span><h2>Runs</h2></div><div><button id="run-from-history" type="button">Run this team…</button> <button id="refresh-runs" type="button">Refresh runs</button></div></div>
+      <p id="runs-notice" role="status" aria-live="polite"></p>
+      <section id="live-run" hidden aria-label="Current run">
+        <div class="live-heading"><h3 id="live-title">Run in progress</h3><button id="stop-run" type="button">Stop run</button><button id="browse-finished" type="button" hidden>Browse saved run</button></div>
+        <p id="live-status" role="status" aria-live="polite"></p><p id="live-cost"></p>
+        <p id="live-connection" role="status"></p><pre id="live-check" hidden></pre>
+        <div id="live-events" aria-label="Live conversation"></div>
+        <code id="live-command"></code>
+      </section>
+      <div id="runs-list-panel">
+        <div class="runs-filters">
+          <label>Team<select id="runs-team"><option value="">All teams</option></select></label>
+          <label>Status<select id="runs-status"><option value="">All statuses</option></select></label>
+          <label class="run-search">Search message and output<input id="runs-search" type="search" placeholder="Find a topic, phrase or result…"></label>
+        </div>
+        <p id="runs-count" role="status"></p><button id="compare-runs" type="button" disabled>Compare selected runs</button>
+        <div id="run-column-controls" hidden><button id="previous-columns" type="button">← Previous columns</button><button id="next-columns" type="button">More columns →</button></div>
+        <div class="runs-table-wrap" tabindex="0" role="region" aria-label="Run list; scroll horizontally for all columns"><table id="runs-table"><thead><tr><th>Compare</th><th>When</th><th>Team</th><th>Message</th><th>Result</th><th>Status</th><th>Turns</th><th>Length</th><th>Cost ≈</th></tr></thead><tbody id="runs-rows"></tbody></table></div>
+        <button id="more-runs" type="button" hidden>Show more runs</button>
+      </div>
+      <article id="run-comparison" hidden></article>
+      <article id="run-detail" hidden>
+        <button id="back-runs" type="button">← All runs</button>
+        <h3 id="run-title"></h3><p id="run-meta"></p>
+        <div class="raw-links"><button id="open-run-folder" type="button">Open folder</button><button id="rerun" type="button">Re-run with these inputs…</button><span id="raw-run-files"></span></div>
+        <p id="run-warnings" role="status"></p>
+        <nav class="run-tabs" aria-label="Run view"><button type="button" id="conversation-tab" aria-pressed="true">Conversation</button><button type="button" id="output-tab" aria-pressed="false">Output</button><button type="button" id="path-tab" aria-pressed="false">Path</button><button type="button" id="record-tab" aria-pressed="false">Record</button></nav>
+        <section id="run-conversation" aria-label="Conversation"></section>
+        <section id="run-output" class="markdown" hidden aria-label="Output"></section>
+        <section id="run-path" hidden aria-label="Recorded path"></section>
+        <section id="run-record" hidden aria-label="Record"></section>
+      </article>
+      <footer><span>Run records stay read-only.</span><code id="runs-command">teamrunner runs</code></footer>
+    </section>
+  </main>
+  <dialog id="form-dialog" aria-labelledby="form-title">
+    <form id="action-form">
+      <h2 id="form-title"></h2><p id="form-help"></p>
+      <label id="name-label" for="form-name">Name</label><input id="form-name" required autocomplete="off">
+      <label id="choice-label" for="form-choice" hidden>Start from</label><select id="form-choice" hidden></select>
+      <label id="value-label" for="form-value" hidden>New key</label><input id="form-value" type="password" autocomplete="new-password" hidden>
+      <p id="form-error" role="alert"></p>
+      <div class="dialog-actions"><button id="form-cancel" type="button">Cancel</button><button id="form-submit" type="submit">Create</button></div>
+    </form>
+  </dialog>
+  <dialog id="run-dialog" aria-labelledby="run-form-title">
+    <form id="run-form">
+      <h2 id="run-form-title">Run team</h2><p id="run-form-help"></p>
+      <label for="input-mode" id="input-mode-label">What to give the team</label>
+      <select id="input-mode"><option value="defaults">Use team defaults</option><option value="message">A message</option><option value="file">A file</option><option value="task">A task file (YAML inputs)</option></select>
+      <label for="run-message" id="run-message-label" hidden>Message</label><textarea id="run-message" rows="4" hidden></textarea>
+      <label for="run-file" id="run-file-label" hidden>Choose a file (up to 8 MB)</label><input id="run-file" type="file" hidden>
+      <pre id="rerun-inputs" hidden></pre>
+      <label class="rehearsal-label"><input id="run-rehearse" type="checkbox"> Rehearse (free, no model)</label>
+      <p id="run-cost-note">A rehearsal uses placeholder words and random answers to test the flow.</p>
+      <p>Equivalent command</p><code id="run-form-command"></code>
+      <p id="run-form-error" role="alert"></p>
+      <div class="dialog-actions"><button id="cancel-run-form" type="button">Cancel</button><button id="start-run" type="submit">Rehearse team</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -4,6 +4,46 @@ TeamRunner is in preview: 0.0.x versions are a soft launch, and until 0.1.0
 is announced a version may change in ways that break teams and run folders
 made with an earlier one. Each such change is listed here.
 
+## 0.0.4
+
+- **Local browser interface:** `teamrunner ui [folder]` (`gui` is an alias)
+  opens the team's files in a browser. Edit with offline syntax highlighting,
+  save, validate with clickable problems, inspect resolved instructions and
+  flow diagrams, create teams from examples, manage members and set up keys.
+- Start one run at a time with defaults, a message, a file or a task file;
+  rehearse for free, follow events live, stop cleanly and re-run saved inputs
+  with the current team. Browse and search run history, read conversations,
+  outputs and records, inspect what members could read, and download raw files.
+- Compare two runs' numbered member versions, outputs, cost and paths. New
+  event logs keep exact member source text and fingerprints, the declared
+  flow graph and the recorded engine path for source diffs and arrow counts.
+  Older logs remain readable and label missing historical data explicitly.
+  A saved `resolved/team.yaml`, when present, can be copied to a new team for
+  editing; ordinary runs do not yet save a complete resolved team.
+- The interface uses the CLI's Python functions, adds no Python runtime
+  dependencies or database, and bundles its editor, Markdown renderer and
+  Mermaid diagrams for offline use. It binds only to `127.0.0.1`, requires a
+  random access token, confines editing to the opened folder, keeps run
+  records read-only and never displays stored key values.
+- The README's tutorial gives a browser alternative beside each CLI step.
+- UI review fixes: teams under an unrelated folder named `runs` remain editable;
+  actual run records stay read-only. Case-only renames work on macOS, rename
+  selects the old filename, and new-member names are checked before creation.
+  Non-UTF-8 files and validation in an empty workspace show friendly messages.
+- Files changed on disk reload automatically when there are no unsaved edits.
+  The file tree refreshes automatically and after runs finish. macOS uses its
+  native Trash operation, preserving Finder's Put Back support. The runs list
+  keeps comparison controls aligned and offers column navigation on narrow screens.
+- Live transcripts append new cards and populate read context on demand;
+  member-version history is cached in memory and invalidated when run files change.
+  The historical diagram helpers have been reformatted for readability.
+- **Two email tools**: `read_email` hands a member one email from a folder of
+  `.eml` files in the package (`mailbox`, `max_chars`); `save_draft` saves a
+  reply in the run's `work/outbox/` and never sends it. By default a draft can
+  answer only the email's sender (`reply_only: false` lifts that).
+- Runs started in the same second get their own folders instead of failing
+  with `FileExistsError`.
+
 ## 0.0.3
 
 - **Backup models**: `model:` and `default_model:` may name several models,

@@ -33,6 +33,7 @@ No Python. No graph-building API. No framework vocabulary. If you can edit a tex
 - [Why we built it](#why-we-built-it)
 - [The five ideas](#the-five-ideas)
 - [Tutorial: your first debate in 10 minutes](#tutorial-your-first-debate-in-10-minutes)
+- [Use TeamRunner in your browser](#use-teamrunner-in-your-browser)
 - [What lands in a run folder](#what-lands-in-a-run-folder)
   - [What your runs keep, and where your words go](#what-your-runs-keep-and-where-your-words-go)
 - [Going further: the worked examples](#going-further-the-worked-examples)
@@ -129,7 +130,7 @@ Two more ideas are designed but not built yet — a whiteboard for who sees what
 
 We'll build a three-agent debate, run it, give it rounds, a fact checker and the web. Zero code throughout. Turning it into a 40-run experiment comes with 0.2: see [PREVIEW.md](PREVIEW.md#experiments-v02).
 
-> Everything in this tutorial works in the preview. See [Status](#status-and-roadmap).
+> Every step works in a terminal, and from 0.0.4 also in your browser: see [Use TeamRunner in your browser](#use-teamrunner-in-your-browser).
 
 ### Step 0 — install
 
@@ -150,6 +151,8 @@ Keys stay with you, never with your teams: team folders get copied, zipped and s
 
 Models on your own machine work too, free: install [Ollama](https://ollama.com), pull a model (`ollama pull gpt-oss:20b`), and write `default_model: ollama/gpt-oss:20b` in `team.yaml`. If Ollama runs somewhere other than this computer, put its address in the key file as `OLLAMA_API_BASE`. Choose one of about 20 billion parameters or more: the smallest models often fail at exactly what teams need most — answering in a fixed form and asking toolkeepers properly — so they test the wiring better than they stand in for a real team. Before the first turn of every run, TeamRunner checks that each model your team names is available and lists every problem it finds in one table, so you never pay for half a run. `teamrunner validate --online` runs the same check without a run.
 
+Or open `teamrunner ui` and choose **Set up keys** after selecting a team. It saves keys to the same key file and shows whether each key is present, never its saved value. **Check keys and models online** is a separate check.
+
 ### Step 1 — make a team
 
 ```bash
@@ -163,6 +166,8 @@ Two other ways to start, when you'd rather not begin from nothing:
 
 - `teamrunner new my_debate --from fact_checked` copies one of the examples that ship with TeamRunner (or any team folder you name), with fresh ids; each file remembers what it was copied from.
 - `teamrunner new my_debate --describe "two debaters argue a topic, a fact checker checks each speech, and a judge decides"` asks a model to write the team for you. It checks its own work with `validate`, never overwrites files, tells you what it cost, and ends by printing `teamrunner explain`, so you can read what it made before you run it. (If you work with an AI coding assistant, `teamrunner skill` gives it the same instructions: it installs a skill for Claude Code and Codex, and `teamrunner skill --agents-md <folder>` writes an `AGENTS.md` for other assistants that read one.)
+
+Or run `teamrunner ui` in the folder where you want to keep your teams. Choose **New team**, enter `debate`, and select an empty team or a shipped example. Select `team.yaml` on the left to edit it.
 
 This tutorial starts from nothing, so you see every file.
 
@@ -184,6 +189,8 @@ Two things worth knowing now:
 ### Step 2 — write three agents
 
 An agent file is Markdown. Frontmatter configures, body prompts.
+
+In the browser, select the team, choose **New member** for each Markdown file below, and paste its contents into the editor. **Save** (Ctrl/Cmd+S), then use **Show as it will run** to read the instructions with inputs filled in.
 
 ```markdown
 <!-- advocate.md -->
@@ -279,6 +286,8 @@ teamrunner run . --message "Four-day weeks make teams more productive"
 
 The first runs the default topic; the second replaces it. Either way, the run log records the topic and whether it was given or the default.
 
+Or do the editing, validation and running in `teamrunner ui .`: **Validate** checks the same files, and clicking a problem opens its file at the line to fix. Choose **Run…**, keep **Rehearse (free, no model)** checked for a free test, and start. To use a model, clear that checkbox; choose team defaults, a message, a file or a task file. The page shows the conversation as it happens and a **Stop run** button.
+
 What you see while it runs (the words are invented; the layout is the real one):
 
 ```
@@ -306,6 +315,8 @@ Each turn shows who spoke, what they decided, how long it took, what it cost and
 
 Later, `teamrunner runs` lists every run of this package — when, which team, the input, the result (`winner = advocate`), status, time and cost — and `teamrunner runs latest` (or `teamrunner runs 14:32`) shows one again exactly as it looked while it ran.
 
+In the browser, choose **Runs** to reopen the conversation, output, path or record. Select two runs with the checkboxes and choose **Compare selected runs** to see member versions, outputs, cost and paths side by side.
+
 That's a working multi-agent system: four text files, one command.
 
 ### Step 5 — take control of the flow
@@ -329,7 +340,7 @@ The flow grammar is deliberately tiny — it is a whiteboard sketch that happens
 - **[v0.3]** `[a, b]` — **at the same time**: `editor -> [reviewer_1, reviewer_2] -> editor` sends the paper to both reviewers at once, and the editor waits for both reports. Neither sees the other's work in progress.
 - `done` ends the flow — or, inside a named block, just that block; `stop` ends the whole run immediately.
 
-Now the debate runs `advocate → critic → advocate → critic → advocate → critic → judge`. To see it as a picture, `teamrunner explain --diagram` opens the flow as a flowchart in your browser.
+Now the debate runs `advocate → critic → advocate → critic → advocate → critic → judge`. To see it as a picture, `teamrunner explain --diagram` opens the flow as a flowchart in your browser. Or, in the local interface, refresh the file tree after adding `chair.md`, select it, and choose **Flow diagram**. Save an edit to redraw the diagram and plain-words summary.
 
 ### Step 6 — add a fact checker and a decision
 
@@ -424,9 +435,36 @@ A toolkeeper step means the member just before it must end its turn with a reque
 
 `teamrunner explain .` prints, in plain English, who may use which toolkeeper and on what terms.
 
-TeamRunner 0.1 has four built-in tools: `web_search_brave` (Brave Search), `read_page` (a link in, the page's text out), `read_file` (a file the run was given with `--file`, its text out) and `run_code` (Python in a sandbox: no internet unless the toolkeeper allows it, and files written only in the run's own work folder). The sandbox is Python running in WebAssembly, and it installs with TeamRunner — nothing else to set up; it can use packages built for it (numpy, pandas, scipy, sympy and many more), but not every package. `examples/fact_checked` gives the fact checker a second toolkeeper, `sandbox.md`, so it can check the sums in a claim by running them. A toolkeeper holds one tool in 0.1, so its limits always mean one thing; a member who needs two tools asks two toolkeepers, as the fact checker does here. `examples/reference_check` uses `read_page` and `read_file`: it checks every reference in a paper.
+TeamRunner 0.1 has six built-in tools: `web_search_brave` (Brave Search), `read_page` (a link in, the page's text out), `read_file` (a file the run was given with `--file`, its text out), `run_code` (Python in a sandbox: no internet unless the toolkeeper allows it, and files written only in the run's own work folder), `read_email` (one email from a folder of `.eml` files in the package) and `save_draft` (a reply saved in the run's `work/outbox/`, never sent, addressed only to the email's sender unless `reply_only: false`). The sandbox is Python running in WebAssembly, and it installs with TeamRunner — nothing else to set up; it can use packages built for it (numpy, pandas, scipy, sympy and many more), but not every package. `examples/fact_checked` gives the fact checker a second toolkeeper, `sandbox.md`, so it can check the sums in a claim by running them. A toolkeeper holds one tool in 0.1, so its limits always mean one thing; a member who needs two tools asks two toolkeepers, as the fact checker does here. `examples/reference_check` uses `read_page` and `read_file`: it checks every reference in a paper.
 
 ---
+
+## Use TeamRunner in your browser
+
+From 0.0.4, open a team folder with:
+
+```bash
+teamrunner ui debate
+```
+
+`teamrunner ui` opens the current folder when you leave out `debate`; `teamrunner gui` is an alias. To create teams, open their parent folder instead. The command opens a browser tab and prints its local address. Keep that terminal running while you work; press Ctrl+C there to stop the server. If the tab does not open, paste the full printed address, including its token, into your browser.
+
+The page works on the same files as the CLI. Choose a team or file on the left. You can create an empty team or copy a shipped example, add members, edit and save, rename members, or move files to the system trash. The editor warns about unsaved edits and files changed by another editor. Validation points to the file, line and suggested fix. **Show as it will run** fills in a member's instructions; **Flow diagram** shows the team's flow and summary. For a ready-made flow to edit, start from the `fact_checked` example.
+
+**Run…** accepts team defaults, a message, a file or a YAML task file. Rehearsal is selected by default for a team with no prior run; it uses placeholder words and random answers, needs no key and costs nothing. A model run uses your configured provider and its normal charges. The interface validates before starting, allows one active run at a time, streams the recorded events, and can stop the run cleanly. Key setup uses `~/.teamrunner/.env`; stored key values are never displayed.
+
+**Runs** is the archive. Filter by team or status, search the message and output, then open a run:
+
+- **Conversation:** member messages, decisions, tool calls, retries, tokens, models and cost, with a toggle for what each member could read.
+- **Path:** the saved flow with taken arrows highlighted and transition counts. Older logs without a saved engine path show only observed completed-turn transitions, labelled accordingly.
+- **Output:** the rendered `output.md`.
+- **Record:** inputs, numbered member versions, recorded settings and files. Version numbers come from the available run history.
+
+Select two runs to compare their outputs, cost, time, paths and member versions. Exact member source diffs are available for new logs that record the source and its fingerprint; older logs show their recorded prompts, which may include substituted inputs.
+
+**Re-run with these inputs…** uses the current team with the old run's input values and copied input files. It does not restore old member versions. **Edit a copy of the saved team…** appears only when a run contains `resolved/team.yaml`; it creates an independent team with fresh IDs and lineage. Open the teams' parent folder to give that copy a place outside the original team. Ordinary runs do not yet save a complete resolved team, so their original files cannot be reconstructed from prompts alone.
+
+Every run has **Open folder** and raw-file download links. The editor stays inside the folder you opened, and run records remain read-only. The server listens only on this computer at `127.0.0.1`, with a random access token. Editor, Markdown and diagram assets are bundled for offline use; model calls and online checks still need their usual services. The page adds no database or separate project format, and shows equivalent CLI commands alongside actions.
 
 ## What lands in a run folder
 
@@ -448,12 +486,12 @@ runs/01JZXG7T3M9QKWP5RVB2C8HD6N/
 
 | Event | What it records |
 |---|---|
-| `run_started` | the inputs, and every member exactly as it will run — model, settings, prompt |
+| `run_started` | the inputs, and every member exactly as it will run — model, settings, prompt; from 0.0.4, also each member's source text, content fingerprints and the declared flow graph |
 | `agent_message` | from, **to** (the *realized* topology), stage, attempt, **what it could read**, everything it said, typed outputs, the model actually used, tokens, cost, time |
 | `route_decision` | who decided, which option, which arrow — the audit trail for "no hidden if-statements" |
 | `tool_call` | who asked, which toolkeeper, the toolkeeper's yes or no, tool, arguments, the full result (for a search, how many results came back, unless `keep_results: true`) |
 | `state_write` **[v0.3]** | item, old → new, writer |
-| `check`, `retry`, `warning`, `error`, `run_finished` | the pre-run check, retries, warnings, failures, and the totals |
+| `check`, `retry`, `warning`, `error`, `run_finished` | the pre-run check, retries, warnings, failures, and the totals; from 0.0.4, `run_finished` also saves the path taken, for arrow counts |
 
 A field never changes its meaning between versions — later versions only add — so an analysis script you write today keeps working.
 
@@ -532,9 +570,10 @@ The recasting campaign is the point, not decoration: each one is run *before* th
 |---|---|
 | **Design** | Spec drafted; paper recasts written as pure text ✅ |
 | **0.1 · The org package** ← now: in preview as 0.0.x | A folder that gets a job done: validation with friendly errors, its own runner, the event log, toolkeepers and four built-in tools, rehearsals, `run`, `runs`, `explain`, `new`, the authoring skill ✅ |
+| **Before 0.2 · Local browser interface** | In 0.0.4 ✅ `teamrunner ui` / `gui`: edit, validate, rehearse or run, browse recorded conversations and paths, compare two runs |
 | **0.2 · Experiments** | Experiments outside the package (`base:`), factorial designs, seeded replications, manifests, response cache, the answer-key metric, `teamrunner experiment`, export; `promote` / `export`. First real result: leader vs. flat |
 | **0.3 · Richer organizations** | Managers and rules-table chairs, `whiteboard.yaml` (private information, sealed and conditional visibility, addressed messages), subteams, parallel work, announcers; the recasts run for real, and the Invisible Orchestrators replication |
-| **0.4+ · Later** | LLM-as-judge metrics, `teamrunner ui` (run browser, cross-run comparison, communication-graph visualization), template library of canonical org structures, human-in-the-loop, automated improvement, running packages in production |
+| **0.4+ · Later** | LLM-as-judge metrics, communication-network statistics and visualization, template library of canonical org structures, human-in-the-loop, automated improvement, running packages in production |
 
 Human-in-the-loop nodes (`kind: human` — the runner pauses and asks a person) are for mixed human–agent studies.
 
@@ -562,7 +601,7 @@ Inside a package, these names are reserved. **Every one of them is optional exce
 | `chair.md` | How a protocol team is run: the script, as the file's body, or a `kind: rules` table **[v0.3]** | Everyone may talk to everyone; members act in alphabetical filename order, one turn each |
 | `manager.md` **[v0.3]** | How a managed team is run: an LLM that decides who acts next; only it may use input placeholders. A team has at most one of `chair.md` and `manager.md` | — |
 | `whiteboard.yaml` **[v0.3]** | Who sees what: declared items with `read_by` / `written_by`, and who can read what each member says (`said`) | Everyone reads everything said; built-in items only (e.g. `stage`) |
-| `tools/` | Reserved for a package's own tools, which come after 0.1. In 0.1 toolkeepers use the built-ins: `web_search_brave`, `read_page`, `read_file`, `run_code` | Built-ins only |
+| `tools/` | Reserved for a package's own tools, which come after 0.1. In 0.1 toolkeepers use the built-ins: `web_search_brave`, `read_page`, `read_file`, `run_code`, `read_email`, `save_draft` | Built-ins only |
 | `models/` | Model profiles: a model and its settings in one `.yaml`, named by agents as `model: careful.yaml` or by `team.yaml` as `default_model:` | Agents name provider models directly |
 | `runs/` | Where every run of this package is logged, whichever team you started; git-ignored | Created on the first run |
 | *subfolder with `team.yaml`* **[v0.3]** | A subteam — a node in the parent flow, with its own whiteboard; the parent hears only its report (`report_from:`) | — |

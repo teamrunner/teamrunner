@@ -1,0 +1,26 @@
+{
+  "run_id": "fixture-1",
+  "team": "debate",
+  "entry": "fixture_package/debate",
+  "started_at": "2026-11-05T09:00:00Z",
+  "status": "completed",
+  "turns": 2,
+  "inputs": {
+    "topic": {
+      "value": "Remote work",
+      "source": "given"
+    }
+  },
+  "latency_ms": 1700,
+  "cost_usd": 0.002,
+  "cost_known_usd": 0.002,
+  "tokens": {
+    "input": 200,
+    "output": 70
+  },
+  "fingerprint": {
+    "content_hash": "sha256:fixture-package"
+  },
+  "reason": null,
+  "rehearsal": false
+}

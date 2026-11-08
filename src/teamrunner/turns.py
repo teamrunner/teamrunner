@@ -201,6 +201,7 @@ class Members:
         inner = turn.passes[-1] if turn.passes else None
         seq = self.log.emit({
             "event": "agent_message", **self._who(member),
+            "flow_node": turn.flow_node,
             "from": member.name,
             "to": "everyone",
             "block": inner.block if inner else None,

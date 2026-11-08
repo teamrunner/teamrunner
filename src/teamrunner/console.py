@@ -164,7 +164,7 @@ class Console:
         request = " ".join(str(first).split())
         request = request if len(request) <= 50 else request[:49] + "…"
         verb = {"web_search_brave": "search", "read_page": "read", "read_file": "read",
-                "run_code": "run"}.get(e["tool"], e["tool"])
+                "run_code": "run", "read_email": "read", "save_draft": "draft"}.get(e["tool"], e["tool"])
         if e["access"] == "allowed" and e.get("result") is not None:
             allowance = e.get("allowance") or {}
             mark = p.green(f"✓ {allowance.get('used')} of {allowance.get('of')}")

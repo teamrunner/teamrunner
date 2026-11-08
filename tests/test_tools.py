@@ -341,3 +341,54 @@ def test_local_addresses_are_not_public(monkeypatch, address):
     from teamrunner.builtin_tools import _public
     monkeypatch.setattr(socket, "getaddrinfo", lambda host, port: [(0, 0, 0, "", (address, 0))])
     assert not _public("anything.example")
+
+
+MAIL = """\
+Message-ID: <m001@mail.example>
+From: Rosa Diaz <rosa@clients.example>
+To: Jordan Lee <jordan@leestudio.example>
+Date: Mon, 09 Nov 2026 08:12:00 -0800
+Subject: Logo files
+
+Could you send the final logo files by Friday?
+"""
+
+
+def mailbox(tmp_path):
+    (tmp_path / "mailbox").mkdir()
+    (tmp_path / "mailbox" / "m001.eml").write_text(MAIL, encoding="utf-8")
+    return Context(tmp_path / "inputs", tmp_path / "work", package_top=tmp_path)
+
+
+def test_read_email_reads_one_email_by_its_id(tmp_path):
+    ctx = mailbox(tmp_path)
+    answer = asyncio.run(builtin_tools.read_email({"id": "m001"}, {}, ctx))
+    assert answer.text.startswith("From: Rosa Diaz <rosa@clients.example>\nTo: Jordan Lee")
+    assert "Subject: Logo files\n\nCould you send" in answer.text
+    for asked, reason in [("m002", "no email m002"), ("../m001", "by its id"), ("", "by its id")]:
+        with pytest.raises(Refused, match=reason):
+            asyncio.run(builtin_tools.read_email({"id": asked}, {}, ctx))
+    with pytest.raises(Refused, match="mailbox elsewhere .* does not exist"):
+        asyncio.run(builtin_tools.read_email({"id": "m001"}, {"mailbox": "elsewhere"}, ctx))
+
+
+def test_save_draft_answers_only_the_sender(tmp_path):
+    ctx = mailbox(tmp_path)
+    answer = asyncio.run(builtin_tools.save_draft({"reply_to": "m001", "body": "Friday is fine."}, {}, ctx))
+    assert "has not been sent" in answer.text
+    draft = (tmp_path / "work" / "outbox" / "m001.eml").read_text(encoding="utf-8")
+    assert "To: Rosa Diaz <rosa@clients.example>" in draft and "Subject: Re: Logo files" in draft
+    assert "In-Reply-To: <m001@mail.example>" in draft and "Friday is fine." in draft
+    with pytest.raises(Refused, match="already in the outbox"):
+        asyncio.run(builtin_tools.save_draft({"reply_to": "m001", "body": "again"}, {}, ctx))
+    with pytest.raises(Refused, match="only answers the sender .*rosa@clients.example"):
+        asyncio.run(builtin_tools.save_draft({"reply_to": "m001", "body": "x", "to": "eve@evil.example"}, {}, ctx))
+    with pytest.raises(Refused, match="at most 5"):
+        asyncio.run(builtin_tools.save_draft({"reply_to": "m001", "body": "too long"}, {"max_chars": 5}, ctx))
+
+
+def test_save_draft_may_write_anywhere_when_reply_only_is_off(tmp_path):
+    ctx = mailbox(tmp_path)
+    asyncio.run(builtin_tools.save_draft({"reply_to": "m001", "body": "fwd", "to": "eve@evil.example"},
+                                         {"reply_only": False}, ctx))
+    assert "To: eve@evil.example" in (tmp_path / "work" / "outbox" / "m001.eml").read_text(encoding="utf-8")

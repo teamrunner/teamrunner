@@ -1,0 +1,5 @@
+dompurify 3.4.17
+Source: https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz
+Archive SHA256: 056cbdae276897208b88c21d1d779adfa09ad7be488a2f510a28e900d3bbffe7
+Bundled file: dist/purify.min.js
+Trailing whitespace normalized; no other modifications.

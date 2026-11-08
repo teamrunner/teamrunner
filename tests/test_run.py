@@ -464,3 +464,13 @@ def test_a_profile_in_the_list_brings_its_own_settings(tmp_path):
     assert outcome.status == "completed"
     call = next(c for c in model.calls if c[0] == "for")
     assert call[1] == "openai/gpt-5-mini" and call[2] == {"max_tokens": 300}
+
+
+def test_runs_started_in_the_same_second_get_their_own_folders(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
+    from teamrunner.runfolder import RunFolder
+    moment = datetime(2026, 11, 9, 8, 30, 0)
+    with ThreadPoolExecutor(8) as pool:
+        folders = list(pool.map(lambda _: RunFolder.create(tmp_path, "team", now=moment).path, range(8)))
+    assert len(set(folders)) == 8

@@ -1,0 +1,5 @@
+Mermaid 12.3.0
+Source: https://registry.npmjs.org/mermaid/-/mermaid-12.3.0.tgz
+Archive SHA256: be0684e8d20bfc874df12c0f04927a5c482f57f2200eec54cca52a4583fd4040
+Bundled file: dist/mermaid.min.js
+Trailing whitespace normalized in the upstream bundle and licence; no other modifications. Bundled third-party notices remain inline.
