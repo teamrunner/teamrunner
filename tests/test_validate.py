@@ -227,13 +227,13 @@ def test_links_outside_are_flagged(tmp_path):
 
 def test_cli_exit_codes(tmp_path, capsys):
     team = debate(tmp_path)
-    assert main(["validate", str(team)]) == 0
+    assert main(["validate", str(team), "--offline"]) == 0
     first = capsys.readouterr().out.splitlines()
     assert [line.split("  ")[0] for line in first[:-1]] == [
         "+ team.yaml", "+ against.md", "+ for.md", "+ judge.md"]
-    assert first[-1] == "debate — 3 members, chair.md · OK"
-    assert main(["validate", str(team)]) == 0  # ids are written once
-    assert capsys.readouterr().out.strip() == "debate — 3 members, chair.md · OK"
+    assert first[-1] == "debate — 3 members, chair.md · OK · keys and models not checked (--offline)"
+    assert main(["validate", str(team), "--offline"]) == 0  # ids are written once
+    assert capsys.readouterr().out.strip() == "debate — 3 members, chair.md · OK · keys and models not checked (--offline)"
     (team / "for.md").write_text(DEBATER.replace("model", "modle"), encoding="utf-8")
     assert main(["validate", str(team)]) == 1
     assert main(["validate", str(tmp_path / "nowhere")]) == 2
@@ -312,3 +312,15 @@ def test_a_profile_names_one_model(tmp_path):
         "models/careful.yaml": "name: openai/gpt-5, openai/gpt-5-mini\n",
     }))
     assert any("a profile names one model" in (p.message + " " + (p.fix or "")) for p in report.problems.errors)
+
+
+def test_only_input_must_name_an_input_a_prompt_uses(tmp_path):
+    def mailroom(name):
+        return make_team(tmp_path / name, {
+            "team.yaml": "name: mail\ndefault_model: openai/gpt-5\ndefault_inputs:\n  email: m001\n",
+            "reader.md": "---\ndescription: sorts\n---\nSort the email {{email}}.\n",
+            "mailroom.md": f"---\nkind: toolkeeper\ntools:\n  read_email: {{only_input: {name}}}\n"
+                           "access:\n  reader: standard\n---\nI hand over one email.\n"})
+    assert messages(validate(mailroom("email"))) == []
+    [(file, line, message)] = messages(validate(mailroom("emial")))
+    assert (file, line) == ("mailroom.md", 4) and message == "`only_input: emial` names an input no prompt uses"

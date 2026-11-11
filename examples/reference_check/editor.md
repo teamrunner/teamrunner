@@ -3,7 +3,7 @@ description: Writes the reference report
 ---
 Write the reference report for the paper:
 
-> {{paper}}
+{{paper}}
 
 Start with three counts: references checked, references with a problem
 in their details, references whose citing sentences are not supported.

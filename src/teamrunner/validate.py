@@ -132,6 +132,10 @@ def _check_provider(path, model, line, problems) -> None:
     if not isinstance(model, str) or "/" not in model:
         return
     provider = model.split("/", 1)[0]
+    if provider == "teamrunner" and model != "teamrunner/demoLLM":
+        problems.error(path, f"`{model}` is not a TeamRunner model", line=line, value=model,
+                       fix="use `teamrunner/demoLLM` for the free hosted demo")
+        return
     if provider not in V.PROVIDERS:
         hint = V.suggest(provider, V.PROVIDERS)
         problems.error(path, f"`{provider}` is not a model provider TeamRunner knows",
@@ -434,6 +438,23 @@ def _check_inputs(team: Team, words, problems: Problems) -> None:
                              line=_body_line(member, name),
                              fix=f"add `{name}:` under `default_inputs:` in team.yaml, "
                              "or give it with `--message` or `--task-file`")
+
+    for member in team.members:  # `only_input:` names the input that holds the one item a toolkeeper hands over
+        if member.kind != "toolkeeper":
+            continue
+        data = member.front.data
+        tools = data.get("tools") if isinstance(data.get("tools"), dict) else {}
+        access = data.get("access") if isinstance(data.get("access"), dict) else {}
+        places = [(("tools", n), g) for n, g in tools.items()] + \
+                 [(("access", n), g) for n, g in access.items()] + [(("others",), data.get("others"))]
+        for keys, terms in places:
+            if isinstance(terms, dict) and "only_input" in terms and terms["only_input"] not in used:
+                named = str(terms["only_input"])
+                hint = V.suggest(named, used)
+                problems.error(member.path, f"`only_input: {named}` names an input no prompt uses",
+                               line=member.front.line(*keys, "only_input"), value=named,
+                               fix=f"did you mean `{hint}`?" if hint else
+                               "name an input a prompt uses as `{{name}}`")
 
     if doc and "message_goes_to" in words:
         target = doc.data["message_goes_to"]

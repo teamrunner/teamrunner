@@ -151,7 +151,7 @@ class Jobs:
                 raise api.Conflict("The local server is stopping.")
             if self.active and not self.jobs[self.active].done.is_set():
                 raise api.Conflict("A run is already in progress. Stop it or wait for it to finish.")
-        report = api.validate_team(self.root, data.get("path", ""))
+        report = api.validate_team(self.root, data.get("path", ""), offline=True)
         if not report["ok"]:
             raise InvalidTeam(report)
         folder = api.inside(self.root, report["team"])

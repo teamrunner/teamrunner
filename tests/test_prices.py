@@ -54,7 +54,7 @@ def test_a_run_records_its_prices_and_says_they_are_estimates(tmp_path, home, br
     assert outcome.status == "completed", outcome.reason
     [call] = calls(events)
     assert call["cost_usd"] == 0.004 and call["cost_source"].endswith("prices.yaml")
-    run = json.loads((outcome.folder / "run.json").read_text(encoding="utf-8"))
+    run = json.loads((outcome.folder / "record.json").read_text(encoding="utf-8"))
     assert run["cost_is_estimate"] is True
     assert run["prices"]["tools"]["web_search_brave"]["per_call"] == 0.004
     assert "openai/gpt-5" in run["prices"]["models"]

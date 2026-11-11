@@ -23,7 +23,7 @@ from .desk import Desk, TurnCard, parse_arguments
 from .engine import Result, Turn
 from .events import Log
 from .minutes import Entry, Minutes, request_for
-from .model import Model, Reply, TransientError
+from .model import CeilingReached, Model, Reply, TransientError
 
 MAX_TRIES = 3  # D112
 PROVIDER_WAITS = (2, 8, 30)  # seconds before each retry after an outage or rate limit (D100)
@@ -103,6 +103,7 @@ class Spend:
     def __init__(self):
         self.usage, self.cost, self.latency, self.unknown = {"input": 0, "output": 0}, 0.0, 0, False
         self.sources: set[str] = set()
+        self.charged: float | None = 0.0  # None once any call's charge is not reported
 
     def add(self, reply: Reply) -> None:
         self.usage["input"] += reply.usage.get("input", 0)
@@ -114,19 +115,53 @@ class Spend:
             self.unknown = True
         else:
             self.cost += reply.cost_usd
+        charged = getattr(reply, "cost_charged_usd", None)
+        self.charged = None if charged is None or self.charged is None else self.charged + charged
 
     def take(self) -> dict:
         out = {"usage": dict(self.usage), "cost_usd": None if self.unknown else round(self.cost, 8),
-               "cost_source": "; ".join(sorted(self.sources)) or None, "latency_ms": self.latency}
+               "cost_source": "; ".join(sorted(self.sources)) or None, "latency_ms": self.latency,
+               "cost_charged_usd": None if self.charged is None else round(self.charged, 8)}
         self.__init__()
         return out
+
+
+# Events a turn writes besides its last one; the run's own events are not part of any turn
+_IN_A_TURN = {"retry", "tool_call"}
+_ENVELOPE = ("seq", "ts", "run_id")
+
+
+class Replay:
+    """A stopped run's turns, to be reused in order by the run that continues it
+    (D138 (8)): each unit is one member's turn — its retries and side trips, then
+    its `agent_message` — or one toolkeeper step, its `tool_call`. A turn that
+    did not finish is not a unit, so the new run takes it afresh."""
+
+    def __init__(self, run_id: str, events):
+        self.run_id = run_id
+        self.units: list[list[dict]] = []
+        pending: list[dict] = []
+        for e in events:
+            kind = e.get("event")
+            if kind == "agent_message" or (kind == "tool_call" and e.get("mandatory")):
+                self.units.append(pending + [e])
+                pending = []
+            elif kind in _IN_A_TURN:
+                pending.append(e)
+        self.next = 0
+        self.on = bool(self.units)
+
+    def peek(self, ahead: int = 0) -> list[dict] | None:
+        i = self.next + ahead
+        return self.units[i] if i < len(self.units) else None
 
 
 class Members:
     """The actor: takes each member's turn when the engine says so."""
 
     def __init__(self, team: ir.Team, inputs: dict[str, object], model: Model, log: Log,
-                 waits: tuple[float, ...] = PROVIDER_WAITS, context: Context | None = None):
+                 waits: tuple[float, ...] = PROVIDER_WAITS, context: Context | None = None,
+                 replay: Replay | None = None):
         self.team = team
         self.inputs = inputs
         self.model = model
@@ -134,11 +169,71 @@ class Members:
         self.waits = waits
         self.minutes = Minutes()
         self.desk = Desk(team, log, context or Context(Path("inputs"), Path("work")), self._who)
+        self.replay = replay
 
     async def __call__(self, turn: Turn) -> Result:
+        if self.replay is not None and self.replay.on:
+            reused = self._reuse(turn)
+            if reused is not None:
+                return reused
+            self.replay.on = False  # from here on, every turn is taken afresh
         if turn.member.kind == "toolkeeper":
             return await self._toolkeeper_step(turn)
         return await self._turn(turn)
+
+    # --- reusing a stopped run's turns (D138 (8)) ------------------------------------------
+
+    def _reuse(self, turn: Turn) -> Result | None:
+        """The stopped run's next turn, if it is this one: same member, same prompt
+        (and for a toolkeeper step, the same request). None ends the replay."""
+        unit = self.replay.peek()
+        if unit is None:
+            return None
+        last = unit[-1]
+        member = turn.member
+        if member.kind == "toolkeeper":
+            asker = turn.asker
+            if (last["event"] != "tool_call" or last.get("toolkeeper") != member.name or asker is None
+                    or last.get("from") != asker.turn.member.name or last.get("arguments") != asker.request):
+                return None
+            text = _told(last)
+            if text is None:
+                return None
+            self.replay.next += 1
+            seq = self._copy(unit)[-1]
+            self.minutes.add(Entry(seq, member.name, text, to=asker.turn.member.name))
+            return Result(turn, {})
+        must = turn.must_ask
+        if last["event"] != "agent_message" or last.get("from") != member.name:
+            return None
+        request = request_for(member, self.inputs, self.minutes, turn.step.stage, must.name if must else None)
+        if last.get("prompt_hash") != request.prompt_hash:
+            return None
+        pending = None
+        if must:  # its request is the next unit's: the toolkeeper step that follows
+            step = self.replay.peek(1)
+            if not step or step[-1]["event"] != "tool_call" or step[-1].get("toolkeeper") != must.name:
+                return None
+            pending = step[-1].get("arguments")
+        self.replay.next += 1
+        seq = self._copy(unit, read=request.read, prompt_hash=request.prompt_hash)[-1]
+        self.minutes.add(Entry(seq, member.name, last.get("content") or ""))
+        return Result(turn, dict(last.get("output") or {}), request=pending, card=TurnCard(member.name))
+
+    def _copy(self, unit: list[dict], **fresh) -> list[int]:
+        """Write a reused unit into this run's log, each event marked with where it came from;
+        the cost stays, so the run's cost is the whole run's (D138 (8), amended)."""
+        seqs = []
+        for e in unit:
+            event = {k: v for k, v in e.items() if k not in _ENVELOPE}
+            if e["event"] == "agent_message":
+                event.update(fresh)
+            if e["event"] == "tool_call" and e.get("access") == "allowed":  # limits count reused calls too
+                key = (e.get("toolkeeper"), e.get("from"))
+                self.desk.run_use[key] = self.desk.run_use.get(key, 0) + 1
+            event["reused_from"] = {"run_id": self.replay.run_id, "seq": e.get("seq")}
+            seqs.append(self.log.emit(event))
+        return seqs
 
     async def _turn(self, turn: Turn) -> Result:
         member, must = turn.member, turn.must_ask
@@ -241,9 +336,14 @@ class Members:
                     self._emit_error(member, e)
                     raise TurnFailed(f"{member.model.value} still failed after {retry + 1} tries "
                                      f"at {member.name}'s turn: {e}") from e
-                self.log.emit({"event": "retry", "kind": "provider", **self._who(member),
+                sponsored = ({"cost_usd": 0.0, "cost_charged_usd": 0.0,
+                              "cost_source": "TeamRunner-sponsored demo (free to you)"}
+                             if member.model.value == "teamrunner/demoLLM" else {})
+                self.log.emit({"event": "retry", "kind": "provider", **self._who(member), **sponsored,
                                "attempt": retry + 1, "reason": str(e), "wait_ms": int(self.waits[retry] * 1000)})
                 await asyncio.sleep(self.waits[retry])
+            except CeilingReached:
+                raise  # not a failure of the model: the call was never sent
             except Exception as e:
                 self._emit_error(member, e)
                 raise TurnFailed(f"{member.model.value} failed at {member.name}'s turn: {e}") from e
@@ -254,6 +354,17 @@ class Members:
     def _emit_error(self, member: ir.Member, error: Exception) -> None:
         self.log.emit({"event": "error", **self._who(member), "what": "model call",
                        "message": str(error)})
+
+
+def _told(event: dict) -> str | None:
+    """What a toolkeeper step told the asker, rebuilt from its event — or None
+    when the event does not hold it word for word."""
+    if event.get("access") == "refused":
+        return f"Refused: {event.get('reason')}."
+    if event.get("access") == "allowed" and event.get("error") is None and event.get("result_kept") is not False \
+            and isinstance(event.get("result"), str):
+        return event["result"]
+    return None
 
 
 def _assistant(reply: Reply) -> dict:

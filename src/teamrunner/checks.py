@@ -23,13 +23,44 @@ from .keys import NO_KEY, PROVIDER_KEYS, SET_UP_ELSEWHERE, Keys
 Lister = Callable[[str | None, dict], "set[str] | None"]
 
 
-def online_check(report):
-    """The explicit CLI/browser online check, without printing or prompting."""
+def online_check(report, listers: "dict[str, Lister] | None" = None):
+    """What `validate` does once the files pass (D140): the key and model check
+    `run` makes, without printing or prompting. With no connection the files are
+    still valid, so a provider that cannot be reached at all is a warning here;
+    a provider that answers and refuses the key is still a problem."""
     from .build import load_team
     from .keys import extra_settings, find_keys
     team, _ = load_team(report.package.team.folder)
     keys = find_keys(needed_keys(team), team.package_top, None)
-    return run_check(team, keys, LISTERS, extra_settings(), litellm_data, litellm_params), keys
+    unreached: dict[str, str] = {}
+    check = run_check(team, keys, _patient(LISTERS if listers is None else listers, unreached), extra_settings(),
+                      litellm_data, litellm_params)
+    if "teamrunner/demoLLM" in _candidates(team):
+        check.warnings.append("the free demo sends prompts to TeamRunner's hosted model provider; "
+                              "use your own model for private inputs or larger studies")
+    for provider, reason in unreached.items():
+        for secret in keys.values.values():
+            if secret:
+                reason = reason.replace(secret, "[key hidden]")
+        check.warnings.append(f"could not reach {provider} ({reason}), so its models were not "
+                              "checked; check your connection and validate again")
+    return check, keys
+
+
+def _patient(listers: dict[str, Lister], unreached: dict[str, str]) -> dict[str, Lister]:
+    """The same listers, except that no connection means "cannot say" (None), noted
+    in `unreached`. Ollama is on this computer: not reaching it stays a problem."""
+    def patient(provider: str, lister: Lister) -> Lister:
+        def ask(key, settings):
+            try:
+                return lister(key, settings)
+            except urllib.error.HTTPError:
+                raise  # the provider answered: a refused key, not a missing connection
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                unreached[provider] = str(getattr(e, "reason", None) or e)
+                return None
+        return ask
+    return {p: lister if p in NO_KEY else patient(p, lister) for p, lister in listers.items()}
 
 
 @dataclass
@@ -116,6 +147,9 @@ ParamCheck = Callable[[str, dict], "str | None"]
 def litellm_params(model: str, params: dict) -> str | None:
     """Ask LiteLLM, offline, whether a model takes these settings: it refuses
     some before any request is sent (gpt-5 takes only temperature 1 while reasoning)."""
+    if model.startswith("teamrunner/"):
+        from .demo import PARAMS
+        return "the demo accepts only " + ", ".join(sorted(PARAMS)) if set(params) - PARAMS else None
     import litellm
     litellm.suppress_debug_info = True
     try:
@@ -175,6 +209,11 @@ def run_check(team: ir.Team, keys: Keys, listers: dict[str, Lister], settings: d
             if model in stuck:
                 check.problems.append(found.problem(who))
             continue
+        if model == "teamrunner/demoLLM":
+            if any(m.kind == "toolkeeper" for m in team.members.values()):
+                check.problems.append(Problem(model, who,
+                    "the hosted demo supports teams without toolkeepers",
+                    "choose your own provider/model for teams with tools"))
         check.warnings += found.warnings
         data = (model_data or (lambda m: {}))(model) if found.row.get("available") else {}
         if data.get("deprecation_date"):
@@ -228,7 +267,8 @@ def _probe(model: str, keys: Keys, listers: dict[str, Lister], settings: dict, l
                 reason = reason.replace(secret, "[key hidden]")
         return Probe(row, lambda who: Problem(
             model, who, f"could not reach {provider} to check it: {reason}",
-            "check your connection" + (", and that Ollama is running" if provider in NO_KEY else
+            "check your connection" + (", and the demo server address" if provider == "teamrunner" else
+                                       ", and that Ollama is running" if provider in NO_KEY else
                                        f", and that {key_name} is right")),
             f"{provider} could not be reached")
     if available is None:
@@ -236,7 +276,7 @@ def _probe(model: str, keys: Keys, listers: dict[str, Lister], settings: dict, l
     row["available"] = served(name, available)
     if not row["available"]:
         close = difflib.get_close_matches(name, sorted(available), n=1, cutoff=0.6)
-        local = provider in NO_KEY
+        local = provider == "ollama"
         return Probe(row, lambda who: Problem(
             model, who, f"{provider} does not serve `{name}`" +
             (" (pulled models are listed by `ollama list`)" if local else ""),
@@ -326,8 +366,14 @@ def _ollama(key, settings):
     return {m["name"]: m.get("digest") for m in data["models"]}
 
 
+def _teamrunner(key, settings):
+    from .demo import api_base
+    data = _get(api_base(settings) + "/models", {})
+    return {m["id"].removeprefix("teamrunner/") for m in data["data"]}
+
+
 LISTERS: dict[str, Lister] = {"openai": _openai, "anthropic": _anthropic, "gemini": _gemini,
-                              "ollama": _ollama}
+                              "ollama": _ollama, "teamrunner": _teamrunner}
 
 
 def litellm_data(model: str) -> dict:

@@ -1,7 +1,7 @@
 """`teamrunner run`: a call to a team (D69), start to finish.
 
     validate → inputs → keys and models checked (D99, D100) → run folder →
-    the flow, turn by turn → run.json and output.md
+    the flow, turn by turn → record.json and output.md
 
 Everything that can stop a run is found before the first turn. Once it
 starts, the log is written line by line, so a failure or Ctrl-C keeps
@@ -31,7 +31,7 @@ from .flowgraph import declared_graph
 from .inputs import InputError, copy_files, resolve
 from .keys import Ask, Keys, extra_settings, find_keys
 from .minutes import MissingInput, instructions
-from .model import Model
+from .model import CeilingReached, Model
 from .prices import load_prices, model_price, tool_price
 from .rehearsal import RehearsalModel
 from .runfolder import RunFolder, fingerprint, version_hash
@@ -51,6 +51,16 @@ class Options:
     quiet: bool = False
     ask: Ask | None = None  # None when no one is at the keyboard
     rehearse: bool = False  # D115: no model; placeholder words and random answers
+    # Experiments (D138): the run's seed, the folder made for it, and its `experiment` block
+    seed: int | None = None
+    run_folder: Path | None = None
+    experiment: dict | None = None
+    # D138 (6): a hard ceiling on what the run spends, and where it was set
+    # ("--max-cost", or "experiment.md" for an experiment's runs)
+    max_cost: float | None = None
+    max_cost_from: str | None = None
+    # D138 (8): a stopped run's folder, whose turns this run reuses before calling models
+    continue_from: Path | None = None
 
 
 @dataclass
@@ -168,7 +178,10 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
              waits=None, *, cancel: Event | None = None,
              on_folder: Callable[[Path], None] | None = None,
              on_event: Callable[[dict], None] | None = None,
-             on_turn: Callable[[dict], None] | None = None) -> Outcome:
+             on_turn: Callable[[dict], None] | None = None,
+             wrap: Callable[[Model], Model] | None = None) -> Outcome:
+    """`wrap`, when given, wraps whatever model the run uses — an experiment's
+    ceiling sees every call this way (D138 (6)). A rehearsal has no ceiling."""
     started = time.monotonic()
     team, report = load_team(Path(folder), write_ids=True)
     if team is None:
@@ -190,7 +203,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
     settings = extra_settings()
     if options.rehearse:
         keys, check = Keys(), rehearsal_check(team)
-        seed = random.SystemRandom().randrange(2**32)
+        seed = options.seed if options.seed is not None else random.SystemRandom().randrange(2**32)
         model_factory = lambda keys, settings: RehearsalModel(seed)  # noqa: E731
     else:
         keys = find_keys(needed_keys(team), team.package_top, ask)
@@ -224,7 +237,11 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         return Outcome("could_not_start", EXIT["could_not_start"], report=report,
                        reason="the check before the first turn found problems", check=check)
 
-    run = RunFolder.create(team.package_top, team.name, options.runs_dir)
+    if options.run_folder is not None:
+        options.run_folder.mkdir(parents=True, exist_ok=True)
+        run = RunFolder(options.run_folder)
+    else:
+        run = RunFolder.create(team.package_top, team.name, options.runs_dir)
     if on_folder:
         on_folder(run.path)
     copy_files(given, run.inputs_dir)
@@ -253,7 +270,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
     for warning in check.warnings:
         log.emit({"event": "warning", "message": warning})
 
-    status, reason = "completed", None
+    status, reason, stopped_by = "completed", None, None
     flow_path = []
     try:
         if model_factory is None:
@@ -261,10 +278,22 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
             model = LiteLLMModel(keys.values, settings, prices)
         else:
             model = model_factory(keys.values, settings)
+        if wrap is not None:
+            model = wrap(model)
+        elif options.max_cost is not None and not options.rehearse:  # a single run's own ceiling
+            from .ceiling import Ceiling, Guarded
+            model = Guarded(model, Ceiling(options.max_cost), prices)
         context = Context(run.inputs_dir, run.path / "work", keys.values, team.package_top,
-                          rehearsal=options.rehearse, prices=prices)
+                          rehearsal=options.rehearse, prices=prices, inputs=values)
         context.work_dir.mkdir(exist_ok=True)
-        actor = Members(team, values, model, log, context=context,
+        replay = None
+        if options.continue_from is not None:
+            from .runs import read_events
+            from .turns import Replay
+            old = list(read_events(options.continue_from))
+            started_old = next((e for e in old if e.get("event") == "run_started"), {})
+            replay = Replay(started_old.get("run_id") or options.continue_from.name, old)
+        actor = Members(team, values, model, log, context=context, replay=replay,
                         **({"waits": waits} if waits is not None else {}))
 
         async def take_turn(turn):
@@ -281,16 +310,18 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         engine = Engine(team, take_turn, log.emit, trace=flow_path.append)
         outcome = asyncio.run(_run_until_stopped(engine, cancel))
         if outcome.status == "stopped_by_flow":
-            status = "stopped"
+            status, stopped_by = "stopped", "flow"  # the team's own result (D138 (7), amended)
             last = log.of("route_decision")[-1] if log.of("route_decision") else None
             reason = (f"The flow stopped after {last['decider']} answered `{last['option']}`."
                       if last else "The flow reached `stop`.")
     except RunStopped:
-        status, reason = "stopped", "Stopped by the user; the turn in progress was abandoned."
+        status, reason, stopped_by = "stopped", "Stopped by the user; the turn in progress was abandoned.", "user"
+    except CeilingReached as e:
+        status, reason, stopped_by = "stopped", str(e), "ceiling"
     except (TurnFailed, FlowError) as e:
         status, reason = "failed", str(e)
     except KeyboardInterrupt:
-        status, reason = "stopped", "Stopped with Ctrl-C; the turn in progress was abandoned."
+        status, reason, stopped_by = "stopped", "Stopped with Ctrl-C; the turn in progress was abandoned.", "user"
     except Exception as e:
         status, reason = "failed", f"{type(e).__name__}: {e}"
         for secret in keys.values.values():
@@ -312,6 +343,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         "inputs": inputs_record,
         "fingerprint": print_fp,
         "status": status,
+        "stopped_by": stopped_by,  # flow | user | ceiling, when stopped (D138 (7), amended)
         "reason": reason,
         "turns": len(said),
         "tool_calls": len(log.of("tool_call")),
@@ -320,6 +352,10 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         "cost_known_usd": round(sum(c for c in costs if c is not None) + tools_cost, 6),
         "cost_models_usd": None if any(c is None for c in costs) else round(sum(costs), 6),
         "cost_tools_usd": tools_cost,
+        # D120, amended: what the providers say they charged for the model calls; null if any did not say
+        "cost_charged_usd": _charged_total(said + retries),
+        # D138 (8), amended: of the cost, what reused turns carried over from the run continued
+        "cost_reused_usd": round(sum(e.get("cost_usd") or 0 for e in log.events if e.get("reused_from")), 6),
         "tokens": {"input": sum(e["usage"]["input"] for e in said + retries if "usage" in e),
                    "output": sum(e["usage"]["output"] for e in said + retries if "usage" in e)},
         "keys": keys.sources,
@@ -327,6 +363,9 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         "backup_models": {b["member"]: b["model"] for b in check.backups},  # D135: not each first choice
         "cost_is_estimate": True,  # D120: exact token counts times list prices, not what was charged
         "prices": price_list,
+        "experiment": options.experiment,  # D138 (10): null for a single run
+        "ceiling": ({"max_cost_usd": options.max_cost, "from": options.max_cost_from}
+                    if options.max_cost is not None else None),
     }
     log.emit({"event": "run_finished", "status": status, "reason": reason,
               "flow_path": flow_path,
@@ -334,7 +373,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
               "latency_ms": record["latency_ms"], "cost_usd": record["cost_usd"],
               "cost_models_usd": record["cost_models_usd"], "cost_tools_usd": record["cost_tools_usd"],
               "tokens": record["tokens"]})
-    run.write_run_json(record)
+    run.write_record(record)
     output = _output_md(team, log, status, reason)
     if options.rehearse:
         output = (f"*A rehearsal (seed {seed}): placeholder words and random answers, "
@@ -345,6 +384,13 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         shown = record if record["cost_usd"] is not None else {**record, "cost_usd": record["cost_known_usd"]}
         console.totals(shown, _shown_path(run.path), output)
     return Outcome(status, EXIT[status], run.path, report, reason)
+
+
+def _charged_total(events: list[dict]) -> float | None:
+    charges = [e.get("cost_charged_usd") for e in events if e.get("usage")]
+    if not charges or any(c is None for c in charges):
+        return None
+    return round(sum(charges), 6)
 
 
 def _shown_path(path: Path) -> Path:

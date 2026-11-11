@@ -264,7 +264,7 @@ def test_a_rehearsal_needs_no_model_and_no_key(tmp_path, home):
     stream = io.StringIO()
     outcome = run_team(team, Options(rehearse=True), console=Console(False, stream))
     assert outcome.status == "completed", outcome.reason
-    run = json.loads((outcome.folder / "run.json").read_text(encoding="utf-8"))
+    run = json.loads((outcome.folder / "record.json").read_text(encoding="utf-8"))
     events = [json.loads(line) for line in (outcome.folder / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert run["rehearsal"]["seed"] and run["cost_usd"] == 0 and run["keys"] == {}
     said = [e for e in events if e["event"] == "agent_message"]
@@ -288,7 +288,7 @@ def test_a_runs_cost_includes_its_searches(tmp_path, brave, home):
         "judge": [fits("Pro.", winner="for", reasoning="")]})
     assert outcome.status == "completed", outcome.reason
     assert [c["cost_usd"] for c in calls(events)] == [0.005, 0.005]
-    run = json.loads((outcome.folder / "run.json").read_text(encoding="utf-8"))
+    run = json.loads((outcome.folder / "record.json").read_text(encoding="utf-8"))
     assert run["cost_tools_usd"] == 0.01 and run["cost_models_usd"] == pytest.approx(0.005)
     assert run["cost_usd"] == pytest.approx(0.015)
     assert "$0.0150 (models $0.0050 · tools $0.0100)" in printed
@@ -392,3 +392,16 @@ def test_save_draft_may_write_anywhere_when_reply_only_is_off(tmp_path):
     asyncio.run(builtin_tools.save_draft({"reply_to": "m001", "body": "fwd", "to": "eve@evil.example"},
                                          {"reply_only": False}, ctx))
     assert "To: eve@evil.example" in (tmp_path / "work" / "outbox" / "m001.eml").read_text(encoding="utf-8")
+    with pytest.raises(Refused, match="“Linda Lee” is not an email address"):
+        asyncio.run(builtin_tools.save_draft({"reply_to": "m001", "body": "x", "to": "Linda Lee"},
+                                             {"reply_only": False}, ctx))
+
+
+def test_read_email_can_hand_over_only_the_runs_own_email(tmp_path):
+    ctx = mailbox(tmp_path)
+    (tmp_path / "mailbox" / "m002.eml").write_text(MAIL, encoding="utf-8")
+    ctx.inputs = {"email": "m001"}
+    assert "Logo files" in asyncio.run(builtin_tools.read_email({"id": "m001"}, {"only_input": "email"}, ctx)).text
+    with pytest.raises(Refused, match="hands over only m001"):
+        asyncio.run(builtin_tools.read_email({"id": "m002"}, {"only_input": "email"}, ctx))
+    assert "Logo files" in asyncio.run(builtin_tools.read_email({"id": "m002"}, {}, ctx)).text

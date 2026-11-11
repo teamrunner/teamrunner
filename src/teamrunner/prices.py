@@ -93,6 +93,9 @@ def litellm_version() -> str:
 
 def model_price(model: str, prices: Prices) -> dict:
     """The price a model's tokens will be counted at, and where it comes from."""
+    if model == "teamrunner/demoLLM":
+        return {"input_per_million": 0.0, "output_per_million": 0.0,
+                "source": "TeamRunner-sponsored demo (free to you)"}
     if model in prices.models:
         i, o = prices.models[model]
         return {"input_per_million": i, "output_per_million": o, "source": prices.shown}

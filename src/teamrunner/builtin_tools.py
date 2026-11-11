@@ -45,6 +45,7 @@ class Context:
     package_top: Path | None = None  # where `paths` are read from
     rehearsal: bool = False  # D115: requests are checked, but no tool runs
     prices: object = None  # prices.Prices: overrides from ~/.teamrunner/prices.yaml (D120)
+    inputs: dict = field(default_factory=dict)  # this run's input values, for `only_input`
 
 
 @dataclass
@@ -341,7 +342,18 @@ def email_text(message) -> str:
     return "\n".join(lines) + "\n\n" + body.strip()
 
 
+def only_this_run(asked: str, guardrails: dict, ctx: Context) -> None:
+    """`only_input: <input>`: hand over only the item this run was given in that input."""
+    name = guardrails.get("only_input")
+    if name is None:
+        return
+    given = str(ctx.inputs.get(name, "")).strip().removesuffix(".eml")
+    if asked.strip().removesuffix(".eml") != given:
+        raise Refused(f"this toolkeeper hands over only {given or 'the email this run was given'}")
+
+
 async def read_email(args: dict, guardrails: dict, ctx: Context) -> Answer:
+    only_this_run(str(args.get("id", "")), guardrails, ctx)
     _, message = find_email(str(args.get("id", "")), guardrails, ctx)
     return Answer(cut(email_text(message), guardrails), service="mailbox folder")
 
@@ -362,6 +374,8 @@ async def save_draft(args: dict, guardrails: dict, ctx: Context) -> Answer:
     sender_address = next((a for _, a in getaddresses([sender]) if a), "")
     wanted = str(args.get("to") or "").strip()
     wanted_addresses = [a for _, a in getaddresses([wanted]) if a]
+    if wanted and not all("@" in a for a in wanted_addresses or [wanted]):
+        raise Refused(f"“{wanted}” is not an email address")
     if wanted and guardrails.get("reply_only", True):
         if [a.lower() for a in wanted_addresses] != [sender_address.lower()]:
             raise Refused("this outbox only answers the sender of the email "

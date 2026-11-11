@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>TeamRunner · Files</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?token=__TOKEN__">
   <link rel="stylesheet" href="/vendor/editor.css?token=__TOKEN__">
   <link rel="stylesheet" href="/app.css?token=__TOKEN__">
   <script defer src="/vendor/editor.js?token=__TOKEN__"></script>
@@ -18,35 +19,40 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="?token=__TOKEN__" aria-label="TeamRunner home"><span class="mark" aria-hidden="true">◉</span> teamrunner</a>
-    <nav aria-label="Workspace view"><button id="files-view" type="button" aria-pressed="true">Files</button><button id="runs-view" type="button" aria-pressed="false">Runs</button></nav>
-    <span class="local"><span aria-hidden="true">●</span> On your computer</span>
+    <a class="brand" href="?token=__TOKEN__" aria-label="TeamRunner home"><svg class="mark" width="24" height="24" viewBox="0 0 48 48" aria-hidden="true"><circle class="ring" cx="24" cy="25" r="14" fill="none" stroke-width="4"/><circle class="chair-seat" cx="24" cy="11" r="6.5" stroke-width="3"/><circle class="seat" cx="11.9" cy="32" r="6.5" stroke-width="3"/><circle class="seat" cx="36.1" cy="32" r="6.5" stroke-width="3"/></svg>teamrunner</a>
+    <nav aria-label="Workspace view"><button id="files-view" type="button" aria-pressed="true">Files</button><button id="run-view" type="button" aria-pressed="false" title="One run: the one in progress, or a saved one you opened">Run<span id="run-dot" hidden title="A run is in progress"> ●</span></button><button id="runs-view" type="button" aria-pressed="false" title="Every saved run in this folder (teamrunner runs)">Run history</button></nav>
+    <span class="topbar-end"><button id="legal-notices" type="button">About &amp; notices</button><button id="feedback" type="button" title="Report a bug, ask a question or suggest an idea">Feedback</button><span class="local"><span aria-hidden="true">●</span> On your computer</span></span>
   </header>
   <main>
     <aside aria-label="Package files">
-      <div class="sidebar-heading"><span>FILES</span><button id="refresh" type="button">Refresh</button></div>
-      <h1 id="folder-name">Opening folder…</h1>
-      <p class="folder-path" id="folder-path"></p>
-      <div class="file-actions"><button id="new-team" type="button">New team</button><button id="new-member" type="button">New member</button></div>
+      <div class="sidebar-heading"><span>FILES</span><span class="file-actions"><button id="new-team" type="button" title="Create a new team folder">+ Team</button><button id="new-member" type="button" title="Add a member to the selected team">+ Member</button><button id="new-chair" type="button" title="Add chair.md, the team’s flow, to the selected team">+ Chair</button><button id="refresh" type="button" class="icon-button" title="Refresh the file list" aria-label="Refresh the file list"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg></button></span></div>
       <p id="tree-status" role="status">Loading files…</p>
+      <div class="tree-root" id="tree-root"><span class="caret" aria-hidden="true">▾</span><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5v8h11l2-5.5h-11l-2 5.5M1.5 4.5v-1.5h4l1.5 1.5h5v2"/></svg><h1 id="folder-name">Opening folder…</h1></div>
       <ul id="files" class="tree" aria-label="Files and folders"></ul>
-      <p class="sidebar-note">Your folder is your team.<br>Run records live in <code>runs/</code>.</p>
+      <div class="sidebar-foot">
+        <button id="keys" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="11" r="2.8"/><path d="M7 9l6.5-6.5M11 5l2 2M9.3 6.7l1.5 1.5"/></svg>Set up keys</button>
+        <p class="folder-path" id="folder-path"></p>
+      </div>
     </aside>
     <section id="files-workspace" class="workspace" aria-labelledby="welcome-title">
-      <div class="breadcrumb" id="breadcrumb">Your workspace</div>
-      <div class="toolbar">
-        <button id="save" type="button" disabled>Save</button>
-        <button id="validate" type="button">Validate</button>
-        <button id="run-team" type="button">Run…</button>
-        <button id="online" type="button">Check keys and models online</button>
-        <button id="keys" type="button">Set up keys</button>
-        <button id="rename" type="button" disabled>Rename</button>
-        <button id="trash" type="button" disabled>Move to trash</button>
+      <div class="teambar" role="group" aria-label="Team actions">
+        <span class="bar-label">TEAM</span><strong id="team-name">—</strong>
+        <button id="validate" type="button" title="Check this team’s files, then its keys and models (teamrunner validate). Saving does this too; use the button to check again without an edit. Free; asks each provider which models it serves.">Validate<span class="check-mark" id="validate-mark" aria-hidden="true"></span></button>
+        <span id="validation-summary" role="status" aria-live="polite"></span>
+        <button id="run-team" type="button" class="primary">Run…</button>
+        <button id="trash-team" type="button" class="icon-button danger" disabled title="Move this team to the trash" aria-label="Move this team to the trash"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M6 4.5v-2h4v2M4 4.5l.7 9h6.6l.7-9M6.6 7v4M9.4 7v4"/></svg></button>
       </div>
       <p id="notice" role="status" aria-live="polite"></p>
       <div id="disk-warning" hidden role="alert">This file changed on disk. Reload it to use the disk version. Unsaved edits will be discarded. <button id="reload-file" type="button">Reload from disk</button></div>
       <div id="editing" hidden>
-        <div class="editor-tabs"><button id="edit-tab" type="button" aria-pressed="true">Edit</button><button id="show-tab" type="button" aria-pressed="false">Show as it will run</button><button id="flow-tab" type="button" aria-pressed="false">Flow diagram</button><span id="save-state"></span></div>
+        <div class="filebar" role="group" aria-label="File actions">
+          <span class="bar-label">FILE</span><strong class="breadcrumb" id="breadcrumb"></strong>
+          <span class="editor-tabs"><button id="edit-tab" type="button" aria-pressed="true">Edit</button><button id="show-tab" type="button" aria-pressed="false" title="This member with every setting written out, including the ones it takes from team.yaml and models/ (teamrunner show)">As it will run</button><button id="flow-tab" type="button" aria-pressed="false" title="The team’s flow, drawn from chair.md (teamrunner explain --diagram)">Flow diagram</button></span>
+          <span id="save-state"></span>
+          <button id="save" type="button" disabled title="Save and validate (Ctrl+S or ⌘S)">Save</button>
+          <button id="rename" type="button" disabled>Rename</button>
+          <button id="trash" type="button" class="icon-button danger" disabled title="Move this file to the trash" aria-label="Move this file to the trash"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M6 4.5v-2h4v2M4 4.5l.7 9h6.6l.7-9M6.6 7v4M9.4 7v4"/></svg></button>
+        </div>
         <label class="sr-only" for="editor">File contents</label><textarea id="editor"></textarea>
         <div id="flow-diagram" class="flow-diagram" hidden></div><pre id="resolved" hidden></pre>
       </div>
@@ -66,12 +72,13 @@
         </div>
         <p class="slice-note">Select a file to edit. Save, validate, then choose Run… to rehearse or run. Browse the results in Runs.</p>
       </div>
-      <section id="validation" aria-labelledby="problems-title"><div class="problem-heading"><h3 id="problems-title">Validation</h3><span id="validation-summary">Choose a team and check its files.</span></div><ul id="problems"></ul></section>
+      <section id="validation" hidden aria-labelledby="problems-title"><h3 id="problems-title">To fix</h3><ul id="problems"></ul></section>
       <footer><span>Same files. Same TeamRunner.</span><code id="command">teamrunner ui</code></footer>
     </section>
-    <section id="runs-workspace" class="workspace" hidden aria-label="Run history">
-      <div class="runs-heading"><div><span class="eyebrow">THE MINUTES ARCHIVE</span><h2>Runs</h2></div><div><button id="run-from-history" type="button">Run this team…</button> <button id="refresh-runs" type="button">Refresh runs</button></div></div>
-      <p id="runs-notice" role="status" aria-live="polite"></p>
+    <section id="run-workspace" class="workspace" hidden aria-label="One run">
+      <div class="run-bar"><span class="bar-label">RUN</span><strong id="run-bar-title">No run open</strong><button id="show-live" type="button" hidden>Back to the run in progress</button><button id="back-runs" type="button">Run history</button><button id="run-from-run" type="button" class="primary">Run…</button></div>
+      <p id="run-notice" role="status" aria-live="polite"></p>
+      <div id="run-empty" class="run-empty"><h2>No run open yet.</h2><p>Choose <strong>Run…</strong> to rehearse or run the selected team and watch it here as it happens, or open a saved run from <strong>Run history</strong>.</p></div>
       <section id="live-run" hidden aria-label="Current run">
         <div class="live-heading"><h3 id="live-title">Run in progress</h3><button id="stop-run" type="button">Stop run</button><button id="browse-finished" type="button" hidden>Browse saved run</button></div>
         <p id="live-status" role="status" aria-live="polite"></p><p id="live-cost"></p>
@@ -79,6 +86,21 @@
         <div id="live-events" aria-label="Live conversation"></div>
         <code id="live-command"></code>
       </section>
+      <article id="run-detail" hidden>
+                <h3 id="run-title"></h3><p id="run-meta"></p>
+        <div class="raw-links"><button id="open-run-folder" type="button">Open folder</button><button id="refresh-run" type="button">Refresh</button><button id="rerun" type="button">Re-run with these inputs…</button><span id="raw-run-files"></span></div>
+        <p id="run-warnings" role="status"></p>
+        <nav class="run-tabs" aria-label="Run view"><button type="button" id="conversation-tab" aria-pressed="true">Conversation</button><button type="button" id="output-tab" aria-pressed="false">Output</button><button type="button" id="path-tab" aria-pressed="false">Path</button><button type="button" id="record-tab" aria-pressed="false">Record</button></nav>
+        <section id="run-conversation" aria-label="Conversation"></section>
+        <section id="run-output" class="markdown" hidden aria-label="Output"></section>
+        <section id="run-path" hidden aria-label="Recorded path"></section>
+        <section id="run-record" hidden aria-label="Record"></section>
+      </article>
+      <footer><span>Run records stay read-only.</span><code id="run-command">teamrunner run</code></footer>
+    </section>
+    <section id="runs-workspace" class="workspace" hidden aria-label="Saved runs">
+      <div class="runs-heading"><div><span class="eyebrow">THE MINUTES ARCHIVE</span><h2>Run history</h2></div><div><button id="run-from-history" type="button">Run this team…</button> <button id="refresh-runs" type="button">Refresh runs</button></div></div>
+      <p id="runs-notice" role="status" aria-live="polite"></p>
       <div id="runs-list-panel">
         <div class="runs-filters">
           <label>Team<select id="runs-team"><option value="">All teams</option></select></label>
@@ -91,17 +113,6 @@
         <button id="more-runs" type="button" hidden>Show more runs</button>
       </div>
       <article id="run-comparison" hidden></article>
-      <article id="run-detail" hidden>
-        <button id="back-runs" type="button">← All runs</button>
-        <h3 id="run-title"></h3><p id="run-meta"></p>
-        <div class="raw-links"><button id="open-run-folder" type="button">Open folder</button><button id="rerun" type="button">Re-run with these inputs…</button><span id="raw-run-files"></span></div>
-        <p id="run-warnings" role="status"></p>
-        <nav class="run-tabs" aria-label="Run view"><button type="button" id="conversation-tab" aria-pressed="true">Conversation</button><button type="button" id="output-tab" aria-pressed="false">Output</button><button type="button" id="path-tab" aria-pressed="false">Path</button><button type="button" id="record-tab" aria-pressed="false">Record</button></nav>
-        <section id="run-conversation" aria-label="Conversation"></section>
-        <section id="run-output" class="markdown" hidden aria-label="Output"></section>
-        <section id="run-path" hidden aria-label="Recorded path"></section>
-        <section id="run-record" hidden aria-label="Record"></section>
-      </article>
       <footer><span>Run records stay read-only.</span><code id="runs-command">teamrunner runs</code></footer>
     </section>
   </main>
@@ -114,6 +125,18 @@
       <p id="form-error" role="alert"></p>
       <div class="dialog-actions"><button id="form-cancel" type="button">Cancel</button><button id="form-submit" type="submit">Create</button></div>
     </form>
+  </dialog>
+  <dialog id="feedback-dialog" aria-labelledby="feedback-title">
+    <h2 id="feedback-title">Feedback</h2>
+    <p>Bugs, questions and ideas are all welcome. Both links open outside this page; nothing is sent until you post or send it yourself.</p>
+    <ul class="feedback-links">
+      <li><a id="feedback-bug" target="_blank" rel="noopener noreferrer">Report a bug on GitHub</a></li>
+      <li><a id="feedback-idea" target="_blank" rel="noopener noreferrer">Ask a question or suggest an idea on GitHub</a></li>
+      <li>No GitHub account? Write to <a id="feedback-mail"></a></li>
+    </ul>
+    <p>Your version and system are filled in for you: <code id="feedback-details"></code></p>
+    <p class="feedback-warning">Never paste a key. A run folder holds everything that was said in the run, so share one only if you are happy for it to be read.</p>
+    <div class="dialog-actions"><button id="feedback-close" type="button">Close</button></div>
   </dialog>
   <dialog id="run-dialog" aria-labelledby="run-form-title">
     <form id="run-form">
@@ -129,6 +152,16 @@
       <p id="run-form-error" role="alert"></p>
       <div class="dialog-actions"><button id="cancel-run-form" type="button">Cancel</button><button id="start-run" type="submit">Rehearse team</button></div>
     </form>
+  </dialog>
+  <dialog id="legal-dialog" aria-labelledby="legal-title">
+    <h2 id="legal-title">About TeamRunner</h2>
+    <p>Copyright 2026 Kumar Muthuraman.<br>Publisher and demo gateway operator: Serenity Partners LLC.<br>Contact: hello@teamrunner.ai.</p>
+    <p>The engine is GPL-3.0-or-later; designated examples and templates are MIT-0. You may redistribute and modify the engine under GPL-3.0-or-later. Provided as is, without warranty, subject to applicable law.</p>
+    <p><strong>All costs are estimates. Actual provider charges can exceed estimates and configured budgets.</strong> Budget checks do not cap provider billing. Monitor your account and set provider spending controls where available. You are responsible for your account's charges. To the maximum extent permitted by law, the publisher, author, copyright holders, and contributors disclaim liability for provider charges and cost overruns.</p>
+    <p>Model requests go to your configured endpoint. The sponsored demo sends prompts through the Serenity Partners LLC gateway, OpenRouter, and the upstream model provider, and stores IP-based quota counters. Do not send private or sensitive information to the demo. The local client has no separate usage telemetry; tools and downloads can still make network requests. Local logs can contain sensitive inputs and outputs.</p>
+    <p>Verify AI outputs independently, review unfamiliar teams and tool permissions, and redact logs before sharing.</p>
+    <p><a href="/legal.txt?token=__TOKEN__" target="_blank" rel="noopener noreferrer">Full notices and data disclosures</a> · <a href="/license.txt?token=__TOKEN__" target="_blank" rel="noopener noreferrer">GPL license and warranty terms</a></p>
+    <form method="dialog"><button type="submit">Close</button></form>
   </dialog>
 </body>
 </html>

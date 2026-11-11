@@ -55,11 +55,11 @@ GUARDRAILS_RETIRED = {"max_calls": "calls_per_turn"}
 # Names a member may not have, because the flow or the access table uses them.
 RESERVED_NAMES = frozenset({"done", "stop", "others", "everyone", "standard", "deny"})
 
-# Providers `validate` accepts offline (D100); `validate --online` asks them.
+# Providers `validate --offline` accepts; plain `validate` asks them (D140).
 PROVIDERS = frozenset({
     "openai", "anthropic", "gemini", "vertex_ai", "ollama", "mistral", "groq",
     "azure", "bedrock", "xai", "deepseek", "openrouter", "together_ai",
-    "cohere", "fireworks_ai",
+    "cohere", "fireworks_ai", "teamrunner",
 })
 
 

@@ -11,9 +11,10 @@ from threading import RLock
 from ..console import money, seconds
 from ..runs import (NoRuns, all_runs, load_run, member_identity, member_versions,
                     read_events, runs_folder)
+from ..runfolder import OLD_RECORD, RECORD, record_file
 from .api import OutsideRoot, inside, visible
 
-CORE = ("run.json", "events.jsonl", "output.md")
+CORE = (RECORD, OLD_RECORD, "events.jsonl", "output.md")
 
 
 class HistoryVersions:
@@ -30,7 +31,7 @@ class HistoryVersions:
         for folder in sorted(base.iterdir()):
             if folder.name.startswith("."):
                 continue
-            for path in (folder, folder / "run.json", folder / "events.jsonl"):
+            for path in (folder, folder / RECORD, folder / OLD_RECORD, folder / "events.jsonl"):
                 try:
                     stat = path.lstat()
                     signature.append((str(path), stat.st_ino, stat.st_mtime_ns, stat.st_size))
@@ -68,7 +69,7 @@ def records(root: Path, written: str = "") -> tuple[list, list[str]]:
     folder = inside(root, written)
     folder = folder if folder.is_dir() else folder.parent
     warnings = []
-    if (folder / "run.json").is_file():
+    if record_file(folder) is not None:
         if not safe_folder(root, folder, warnings):
             raise OutsideRoot("This run points outside the opened folder.")
         record = load_run(folder, warnings)

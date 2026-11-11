@@ -39,9 +39,9 @@ def _first_setting(lines: list[str], start: int, end: int) -> int:
     return end
 
 
-def write_member_id(path: Path, what: str) -> str:
-    """Add an id to a member file's frontmatter. Returns the id."""
-    ulid = new_ulid()
+def write_member_id(path: Path, what: str, ulid: str | None = None) -> str:
+    """Add an id to a member file's frontmatter — a new one, or `ulid`. Returns the id."""
+    ulid = ulid or new_ulid()
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     close = next(i for i in range(1, len(lines)) if lines[i].rstrip() == "---")
     lines.insert(_first_setting(lines, 1, close), _line(ulid, what))

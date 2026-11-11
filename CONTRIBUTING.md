@@ -21,5 +21,7 @@ Once pull requests open, you will need to sign our
 [Contributor License Agreement](CLA.md) before your first one can be merged.
 It's a one-time step that covers all your future contributions.
 
-The CLA keeps the project's ownership unambiguous — it protects both you
-and the project. TeamRunner itself remains licensed under GPL-3.0-or-later.
+The CLA grants Serenity Partners LLC rights to use and license contributions;
+contributors retain their copyrights. Kumar Muthuraman remains the author and
+copyright holder of his own work. TeamRunner itself remains licensed under
+GPL-3.0-or-later. See [LEGAL.md](LEGAL.md) for publisher and responsible-use notices.

@@ -3,7 +3,7 @@ description: Argues in favor of the topic
 ---
 You are debating in favor of this topic:
 
-> {{topic}}
+{{topic}}
 
 Each round, make your strongest remaining argument in one short
 paragraph. From round two onward, also rebut your opponent's most

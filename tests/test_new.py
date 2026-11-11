@@ -49,15 +49,25 @@ def test_the_new_command(tmp_path, capsys, monkeypatch):
     assert main(["new", "fresh"]) == 0
     assert "✓ fresh made · fresh — 0 members, round-robin" in capsys.readouterr().out
     assert main(["new", "copy", "--from", "nowhere"]) == 1
-    assert "the examples are fact_checked, hiring_committee, multi_agent_debate" in capsys.readouterr().err
+    assert "the examples are demo, fact_checked, hiring_committee, multi_agent_debate" in capsys.readouterr().err
     assert main(["new", "debate", "--from", "fact_checked"]) == 0
     assert "✓ debate copied from fact_checked · debate — 6 members, chair.md, 2 toolkeepers" in capsys.readouterr().out
 
 
-SHIPPED = ["fact_checked", "hiring_committee", "multi_agent_debate", "orchestrators_lite", "reference_check", "round_robin"]
+def test_new_typed_in_a_workspace_goes_in_teams(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("TEAMRUNNER_WORKSPACE", raising=False)
+    (tmp_path / "teams").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert main(["new", "fresh"]) == 0 and (tmp_path / "teams/fresh/team.yaml").exists()
+    assert "teams/fresh made" in capsys.readouterr().out.replace("\\", "/")
+    assert main(["new", "./here"]) == 0 and (tmp_path / "here/team.yaml").exists()  # a path is used as written
 
 
-def test_the_six_ship():
+SHIPPED = ["demo", "fact_checked", "hiring_committee", "multi_agent_debate", "orchestrators_lite", "reference_check", "round_robin"]
+
+
+def test_the_examples_ship():
     from teamrunner.new import examples
     assert examples() == SHIPPED  # D116, D122
 
@@ -72,7 +82,10 @@ def test_every_shipped_example_validates_clean(name, tmp_path):
     from teamrunner.build import load_team
     from teamrunner.checks import litellm_params, needed_keys
     team, _ = load_team(copy)
-    assert needed_keys(team) == ["OPENROUTER_API_KEY"]
+    simple = name in {"demo", "round_robin", "multi_agent_debate"}
+    expected = "teamrunner/demoLLM" if simple else "anthropic/claude-haiku-5-5"
+    assert needed_keys(team) == ([] if simple else ["ANTHROPIC_API_KEY"])
+    assert {m.model.value for m in team.members.values() if m.model} == {expected}
     for m in team.members.values():  # every model takes its member's settings (gpt-5: no temperature)
         if m.model and m.params:
             assert litellm_params(m.model.value, {k: s.value for k, s in m.params.items()}) is None, m.name

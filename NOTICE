@@ -1,9 +1,23 @@
 TeamRunner
 Copyright 2026 Kumar Muthuraman
 
-TeamRunner is licensed under GPL-3.0-or-later (see LICENSE). The shipped
+Author and copyright holder: Kumar Muthuraman.
+Publisher and maintainer: Serenity Partners LLC.
+Sponsored demo gateway operator: Serenity Partners LLC.
+Contact: hello@teamrunner.ai.
+
+Costs are estimates; actual provider charges can exceed estimates and configured
+budgets. Budget checks do not cap provider billing. To the maximum extent
+permitted by applicable law, Serenity Partners LLC, Kumar Muthuraman, and other
+authors, copyright holders, and contributors disclaim liability for provider
+charges and cost overruns. See LEGAL.md for data disclosures, responsible use,
+and the full notice; see LICENSE sections 15–17 for warranty and liability terms.
+
+The TeamRunner engine and its documentation are licensed under GPL-3.0-or-later (see LICENSE). The shipped
 examples, the files `teamrunner new` writes and the authoring guide are
-MIT-0 (see examples/LICENSE).
+MIT-0 (see examples/LICENSE and src/teamrunner/authoring/LICENSE).
+Using the engine does not by itself license your inputs or outputs under the GPL;
+third-party rights and provider terms still apply. AI output rights are not guaranteed.
 
 TeamRunner bundles CodeMirror 5.65.21 (MIT), by Marijn Haverbeke and others,
 for offline browser editing. Its licence and pinned source information are
@@ -26,8 +40,9 @@ pip installs separately, each under its own licence:
   pypdf          BSD-3-Clause
   httpx          BSD-3-Clause
 
-and on what those depend on, all under permissive licences (MIT, BSD,
-Apache-2.0, MPL-2.0, PSF).
+and on their transitive dependencies, each under its own licence. The set of
+installed dependencies depends on the resolved versions; retain their notices
+when redistributing them. MPL-2.0 is a file-level copyleft licence.
 
 Downloaded when first used, not installed with TeamRunner:
 

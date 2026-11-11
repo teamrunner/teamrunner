@@ -1,6 +1,7 @@
 """Where a run is kept: `runs/<YYYY-MM-DD_HHMMSS>_<entry-team>/` at the top
-of the package (D69), holding `run.json`, `events.jsonl` and `output.md`,
-and `inputs/` when the run was given a file (D108).
+of the package (D69), holding `record.json`, `events.jsonl` and `output.md`,
+and `inputs/` when the run was given a file (D108). Before 0.2 the record
+was `run.json` (D138 (10)); older folders are read through `record_file`.
 """
 
 from __future__ import annotations
@@ -14,6 +15,15 @@ from pathlib import Path
 from .loader import RUNS_DIR
 
 SPEC_SUFFIXES = (".md", ".yaml", ".yml")
+RECORD, OLD_RECORD = "record.json", "run.json"
+
+
+def record_file(folder: Path) -> Path | None:
+    """A run folder's record: `record.json`, or `run.json` in a folder from before 0.2."""
+    for name in (RECORD, OLD_RECORD):
+        if (folder / name).is_file():
+            return folder / name
+    return None
 
 
 class RunFolder:
@@ -41,8 +51,8 @@ class RunFolder:
         self._events.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
         self._events.flush()
 
-    def write_run_json(self, record: dict) -> None:
-        (self.path / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str)
+    def write_record(self, record: dict) -> None:
+        (self.path / RECORD).write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str)
                                             + "\n", encoding="utf-8")
 
     def write_output(self, text: str) -> None:

@@ -1,4 +1,4 @@
-"""The versions a run depends on, recorded in every run.json (D14c: a study must be rerunnable)."""
+"""The versions a run depends on, recorded in every record.json (D14c: a study must be rerunnable)."""
 
 from __future__ import annotations
 

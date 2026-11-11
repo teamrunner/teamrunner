@@ -1,7 +1,7 @@
 # A model profile: the model and its settings, kept together.
 # The five engineers all run on it, through default_model in team.yaml.
-# Demo settings; changing them here changes them for everyone.
-name: openrouter/google/gemma-4-31b-it
+# Example settings; changing them here changes them for everyone.
+# Requires ANTHROPIC_API_KEY in ~/.teamrunner/.env.
+name: anthropic/claude-haiku-5-5
 params:
   max_tokens: 4096
-  temperature: 0.9

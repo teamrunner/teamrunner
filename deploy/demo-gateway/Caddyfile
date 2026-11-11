@@ -1,0 +1,13 @@
+{$DEMO_DOMAIN} {
+    request_body {
+        max_size 64KB
+    }
+    reverse_proxy 127.0.0.1:8080 {
+        # Overwrite caller-supplied forwarding headers; Python trusts loopback only.
+        header_up X-Forwarded-For {remote_host}
+        header_up -Forwarded
+        transport http {
+            response_header_timeout 70s
+        }
+    }
+}

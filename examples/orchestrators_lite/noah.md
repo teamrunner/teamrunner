@@ -1,4 +1,5 @@
 ---
+id: 01M73WPYPH9N91EPE1HZ4327XX  # added by teamrunner — keeps this agent's history together
 description: Engineer on the review team
 output:
   flagged_lines: ""     # comma-separated line numbers, e.g. "4, 9"; empty if none
@@ -9,7 +10,7 @@ against its specification.
 
 Specification:
 
-> {{spec}}
+{{spec}}
 
 Code:
 

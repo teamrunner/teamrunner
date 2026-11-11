@@ -5,7 +5,7 @@ output:
 ---
 You are given a paper to check:
 
-> {{paper}}
+{{paper}}
 
 If it is a link, ask the library toolkeeper to read it. If it is a file
 in this run's inputs, ask the intake toolkeeper to read it.

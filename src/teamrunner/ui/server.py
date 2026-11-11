@@ -28,6 +28,7 @@ ASSETS = {"/app.js": "text/javascript; charset=utf-8",
 ASSETS["/vendor/mermaid.js"] = "text/javascript; charset=utf-8"
 ASSETS["/diagrams.js"] = "text/javascript; charset=utf-8"
 ASSETS["/run.js"] = "text/javascript; charset=utf-8"
+ASSETS["/favicon.svg"] = "image/svg+xml"
 
 
 class Server(ThreadingHTTPServer):
@@ -137,12 +138,22 @@ class Handler(BaseHTTPRequestHandler):
                 page = (STATIC / "index.html").read_text(encoding="utf-8")
                 self.send(200, page.replace("__TOKEN__", self.server.token).encode(),
                           "text/html; charset=utf-8")
+            elif request.path in {"/legal.txt", "/license.txt"}:
+                # Bundled in wheels; use the canonical root files in a source checkout.
+                filename = {"/legal.txt": "LEGAL.md", "/license.txt": "LICENSE"}[request.path]
+                document = (Path(__file__).parents[1] / "LEGAL.md"
+                            if request.path == "/legal.txt" else STATIC / "license.txt")
+                if not document.is_file():
+                    document = Path(__file__).parents[3] / filename
+                self.send(200, document.read_bytes(), "text/plain; charset=utf-8")
             elif request.path in ASSETS:
                 self.send(200, (STATIC / request.path[1:]).read_bytes(), ASSETS[request.path])
             elif request.path == "/api/info":
                 self.send(200, {"name": self.server.root.name, "folder": str(self.server.root),
                                 "team": (self.server.root / "team.yaml").is_file(),
-                                "examples": examples()})
+                                "examples": examples(), "feedback": feedback()})
+            elif request.path == "/api/team-contents":
+                self.send(200, api.team_contents(self.server.root, query.get("path", [""])[0]))
             elif request.path == "/api/files":
                 self.send(200, api.files(self.server.root, query.get("path", [""])[0]))
             elif request.path == "/api/file":
@@ -209,13 +220,21 @@ class Handler(BaseHTTPRequestHandler):
                 elif route == "/api/save":
                     result = api.save_file(root, data["path"], data["text"], data["revision"])
                 elif route == "/api/validate":
-                    result = api.validate_team(root, data.get("path", ""), data.get("online") is True)
+                    result = api.validate_team(root, data.get("path", ""), data.get("offline") is True,
+                                               fresh=data.get("remembered") is not True)
                 elif route == "/api/member":
                     result = api.create_member(root, data["path"])
+                elif route == "/api/chair":
+                    result = api.create_chair(root, data.get("path", ""))
                 elif route == "/api/rename":
                     result = api.rename_file(root, data["path"], data["destination"], data["revision"])
                 elif route == "/api/trash":
                     result = api.trash_file(root, data["path"], data["revision"])
+                elif route == "/api/trash-team":
+                    if self.server.jobs.status()["active"] is not None:
+                        raise api.Conflict("A run is in progress. Stop it or wait for it to finish "
+                                           "before moving a team to the trash.")
+                    result = api.trash_team(root, data["path"])
                 elif route == "/api/restore-team":
                     result = diagrams.restore(root, data["path"], data["destination"])
                 elif route == "/api/new":
@@ -243,6 +262,26 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, KeyError, AttributeError, OSError, RuntimeError, subprocess.SubprocessError):
             # Do not echo request values: the request may be a key submission.
             self.send(400, {"error": "The action could not be completed. Check the folder, filename and values."})
+
+
+ISSUES = "https://github.com/teamrunner/teamrunner/issues/new"
+HELLO = "hello@teamrunner.ai"
+
+
+def feedback() -> dict:
+    """Where comments go (GitHub Issues or email), with the details a bug report asks for.
+
+    Nothing is sent from here: these are links the person opens and reads before posting.
+    """
+    import platform
+    from .. import __version__
+    version = f"teamrunner {__version__}"
+    system = f"{platform.system()} {platform.release()}, Python {platform.python_version()}"
+    return {"version": version, "system": system, "email": HELLO,
+            "bug": f"{ISSUES}?template=bug_report.yml&version={quote(version)}&system={quote(system)}",
+            "idea": f"{ISSUES}?template=question.yml&version={quote(version)}",
+            "mail": f"mailto:{HELLO}?subject={quote('TeamRunner feedback')}"
+                    f"&body={quote(chr(10) * 2 + version + chr(10) + system)}"}
 
 
 def serve(folder: Path) -> int:

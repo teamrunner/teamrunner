@@ -4,15 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "teamrunner"
-version = "0.0.4"
+version = "0.0.5"
 description = "The experimentation platform for agent organizations — run multi-agent orchestrations and factorial experiments entirely from text files."
 readme = "README.md"
 license = "GPL-3.0-or-later AND MIT-0"
 # The engine is GPL; the examples, what `new` writes and the authoring guide are MIT-0 (D130)
-license-files = ["LICENSE", "NOTICE", "examples/LICENSE", "src/teamrunner/authoring/LICENSE"]
+license-files = ["LICENSE", "NOTICE", "LEGAL.md", "examples/LICENSE", "src/teamrunner/authoring/LICENSE", "src/teamrunner/ui/static/vendor/*LICENSE*"]
 requires-python = ">=3.10"
 authors = [
     { name = "Kumar Muthuraman", email = "hello@teamrunner.ai" },
+]
+maintainers = [
+    { name = "Serenity Partners LLC", email = "hello@teamrunner.ai" },
 ]
 keywords = ["agents", "multi-agent", "llm", "experimentation", "orchestration", "reproducibility"]
 classifiers = [
@@ -44,7 +47,7 @@ teamrunner = "teamrunner.cli:main"
 dev = ["pytest>=8"]
 
 [project.urls]
-Homepage = "https://github.com/teamrunner/teamrunner"  # teamrunner.ai once the site exists
+Homepage = "https://teamrunner.ai"
 Repository = "https://github.com/teamrunner/teamrunner"
 Issues = "https://github.com/teamrunner/teamrunner/issues"
 Changelog = "https://github.com/teamrunner/teamrunner/blob/main/CHANGELOG.md"
@@ -56,6 +59,8 @@ packages = ["src/teamrunner"]
 # packed into the install as teamrunner/examples, where `new --from <name>` finds them.
 [tool.hatch.build.targets.wheel.force-include]
 "examples" = "teamrunner/examples"
+"LEGAL.md" = "teamrunner/LEGAL.md"
+"LICENSE" = "teamrunner/ui/static/license.txt"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

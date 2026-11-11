@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Callable
 
 from .console import Console, money, seconds
+from .runfolder import record_file
 from .loader import RUNS_DIR, TEAM_FILE, find_top
 
 STAMP = "%Y-%m-%d_%H%M%S"
@@ -33,6 +34,14 @@ class RunRecord:
     @property
     def team(self) -> str:
         return self.run.get("team") or (self.run.get("entry") or "").rsplit("/", 1)[-1] or self.folder.name
+
+    @property
+    def label(self) -> str:
+        """The list's second column: the team, or an experiment run's condition and replicate."""
+        block = self.run.get("experiment")
+        if isinstance(block, dict) and block.get("condition"):
+            return f"{block['condition']} r{block.get('replicate', '?')}"
+        return self.team
 
     @property
     def input(self) -> str:
@@ -74,6 +83,8 @@ class NoRuns(Exception):
 def runs_folder(start: Path, runs_dir: Path | None = None) -> tuple[Path, Path]:
     """The package top and its runs/ folder, found by walking up (D69)."""
     start = Path(start).resolve()
+    if (start / "experiment.md").is_file():  # an experiment keeps its runs in its own runs/ (D138)
+        return start, Path(runs_dir) if runs_dir else start / RUNS_DIR
     folder = start
     while not (folder / TEAM_FILE).is_file() and folder.parent != folder:
         folder = folder.parent
@@ -85,8 +96,8 @@ def runs_folder(start: Path, runs_dir: Path | None = None) -> tuple[Path, Path]:
 
 def load_run(folder: Path, warnings: list[str] | None = None) -> RunRecord | None:
     """Read a recorded run, without requiring the current team to validate."""
-    record = folder / "run.json"
-    if not record.is_file():
+    record = record_file(folder)
+    if record is None:
         return None
     try:
         when = datetime.strptime(folder.name[:17], STAMP)
@@ -103,7 +114,7 @@ def load_run(folder: Path, warnings: list[str] | None = None) -> RunRecord | Non
                 raise ValueError("invalid run total")
     except (ValueError, OSError, UnicodeError):
         if warnings is not None:
-            warnings.append(f"{folder.name}: run.json could not be read; this run was skipped.")
+            warnings.append(f"{folder.name}: {record.name} could not be read; this run was skipped.")
         return None
     return RunRecord(folder, when, run)
 
@@ -145,7 +156,7 @@ def print_list(top: Path, records: list[RunRecord], shown: list[RunRecord], out:
         rehearsal = " (rehearsal)" if r.run.get("rehearsal") else ""
         if r.run.get("backup_models"):
             rehearsal += " (backup model)"
-        out.say(f"{r.shown_when:<13} {r.team:<20} {r.input:<34} {r.result:<26} "
+        out.say(f"{r.shown_when:<13} {r.label:<20} {r.input:<34} {r.result:<26} "
                 f"{colour(f'{status:<9}')} {r.run.get('turns', 0):>3} turns "
                 f"{seconds(r.run.get('latency_ms')):>7} {money(r.run.get('cost_usd')):>9}{rehearsal}")
 

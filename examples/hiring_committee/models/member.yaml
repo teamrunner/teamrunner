@@ -1,6 +1,7 @@
 # A model profile: the model and its settings, kept together.
 # Every committee member and the clerk run on it, through default_model
 # in team.yaml; changing it here changes it for everyone.
-name: openrouter/google/gemma-4-31b-it
+# Requires ANTHROPIC_API_KEY in ~/.teamrunner/.env.
+name: anthropic/claude-haiku-5-5
 params:
   max_tokens: 4096

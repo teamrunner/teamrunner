@@ -50,7 +50,7 @@ def print_problems(report: Report, out: Style) -> None:
 
 
 def _online_check(report, out, quiet: bool):
-    """validate --online (D100): the same key and model check as `run`, and no run.
+    """validate (D140): the same key and model check as `run`, and no run.
     It never asks: a key found only in the shell is used for the check, not saved."""
     from .checks import online_check
     from .console import Console
@@ -67,8 +67,8 @@ def cmd_validate(args) -> int:
     except NotATeam as e:
         print(out.red(f"✗ {e}"), file=sys.stderr)
         return 2
-    online = None
-    if args.online and report.ok:
+    online = None  # keys and models are checked once the files are right (D140)
+    if not args.offline and report.ok:
         online = _online_check(report, out, quiet=args.json)
     if args.json:
         from .explain import json_report
@@ -97,6 +97,10 @@ def cmd_validate(args) -> int:
             tail += ", " + out.yellow(_plural(warnings, "warning"))
     else:
         tail = out.green("OK") + (", " + out.yellow(_plural(warnings, "warning")) if warnings else "")
+        if online is not None and not online.ok:
+            tail = "files " + tail + ", " + out.red(_plural(len(online.problems), "problem") + " with keys or models")
+        elif args.offline:
+            tail += out.dim(" · keys and models not checked (--offline)")
     print(f"{_summary(report)} · {tail}")
     if online is not None and not online.ok:
         return 1
@@ -121,7 +125,8 @@ def cmd_run(args) -> int:
     interactive = sys.stdin.isatty() and sys.stdout.isatty() and not args.quiet
     options = Options(message=args.message, file=args.file, task_file=args.task_file,
                       runs_dir=args.runs_dir, verbose=args.verbose, quiet=args.quiet,
-                      ask=ask_at_keyboard if interactive else None, rehearse=args.rehearse)
+                      ask=ask_at_keyboard if interactive else None, rehearse=args.rehearse,
+                      max_cost=args.max_cost, max_cost_from="--max-cost" if args.max_cost is not None else None)
     try:
         outcome = run_team(Path(args.team), options)
     except NotATeam as e:
@@ -140,7 +145,7 @@ def cmd_runs(args) -> int:
     out = Console(args.verbose)
     folder, when = Path("."), None
     for given in args.args:
-        if Path(given).is_dir() and (Path(given) / "team.yaml").is_file():
+        if Path(given).is_dir() and any((Path(given) / f).is_file() for f in ("team.yaml", "experiment.md")):
             folder = Path(given)
         else:
             when = given if when is None else f"{when} {given}"
@@ -281,7 +286,9 @@ def _describe(args, out) -> int:
 
 def cmd_new(args) -> int:
     from .new import NewError, copy_from, create, find_source
+    from .workspace import team_place
     out = Style(sys.stdout)
+    args.name = str(team_place(Path("."), args.name))  # typed in a workspace: into teams/ (D144)
     if args.describe and args.source:
         print(out.red("✗ give either --from or --describe, not both"), file=sys.stderr)
         return 1
@@ -352,9 +359,89 @@ def cmd_skill(args) -> int:
     return 1 if failed else 0
 
 
+def _usd(text: str) -> float:
+    try:
+        value = float(text.lstrip("$"))
+    except ValueError:
+        value = -1
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: give an amount in US dollars above 0, such as 40 or 2.50")
+    return value
+
+
+def cmd_experiment(args) -> int:
+    from .console import Console
+    from .experiment import NotAnExperiment
+    out = Console(False)
+    try:
+        if args.plan:
+            from .plan import plan
+            return plan(Path(args.folder), out, max_cost=args.max_cost)
+        if args.summary:
+            from .experiment_run import print_summary
+            return print_summary(Path(args.folder), out)
+        if args.export is not None:
+            from .experiment_run import export_experiment
+            return export_experiment(Path(args.folder), args.export, out, completed=args.completed)
+        if args.completed:
+            print(Style(sys.stderr).red("✗ --completed goes with --export <dir>"), file=sys.stderr)
+            return 1
+        from .experiment_run import run_experiment
+        change = "restart" if args.restart else "keep_unchanged" if args.keep_unchanged else None
+        evaluating = "only" if args.evaluate else "none" if args.no_evaluate else "both"
+        return run_experiment(Path(args.folder), out, rehearse=args.rehearse, max_cost=args.max_cost,
+                              change=change, evaluating=evaluating)
+    except NotAnExperiment as e:
+        print(Style(sys.stderr).red(f"✗ {e}"), file=sys.stderr)
+        return 1
+
+
 def cmd_ui(args) -> int:
+    """A named folder is opened once; with none, the workspace is opened from anywhere (D143, D144)."""
+    from . import workspace
     from .ui.server import serve
-    return serve(Path(args.folder))
+    change = "`teamrunner ui <folder> --remember` chooses another"
+    if args.folder is not None:
+        folder = Path(args.folder).expanduser()
+        if args.remember:
+            if not folder.is_dir():
+                print(f"Could not remember {folder}: it is not a folder.", file=sys.stderr)
+                return 1
+            workspace.remember(folder.resolve())
+            print(f"Your teamrunner workspace is now {workspace.shown(folder.resolve())}; "
+                  "`teamrunner ui` opens it from anywhere.")
+        return serve(folder)
+    if args.remember:
+        print("Name the folder to remember: `teamrunner ui <folder> --remember`.", file=sys.stderr)
+        return 1
+    found = workspace.remembered()
+    if found:
+        folder, where = found
+        if not folder.is_dir():
+            print(f"Your teamrunner workspace, {workspace.shown(folder)}, could not be found "
+                  f"({workspace.NAME} in {where}). {change[0].upper() + change[1:]}.", file=sys.stderr)
+            return 1
+        return serve(folder)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):  # no one to ask: today's folder, not remembered
+        print(f"No teamrunner workspace is remembered yet, so this folder is opened. {change[0].upper() + change[1:]}.",
+              file=sys.stderr)
+        return serve(Path("."))
+    suggested = workspace.default()
+    try:
+        answer = input(f"Where should your teamrunner workspace be? [{workspace.shown(suggested)}] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
+    folder = Path(answer).expanduser().absolute() if answer else suggested
+    try:
+        workspace.make(folder)  # with teams/ and experiments/ (D144)
+        workspace.remember(folder.resolve())
+    except OSError as error:
+        print(f"Could not use {folder}: {error}", file=sys.stderr)
+        return 1
+    print(f"Your teamrunner workspace is {workspace.shown(folder.resolve())}. `teamrunner ui` opens it from anywhere; "
+          f"`teamrunner ui <folder>` opens another folder once, and {change}.")
+    return serve(folder)
 
 
 def main(argv=None) -> int:
@@ -362,20 +449,29 @@ def main(argv=None) -> int:
         if hasattr(stream, "reconfigure") and (stream.encoding or "").lower().replace("-", "") != "utf8":
             stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(prog="teamrunner",
-                                     description="Run teams of agents from text files.")
+                                     description="Run teams of agents from text files.",
+                                     epilog="Author: Kumar Muthuraman. Publisher: Serenity Partners LLC. "
+                                     "Provided without warranty under GPL-3.0-or-later (designated templates: MIT-0). "
+                                     "All costs are estimates; actual charges may exceed budgets. "
+                                     "Provider charges and overrun liability are disclaimed to the extent permitted by law. "
+                                     "Notices: https://github.com/teamrunner/teamrunner/blob/main/LEGAL.md")
     parser.add_argument("--version", action="version", version=f"teamrunner {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    ui = commands.add_parser("ui", aliases=["gui"], help="open this folder in the local browser interface")
-    ui.add_argument("folder", nargs="?", default=".", help="the folder to open (default: this folder)")
+    ui = commands.add_parser("ui", aliases=["gui"], help="open your teamrunner workspace in the local browser interface")
+    ui.add_argument("folder", nargs="?", default=None,
+                    help="another folder to open, this once (default: your teamrunner workspace)")
+    ui.add_argument("--remember", action="store_true",
+                    help="make the named folder your teamrunner workspace from now on")
     ui.set_defaults(func=cmd_ui)
 
-    v = commands.add_parser("validate", help="check a team's files before running it")
+    v = commands.add_parser("validate", help="check a team's files, keys and models before running it")
     v.add_argument("team", nargs="?", default=".", help="the team folder (default: this folder)")
     v.add_argument("-v", "--verbose", action="store_true",
                    help="also list each member and where its model comes from")
-    v.add_argument("--online", action="store_true",
-                   help="also check every key and ask each provider whether its models are available")
+    v.add_argument("--offline", action="store_true",
+                   help="check the files only: skip the keys and do not ask providers about their models")
+    v.add_argument("--online", action="store_true", help=argparse.SUPPRESS)  # the default since D140
     v.add_argument("--json", action="store_true",
                    help="every problem as JSON, with its file, line, value and fix (for assistants)")
     v.set_defaults(func=cmd_validate)
@@ -389,6 +485,8 @@ def main(argv=None) -> int:
     r.add_argument("--runs-dir", type=Path, help="keep the run somewhere other than the package's runs/")
     r.add_argument("--rehearse", action="store_true",
                    help="no model: placeholder words and random answers, to check the flow for free")
+    r.add_argument("--max-cost", type=_usd, metavar="USD",
+                   help="a hard ceiling: no call is sent that could take the run past it")
     shown = r.add_mutually_exclusive_group()
     shown.add_argument("-v", "--verbose", action="store_true",
                        help="everything said in full, tokens, models, decisions and retries")
@@ -418,7 +516,8 @@ def main(argv=None) -> int:
     g.set_defaults(func=cmd_gather)
 
     n = commands.add_parser("new", help="make a new team folder, empty or copied from another team")
-    n.add_argument("name", help="the new folder; its name is the team's name")
+    n.add_argument("name", help="the new folder; its name is the team's name. A bare name typed in your "
+                   "teamrunner workspace goes in its teams/ folder")
     n.add_argument("--from", dest="source", metavar="TEAM",
                    help="copy a team folder, or an example by name (fact_checked, reference_check, …), "
                         "with fresh ids")
@@ -441,6 +540,36 @@ def main(argv=None) -> int:
     shape.add_argument("--text", action="store_true", help="print the flow as Mermaid, to paste into GitHub or Notion")
     x.add_argument("--save", action="store_true", help="with --diagram: keep the page in the team folder")
     x.set_defaults(func=cmd_explain)
+
+    e = commands.add_parser("experiment", help="run versions of a team side by side, many times each",
+                            description="The folder holds experiment.md. Runs every condition, replication by "
+                            "replication, in permuted rounds; running it again skips slots already completed. "
+                            "--plan builds and checks every condition and shows the order of runs and the cost "
+                            "estimate, spending nothing.")
+    e.add_argument("folder", nargs="?", default=".", help="the experiment folder (default: this folder)")
+    e.add_argument("--plan", action="store_true",
+                   help="show the conditions, their differences, the order of runs and the estimate; run nothing")
+    e.add_argument("--rehearse", action="store_true",
+                   help="every run with no model: placeholder words and random answers; kept, never counted")
+    e.add_argument("--max-cost", type=_usd, metavar="USD",
+                   help="the hard ceiling for this session, in place of max_cost_usd in experiment.md")
+    doing = e.add_mutually_exclusive_group()
+    doing.add_argument("--evaluate", action="store_true",
+                       help="only evaluate the runs already made, with every evaluator's current version; "
+                       "start no run")
+    doing.add_argument("--no-evaluate", action="store_true", help="only run; call no evaluator")
+    doing.add_argument("--summary", action="store_true",
+                       help="print the summary of the runs that count; call nothing")
+    doing.add_argument("--export", type=Path, metavar="DIR",
+                       help="write runs.csv, turns.csv, outputs.csv, metrics.csv and evaluations.csv into DIR; "
+                       "call nothing")
+    e.add_argument("--completed", action="store_true", help="with --export: only the runs that count")
+    changed = e.add_mutually_exclusive_group()
+    changed.add_argument("--restart", action="store_true",
+                         help="when the study has changed: start it from round 1; earlier runs are kept, not counted")
+    changed.add_argument("--keep-unchanged", action="store_true",
+                         help="when the study has changed: keep the runs of conditions that did not change")
+    e.set_defaults(func=cmd_experiment)
 
     args = parser.parse_args(argv)
     return args.func(args)

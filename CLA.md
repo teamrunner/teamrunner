@@ -3,8 +3,11 @@
 Thank you for your interest in contributing to TeamRunner (the "Project").
 
 This Contributor License Agreement ("Agreement") documents the rights granted
-by contributors to the Project's owner, Kumar Muthuraman, and his successors
-and assigns (the "Project Owner"). This Agreement is for your protection as a
+by contributors to Serenity Partners LLC, the Project publisher, and its
+successors and assigns (the "Project Publisher").
+This label identifies the recipient of the licenses below; it does not assign
+contributors' copyrights to the company. Kumar Muthuraman retains copyright
+in his own work. This Agreement is for your protection as a
 contributor as well as the protection of the Project and its users; it does
 not change your rights to use your own contributions for any other purpose.
 
@@ -27,17 +30,17 @@ excluding communication that You conspicuously mark "Not a Contribution."
 
 ## 2. Grant of Copyright License
 
-Subject to the terms of this Agreement, You hereby grant to the Project Owner
+Subject to the terms of this Agreement, You hereby grant to the Project Publisher
 a perpetual, worldwide, non-exclusive, royalty-free, irrevocable copyright
 license to reproduce, prepare derivative works of, publicly display, publicly
 perform, sublicense, and distribute Your Contributions and such derivative
 works, and to license Your Contributions and such derivative works under any
-license terms of the Project Owner's choosing, including open-source,
+license terms of the Project Publisher's choosing, including open-source,
 source-available, and proprietary licenses.
 
 ## 3. Grant of Patent License
 
-Subject to the terms of this Agreement, You hereby grant to the Project Owner
+Subject to the terms of this Agreement, You hereby grant to the Project Publisher
 and to recipients of software distributed by the Project a perpetual,
 worldwide, non-exclusive, royalty-free, irrevocable (except as stated in this
 section) patent license to make, have made, use, offer to sell, sell, import,

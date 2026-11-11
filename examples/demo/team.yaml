@@ -1,0 +1,6 @@
+name: demo
+description: A short debate with a free TeamRunner-sponsored model
+default_model: teamrunner/demoLLM
+message_goes_to: topic
+default_inputs:
+  topic: "Remote work makes teams more productive"

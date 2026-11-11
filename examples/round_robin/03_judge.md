@@ -6,7 +6,7 @@ output:
 ---
 You have heard one speech from each side on:
 
-> {{topic}}
+{{topic}}
 
 Decide which side argued better — judge argument quality and logical
 clarity, not your own opinion of the topic. Announce the winner and

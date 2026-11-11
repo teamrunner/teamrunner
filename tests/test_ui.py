@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 from threading import Thread
 from urllib.error import HTTPError
@@ -46,7 +47,9 @@ def test_browser_lists_every_shipped_example_without_changing_it(example):
     with running(root) as server:
         status, _, body = get(server, "/api/info")
         assert status == 200
-        assert json.loads(body) == {"name": example, "folder": str(root.resolve()), "team": True,
+        shown = json.loads(body)
+        shown.pop("feedback")
+        assert shown == {"name": example, "folder": str(root.resolve()), "team": True,
                                     "examples": examples()}
         status, _, body = get(server, "/api/files")
         assert status == 200
@@ -61,7 +64,7 @@ def test_page_and_assets_require_token_and_ship_offline(tmp_path):
     with running(tmp_path) as server:
         assert server.server_address[0] == "127.0.0.1"
         assert len(server.token) >= 32
-        for route in ["/", "/app.js", "/app.css", "/vendor/editor.js", "/vendor/editor.css", "/api/info", "/api/files"]:
+        for route in ["/", "/app.js", "/app.css", "/vendor/editor.js", "/vendor/editor.css", "/legal.txt", "/license.txt", "/api/info", "/api/files"]:
             assert get(server, route, token=False)[0] == 403
             assert get(server, route, headers={"X-TeamRunner-Token": "wrong"})[0] == 403
             assert get(server, route)[0] == 200
@@ -69,6 +72,9 @@ def test_page_and_assets_require_token_and_ship_offline(tmp_path):
         assert status == 200
         assert b"__TOKEN__" not in body
         assert b"https://" not in body
+        assert b"Serenity Partners LLC" in get(server, "/legal.txt")[2]
+        assert b"cost overruns" in get(server, "/legal.txt")[2].lower()
+        assert b"GNU GENERAL PUBLIC LICENSE" in get(server, "/license.txt")[2]
         assert headers["Referrer-Policy"] == "no-referrer"
         assert headers["Cache-Control"] == "no-store"
         assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
@@ -121,10 +127,73 @@ def test_cli_command_and_alias(command, tmp_path, monkeypatch):
     opened = []
     monkeypatch.setattr("teamrunner.ui.server.serve", lambda folder: opened.append(folder) or 0)
     monkeypatch.chdir(tmp_path)
-    assert main([command]) == 0
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("TEAMRUNNER_WORKSPACE", raising=False)
+    assert main([command]) == 0  # no one to ask and nothing remembered: this folder, as before
     assert opened == [Path(".")]
+    assert not (tmp_path / "home/.env").exists()
     assert main([command, str(tmp_path)]) == 0
     assert opened[-1] == tmp_path
+
+
+def test_plain_ui_opens_the_remembered_teams_folder_from_anywhere(tmp_path, monkeypatch, capsys):
+    from teamrunner import workspace
+    from teamrunner.keys import extra_settings, read_env, save_key
+    opened = []
+    monkeypatch.setattr("teamrunner.ui.server.serve", lambda folder: opened.append(folder) or 0)
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("TEAMRUNNER_WORKSPACE", raising=False)
+    teams, other, elsewhere = tmp_path / "teams", tmp_path / "other", tmp_path / "elsewhere"
+    for folder in (teams, other, elsewhere):
+        folder.mkdir()
+    monkeypatch.chdir(elsewhere)
+    keyfile = tmp_path / "home/.env"
+    save_key(keyfile, "OPENAI_API_KEY", "sk-kept")
+
+    assert main(["ui", str(teams), "--remember"]) == 0
+    assert opened[-1] == teams and read_env(keyfile) == {"OPENAI_API_KEY": "sk-kept",
+                                                          "TEAMRUNNER_WORKSPACE": str(teams.resolve())}
+    assert "TEAMRUNNER_WORKSPACE" not in extra_settings()  # never handed to a model provider
+    if os.name != "nt":
+        assert keyfile.stat().st_mode & 0o777 == 0o600
+    assert main(["ui"]) == 0 and opened[-1] == teams.resolve()
+    assert main(["ui", str(other)]) == 0 and opened[-1] == other  # once: nothing is remembered
+    assert main(["ui"]) == 0 and opened[-1] == teams.resolve()
+    assert main(["ui", str(other), "--remember"]) == 0  # the line is replaced, not repeated
+    assert keyfile.read_text().count("TEAMRUNNER_WORKSPACE") == 1 and workspace.remembered()[0] == other.resolve()
+
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(teams))  # the shell wins, as with keys
+    assert main(["ui"]) == 0 and opened[-1] == teams
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(tmp_path / "gone"))
+    count = len(opened)
+    assert main(["ui"]) == 1 and len(opened) == count
+    assert "could not be found" in capsys.readouterr().err
+    assert main(["ui", "--remember"]) == 1 and main(["ui", str(tmp_path / "gone"), "--remember"]) == 1
+
+
+def test_the_first_plain_ui_asks_once_where_the_workspace_is(tmp_path, monkeypatch, capsys):
+    from teamrunner import workspace
+    opened, asked = [], []
+    monkeypatch.setattr("teamrunner.ui.server.serve", lambda folder: opened.append(folder) or 0)
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("TEAMRUNNER_WORKSPACE", raising=False)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "me")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or "")
+    assert main(["ui"]) == 0
+    assert asked == ["Where should your teamrunner workspace be? [~/teamrunner] "]
+    assert opened == [tmp_path / "me/teamrunner"] and opened[0].is_dir()
+    assert sorted(p.name for p in opened[0].iterdir()) == ["experiments", "teams"]  # D144
+    assert workspace.remembered()[0] == (tmp_path / "me/teamrunner").resolve()
+    assert "opens it from anywhere" in capsys.readouterr().out
+    assert main(["ui"]) == 0 and len(asked) == 1  # never asked again
+
+    (tmp_path / "home/.env").unlink()
+    chosen = tmp_path / "my work/teams"
+    monkeypatch.setattr("builtins.input", lambda prompt: f"  {chosen}  ")
+    assert main(["ui"]) == 0 and opened[-1] == chosen and chosen.is_dir()
+    assert workspace.remembered()[0] == chosen.resolve()
 
 
 def test_launch_prints_url_opens_browser_and_closes_on_interrupt(tmp_path, monkeypatch, capsys):
@@ -174,6 +243,10 @@ def ui_team(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
     copy_from(EXAMPLES / "round_robin", root / "debate")
+    # UI key/error tests use an explicit keyed provider, independently of the
+    # shipped starter's free hosted model. No live provider calls are made.
+    team_file = root / "debate/team.yaml"
+    team_file.write_text(team_file.read_text().replace("teamrunner/demoLLM", "openrouter/google/gemma-4-31b-it"))
     return root
 
 
@@ -186,7 +259,7 @@ def test_edit_conflict_validate_and_resolved_member(ui_team):
         broken = original["text"] + "\nunknown_word: true\n"
         status, saved = post(server, "/api/save", {**original, "text": broken})
         assert status == 200 and saved["revision"] != original["revision"]
-        status, report = post(server, "/api/validate", {"path": path})
+        status, report = post(server, "/api/validate", {"path": path, "offline": True})
         assert status == 200 and not report["ok"]
         cli_report = validate(ui_team / "debate")
         assert [p["message"] for p in report["problems"]] == [p.message for p in cli_report.problems]
@@ -199,7 +272,7 @@ def test_edit_conflict_validate_and_resolved_member(ui_team):
         latest = json.loads(get(server, "/api/file?path=" + path)[2])
         assert latest["revision"] != original["revision"]
         assert post(server, "/api/save", original)[0] == 409
-        status, report = post(server, "/api/validate", {"path": path})
+        status, report = post(server, "/api/validate", {"path": path, "offline": True})
         assert report["ok"] and "decider" in report["roles"].values()
         member = next(p for p in report["roles"] if p.endswith(".md"))
         status, _, body = get(server, "/api/show?" + urlencode({"path": member}))
@@ -210,12 +283,14 @@ def test_edit_conflict_validate_and_resolved_member(ui_team):
 def test_every_write_requires_header_token_and_stays_inside_root(ui_team, tmp_path):
     with running(ui_team) as server:
         original = json.loads(get(server, "/api/file?path=debate/team.yaml")[2])
-        for route in ["/api/save", "/api/member", "/api/rename", "/api/trash", "/api/new", "/api/key", "/api/validate"]:
+        for route in ["/api/save", "/api/member", "/api/chair", "/api/rename", "/api/trash", "/api/new", "/api/key", "/api/validate"]:
             assert post(server, route, original, token=False)[0] == 403
             assert post(server, route + "?token=" + server.token, original, token=False)[0] == 403
             assert post(server, route, original, headers={"Origin": "https://bad.example"})[0] == 403
         for path in ["../outside.md", str(tmp_path / "outside.md"), ".env", "debate/runs/new.md"]:
             assert post(server, "/api/member", {"path": path})[0] == 403
+        for path in ["..", str(tmp_path), "debate/runs"]:
+            assert post(server, "/api/chair", {"path": path})[0] == 403
         runs = ui_team / "debate/runs"
         runs.mkdir()
         (runs / "output.md").write_text("keep this result")
@@ -235,6 +310,15 @@ def test_member_rename_trash_and_new_team_use_existing_functions(ui_team, monkey
         status, file = post(server, "/api/member", {"path": "debate/researcher.md"})
         assert status == 200
         assert post(server, "/api/member", {"path": "debate/researcher.md"})[0] == 409
+        assert post(server, "/api/member", {"path": "debate/manager.md"})[0] == 400
+        assert post(server, "/api/new", {"path": "bare"})[0] == 200
+        status, refused = post(server, "/api/member", {"path": "bare/chair.md"})
+        assert status == 400 and "+ Chair" in refused["error"] and not (ui_team / "bare/chair.md").exists()
+        status, chair = post(server, "/api/chair", {"path": "bare"})
+        assert status == 200 and chair["path"] == "bare/chair.md" and "->" in chair["text"]
+        assert all(line.startswith("#") for line in chair["text"].split("\n") if line)
+        assert post(server, "/api/chair", {"path": "bare"})[0] == 409
+        assert post(server, "/api/chair", {"path": "bare/models"})[0] == 400
         status, renamed = post(server, "/api/rename", {**file, "destination": "debate/reviewer.md"})
         assert status == 200 and not (ui_team / file["path"]).exists()
         assert post(server, "/api/trash", renamed)[0] == 200
@@ -245,6 +329,65 @@ def test_member_rename_trash_and_new_team_use_existing_functions(ui_team, monkey
         assert (ui_team / "example/chair.md").exists()
         assert post(server, "/api/new", {"path": "example", "example": "fact_checked"})[0] in (400, 409)
         assert post(server, "/api/new", {"path": "untrusted", "example": "../arbitrary"})[0] == 400
+
+
+def test_new_team_in_a_workspace_goes_in_teams(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("TEAMRUNNER_WORKSPACE", raising=False)
+    root = tmp_path / "teamrunner"
+    for part in ("teams", "experiments"):
+        (root / part).mkdir(parents=True)
+    with running(root) as server:
+        status, made = post(server, "/api/new", {"path": "fresh"})
+        assert status == 200 and made["path"] == "teams/fresh/team.yaml"
+        assert post(server, "/api/new", {"path": "elsewhere/kept"})[0] == 200  # a path is used as written
+        assert (root / "elsewhere/kept/team.yaml").exists() and not (root / "fresh").exists()
+    remembered = tmp_path / "older"  # remembered before D144, with no teams/ yet
+    remembered.mkdir()
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(remembered))
+    with running(remembered) as server:
+        assert post(server, "/api/new", {"path": "fresh"})[1]["path"] == "teams/fresh/team.yaml"
+
+
+def test_a_team_goes_to_the_trash_as_a_whole_folder_and_nothing_else_does(ui_team, monkeypatch):
+    trashed = []
+    monkeypatch.setattr("teamrunner.ui.trash.move_to_trash", lambda path: trashed.append(path))
+    (ui_team / "debate/runs/2026-01-01_000000_abcd").mkdir(parents=True)
+    (ui_team / "notes").mkdir()
+    with running(ui_team) as server:
+        status, _, body = get(server, "/api/team-contents?path=debate")
+        holds = json.loads(body)
+        assert status == 200 and holds["name"] == "debate" and holds["runs"] == 0
+        assert holds["files"] == sum(1 for p in (ui_team / "debate").rglob("*")
+                                     if p.is_file() and "runs" not in p.parts)
+        for path in ["", ".", "notes", "debate/runs", "debate/runs/2026-01-01_000000_abcd",
+                     "debate/team.yaml", "../workspace", "missing"]:
+            assert post(server, "/api/trash-team", {"path": path})[0] in (400, 403, 404), path
+        assert post(server, "/api/trash-team", {"path": "debate"}, token=False)[0] == 403
+        assert trashed == []
+        assert post(server, "/api/trash-team", {"path": "debate"})[0] == 200
+        assert trashed == [ui_team / "debate"]
+
+
+def test_the_opened_team_itself_is_not_trashed_from_the_page(ui_team, monkeypatch):
+    trashed = []
+    monkeypatch.setattr("teamrunner.ui.trash.move_to_trash", lambda path: trashed.append(path))
+    with running(ui_team / "debate") as server:
+        assert post(server, "/api/trash-team", {"path": ""})[0] == 400
+        assert post(server, "/api/trash-team", {"path": "."})[0] == 400
+    assert trashed == []
+
+
+def test_feedback_names_issues_and_email_with_the_version_filled_in(tmp_path):
+    import teamrunner
+    with running(tmp_path) as server:
+        to = json.loads(get(server, "/api/info")[2])["feedback"]
+    assert to["version"] == f"teamrunner {teamrunner.__version__}"
+    assert to["bug"].startswith("https://github.com/teamrunner/teamrunner/issues/new?template=bug_report.yml")
+    assert "version=teamrunner%20" in to["bug"] and "system=" in to["bug"]
+    assert to["idea"].startswith("https://github.com/teamrunner/teamrunner/issues/new?template=question.yml")
+    assert to["email"] == "hello@teamrunner.ai" and to["mail"].startswith("mailto:hello@teamrunner.ai?")
+    assert str(tmp_path) not in json.dumps(to)  # nothing about the person's folders
 
 
 def test_keys_saved_at_existing_location_never_return_values(ui_team, tmp_path, monkeypatch):
@@ -266,17 +409,44 @@ def test_keys_saved_at_existing_location_never_return_values(ui_team, tmp_path, 
         assert not (ui_team / ".env").exists()
 
 
-def test_online_check_is_explicit_and_uses_shared_engine(ui_team, monkeypatch):
+def test_saving_reuses_a_providers_model_list_and_the_button_asks_again(monkeypatch):
+    from teamrunner.ui import api
+    asked = []
+    def lister(key, settings):
+        asked.append(key)
+        return {"gpt-5"}
+    monkeypatch.setattr(api, "_lists", {})
+    assert api.remembering({"openai": lister}, fresh=False)["openai"]("k", {}) == {"gpt-5"}
+    assert api.remembering({"openai": lister}, fresh=False)["openai"]("k", {}) == {"gpt-5"}
+    assert asked == ["k"]  # the second save answered from memory
+    api.remembering({"openai": lister}, fresh=False)["openai"]("other", {})
+    api.remembering({"openai": lister}, fresh=True)["openai"]("k", {})
+    assert asked == ["k", "other", "k"]  # another key, and the Validate button, ask the provider
+    def down(key, settings):
+        raise OSError("no connection")
+    monkeypatch.setattr(api, "_lists", {})
+    for _ in range(2):
+        try:
+            api.remembering({"openai": down}, fresh=False)["openai"]("k", {})
+        except OSError:
+            asked.append("failed")
+    assert asked[-2:] == ["failed", "failed"]  # a failure is never remembered
+    local = api.remembering({"ollama": lister}, fresh=False)["ollama"]
+    local(None, {}), local(None, {})
+    assert asked[-2:] == [None, None]  # Ollama is on this computer and is always asked
+
+
+def test_validate_checks_keys_and_models_with_the_shared_engine(ui_team, monkeypatch):
     from teamrunner.checks import Check
     calls = []
-    def check(report):
+    def check(report, listers=None):
         calls.append(report.package.team.folder)
         return Check(), None
     monkeypatch.setattr("teamrunner.checks.online_check", check)
     with running(ui_team) as server:
-        assert post(server, "/api/validate", {"path": "debate"})[1]["ok"]
-        assert not calls
-        status, result = post(server, "/api/validate", {"path": "debate", "online": True})
+        assert post(server, "/api/validate", {"path": "debate", "offline": True})[1]["ok"]
+        assert not calls  # a files-only check asks no one
+        status, result = post(server, "/api/validate", {"path": "debate"})
         assert status == 200 and result["ok"] and result["online"]["event"] == "check"
         assert calls == [ui_team / "debate"]
 
@@ -289,11 +459,11 @@ def test_validation_cannot_follow_external_member_or_parent_package(ui_team, tmp
     except OSError:
         pytest.skip("Symlinks unavailable")
     with running(ui_team) as server:
-        assert post(server, "/api/validate", {"path": "debate"})[0] == 403
+        assert post(server, "/api/validate", {"path": "debate", "offline": True})[0] == 403
         assert get(server, "/api/file?path=debate/external.md")[0] == 403
     (ui_team / "team.yaml").write_text("name: parent")
     with running(ui_team / "debate") as server:
-        assert post(server, "/api/validate", {"path": ""})[0] == 403
+        assert post(server, "/api/validate", {"path": "", "offline": True})[0] == 403
 
 
 def test_linux_trash_is_recoverable_and_preserves_original_path(tmp_path, monkeypatch):
@@ -336,7 +506,7 @@ def test_online_and_flow_refuse_external_key_and_run_links(ui_team, tmp_path):
     except OSError:
         pytest.skip("Symlinks unavailable")
     with running(ui_team) as server:
-        assert post(server, "/api/validate", {"path": "debate", "online": True})[0] == 403
+        assert post(server, "/api/validate", {"path": "debate"})[0] == 403
         assert get(server, "/api/explain?path=debate")[0] == 403
 
 
@@ -344,7 +514,7 @@ def test_validation_assigns_ids_like_the_cli_and_updates_file_revision(ui_team):
     with running(ui_team) as server:
         status, file = post(server, "/api/member", {"path": "debate/new_member.md"})
         assert status == 200 and "id:" not in file["text"]
-        status, report = post(server, "/api/validate", {"path": "debate"})
+        status, report = post(server, "/api/validate", {"path": "debate", "offline": True})
         assert status == 200 and report["ok"]
         assert "debate/new_member.md" in report["ids_added"]
         updated = json.loads(get(server, "/api/file?path=debate/new_member.md")[2])
@@ -362,7 +532,7 @@ def test_opening_runs_as_root_does_not_allow_writes(tmp_path):
         file = json.loads(get(server, "/api/file?path=output.md")[2])
         assert file["readonly"]
         assert post(server, "/api/save", {**file, "text": "altered"})[0] == 403
-        assert post(server, "/api/validate", {"path": ""})[0] == 403
+        assert post(server, "/api/validate", {"path": "", "offline": True})[0] == 403
         assert post(server, "/api/new", {"path": "fresh"})[0] == 403
         assert "id:" not in (root / "team.yaml").read_text()
 
@@ -593,7 +763,7 @@ def test_start_rehearsal_streams_to_completion_and_resumes_by_event_id(ui_team):
         assert [e["seq"] for e in logs] == list(range(1, len(logs) + 1))
         assert frames[-1]["event"] == "done" and frames[-1]["data"]["done"]
         final = finish_job(server, job)
-        record = json.loads((ui_team / final["folder"] / "run.json").read_text())
+        record = json.loads((ui_team / final["folder"] / "record.json").read_text())
         assert record["status"] == "completed" and record["cost_usd"] == 0
         assert record["inputs"]["topic"]["value"] == "Space exploration"
         assert not json.loads(get(server, "/api/run-setup?path=debate")[2])["default_rehearse"]
@@ -655,7 +825,7 @@ def test_live_run_stops_active_turn_keeps_record_and_allows_only_one(ui_team, tm
         final = finish_job(server, job)
         assert cancelled.is_set() and final["state"] == "stopped"
         folder = ui_team / final["folder"]
-        record = json.loads((folder / "run.json").read_text())
+        record = json.loads((folder / "record.json").read_text())
         assert record["status"] == "stopped" and record["turns"] == 1
         assert record["cost_usd"] == 0.001 and record["tokens"] == {"input":10,"output":5}
         assert "Stopped by the user" in record["reason"]
@@ -672,7 +842,7 @@ def test_server_shutdown_stops_the_active_run_cleanly(ui_team, tmp_path, monkeyp
         assert blocked.wait(15)
         instance = server.jobs.get(job["id"])
     assert instance.done.is_set() and cancelled.is_set()
-    assert json.loads((instance.folder / "run.json").read_text())["status"] == "stopped"
+    assert json.loads((instance.folder / "record.json").read_text())["status"] == "stopped"
 
 
 def test_run_start_refuses_validation_errors_and_missing_keys_without_a_run(ui_team, tmp_path, monkeypatch):
@@ -703,12 +873,12 @@ def test_uploads_task_files_and_rerun_use_recorded_inputs(ui_team):
                                                   "upload":uploaded("task.yaml", "inputs:\n  topic: Underwater cities\n")})
         assert status == 200
         first = finish_job(server, task)
-        source = json.loads((ui_team / first["folder"] / "run.json").read_text())
+        source = json.loads((ui_team / first["folder"] / "record.json").read_text())
         assert source["inputs"]["topic"]["value"] == "Underwater cities"
         status, repeated = post(server, "/api/start", {"path":"debate", "rehearse":True, "rerun":first["folder"]})
         assert status == 200
         again = finish_job(server, repeated)
-        assert json.loads((ui_team / again["folder"] / "run.json").read_text())["inputs"] == source["inputs"]
+        assert json.loads((ui_team / again["folder"] / "record.json").read_text())["inputs"] == source["inputs"]
         content = "The uploaded brief."
         status, file = post(server, "/api/start", {"path":"debate", "rehearse":True, "mode":"file", "upload":uploaded("brief.txt", content)})
         assert status == 200
@@ -774,7 +944,7 @@ def test_stop_and_status_remain_responsive_during_startup(ui_team):
             release.set()
         final = finish_job(server, job)
         assert final["state"] == "stopped"
-        record = json.loads((ui_team / final["folder"] / "run.json").read_text())
+        record = json.loads((ui_team / final["folder"] / "record.json").read_text())
         assert record["turns"] == 0 and record["status"] == "stopped"
 
 
@@ -789,5 +959,5 @@ def test_rehearsal_can_stop_between_immediate_turns(ui_team):
             cancel.set()
     outcome = run_team(ui_team / "debate", Options(rehearse=True, quiet=True), cancel=cancel, on_turn=current)
     assert outcome.status == "stopped"
-    record = json.loads((outcome.folder / "run.json").read_text())
+    record = json.loads((outcome.folder / "record.json").read_text())
     assert record["turns"] == 1 and record["cost_usd"] == 0

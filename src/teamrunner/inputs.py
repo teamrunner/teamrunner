@@ -26,6 +26,11 @@ class Given:
     file: dict | None = None  # for --file: the original path and its hash
 
 
+# A task file may be labelled, as a lab labels its materials; the labels are
+# never sent to a model and are not part of a study's hash.
+TASK_LABELS = ("name", "description")
+
+
 class InputError(Exception):
     """A run cannot start with what it was given."""
 
@@ -40,10 +45,13 @@ def read_task_file(path: Path) -> dict:
         raise InputError(f"{path} is not valid YAML: {e}") from e
     if not isinstance(data, dict) or not isinstance(data.get("inputs"), dict):
         raise InputError(f"{path} should hold `inputs:`, with one `name: value` line under it for each input")
-    extra = set(data) - {"inputs"}
+    extra = set(data) - {"inputs", *TASK_LABELS}
     if extra:
         raise InputError(f"{path} has {', '.join(f'`{k}`' for k in sorted(map(str, extra)))}; "
-                         "a task file holds only `inputs:`")
+                         "a task file holds `inputs:`, and may have a `name:` and a `description:`")
+    for label in TASK_LABELS:
+        if label in data and not isinstance(data[label], str):
+            raise InputError(f"{path}: `{label}:` should be a line of text")
     return plain(data["inputs"])
 
 

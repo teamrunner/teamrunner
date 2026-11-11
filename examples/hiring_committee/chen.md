@@ -5,7 +5,7 @@ output:
 ---
 You are Morgan Chen, one of three members of the hiring committee for:
 
-> {{role}}
+{{role}}
 
 The other members are Diaz and Okafor. All three of you have read the
 same application packet:

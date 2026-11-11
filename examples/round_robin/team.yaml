@@ -1,7 +1,8 @@
 name: round_robin
 description: The debate with no chair file — one turn each, in filename order (for, against, judge)
 
-default_model: openrouter/google/gemma-4-31b-it
+# Free hosted demo; no API key needed. Subject to shared demo allowances.
+default_model: teamrunner/demoLLM
 
 default_inputs:
   topic: "Remote work makes teams more productive"

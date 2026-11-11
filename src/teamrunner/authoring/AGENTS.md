@@ -5,8 +5,9 @@ from a plain-language description. TeamRunner runs teams of AI agents from
 text files: **you write files, never code.** The person you are helping may
 not read YAML; they will check your work with `teamrunner explain`.
 
-This describes TeamRunner 0.1. Anything not here does not exist yet, and
-`teamrunner validate` rejects it.
+This guide covers the implemented team format. Experiments are a separate
+workflow described in the README; richer organizations (managers, whiteboards,
+subteams and parallel flow) are not implemented yet.
 
 ## How to work
 
@@ -16,6 +17,7 @@ This describes TeamRunner 0.1. Anything not here does not exist yet, and
    the simplest choice and say so at the end.
 2. **Start from an example when one fits** (`teamrunner new <name> --from <example>`),
    or from nothing (`teamrunner new <name>`). The examples, simplest first:
+   - `demo` — a short debate using the limited hosted demo service, with no user key
    - `round_robin` — three members, no `chair.md`: one turn each in filename order
    - `multi_agent_debate` — a chair: two debaters for three rounds, then a judge
    - `hiring_committee` — three members choose a candidate, each knowing facts
@@ -23,13 +25,14 @@ This describes TeamRunner 0.1. Anything not here does not exist yet, and
    - `orchestrators_lite` — five engineers review code, sharing a model profile,
      with two inputs
    - `fact_checked` — the debate with a fact checker who can send a speech
-     back, a web search toolkeeper and a Python sandbox toolkeeper
+     back, a public-page reader toolkeeper and a Python sandbox toolkeeper
    - `reference_check` — checks a paper's references: a file as input, three
      toolkeepers, and a decision that can stop the run
 3. **Write the files** described below.
-4. **Run `teamrunner validate --json <folder>`** and fix every error. Each
+4. **Run `teamrunner validate --offline --json <folder>`** and fix every error. Each
    error has a file, a line, the offending value and a suggested fix.
-   Repeat until it reports `"ok": true`.
+   Repeat until it reports `"ok": true`. Plain `validate` additionally checks
+   provider keys and model availability; use it when those are configured.
 5. **Run `teamrunner run --rehearse <folder>`.** It runs the flow with no
    model, placeholder words and random answers, for free. Check the turns
    come in the order you meant.
@@ -153,7 +156,7 @@ I search the web. Send me a query and I return the top five results.
 | `read_page` | a link → the page's text, PDFs too | `domains`, `max_chars`, `types: [pdf]` |
 | `read_file` | a file the run was given with `--file` → its text | `max_chars`, `types: [pdf]` |
 | `run_code` | Python → its output and errors, in a sandbox | `network: true` (off by default), `paths: [folder]` to read — the code finds it at `/package/<folder>` |
-| `read_email` | an email's id → its sender, recipients, date, subject and text, from a folder of `.eml` files in the package | `mailbox: <folder>` (`mailbox` if not written), `max_chars` |
+| `read_email` | an email's id → its sender, recipients, date, subject and text, from a folder of `.eml` files in the package | `mailbox: <folder>` (`mailbox` if not written), `max_chars`, `only_input: <input>` (hands over only the email this run was given in that input) |
 | `save_draft` | an email's id and a reply → the reply saved in the run's `work/outbox/`, never sent; it answers only the email's sender | `mailbox: <folder>`, `max_chars`, `reply_only: false` (lets a draft name any address) |
 
   Every tool also understands `calls_per_turn` (5 if not written),

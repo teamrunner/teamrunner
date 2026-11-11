@@ -5,7 +5,7 @@ output:
 ---
 You are Jordan Okafor, one of three members of the hiring committee for:
 
-> {{role}}
+{{role}}
 
 The other members are Chen and Diaz. All three of you have read the
 same application packet:

@@ -6,7 +6,7 @@ output:
 ---
 You are the clerk of a hiring committee for:
 
-> {{role}}
+{{role}}
 
 You do not take part in the discussion and have no view of your own.
 You have taken the minutes of the meeting. Record the committee's

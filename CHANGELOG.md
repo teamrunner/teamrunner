@@ -4,6 +4,74 @@ TeamRunner is in preview: 0.0.x versions are a soft launch, and until 0.1.0
 is announced a version may change in ways that break teams and run folders
 made with an earlier one. Each such change is listed here.
 
+## 0.0.5 — experiments
+
+- **`teamrunner experiment <folder>`** runs versions of a team side by side,
+  many times each. One `experiment.md` names the versions as `conditions:` —
+  each `from:` a team, with what to `change:` (a setting, a prompt, a whole
+  file, or `remove`) — or as a full factorial with `factors:`. The team is
+  never edited: changed conditions are built under `conditions/`.
+- Seeded replications in rounds: each round runs every condition once, in an
+  order drawn from the master seed, so the conditions stay balanced if the
+  experiment stops early. `--plan` shows the conditions, their differences
+  file by file, the order and the cost estimate, spending nothing;
+  `--rehearse` runs everything with no model.
+- **Budget checks:** `max_cost_usd` (or `--max-cost`) reserves each model
+  call's estimated upper cost before sending it. Calls that do not fit are
+  refused; an experiment whose estimate exceeds the limit does not start.
+  Tool costs are added after each run and can take the recorded total over
+  the limit. This is not a cap on provider billing: actual charges can exceed
+  estimates or configured budgets. `teamrunner run --max-cost` uses the same
+  checks for a single run. See [LEGAL.md](LEGAL.md).
+- **Resume:** running the command again skips completed runs and redoes runs
+  that failed or were cut off, in the same slot with the same seed, reusing
+  their recorded turns. A changed study stops until `--restart` or
+  `--keep-unchanged`.
+- **Metrics:** a member's typed output named by its path
+  (`judge.output.winner`), answer keys (`.yaml`) and evaluators (`.md`, a model
+  with its own rubric, blind to the condition; `--evaluate`, `--no-evaluate`).
+  The summary — n, mean or shares, 95% intervals — prints at the end and with
+  `--summary`. `--export <dir>` writes five long CSV tables for R, Stata or
+  pandas.
+- Every run's record is now `record.json` (folders with `run.json` are still
+  read). It adds `stopped_by`, `cost_reused_usd` and `cost_charged_usd` — what
+  the provider says it charged, beside the list-price `cost_usd`. Experiment
+  runs also keep `resolved/`, an exact copy of the team as it ran.
+- **`teamrunner validate` now checks the keys and the models too**, once the
+  files have no errors: the same free check `run` makes before its first turn.
+  `--offline` checks the files only. `--online` is no longer needed; it is
+  still accepted and does nothing. With no connection, `validate` reports the
+  files and warns that the models were not checked. **This can change a
+  script's result:** a missing key or an unknown model now makes plain
+  `validate` end with an error.
+- **Plain `teamrunner ui` opens your teamrunner workspace from anywhere**, no
+  longer the current folder. The first time, it asks once where your
+  workspace should be (Enter for `~/teamrunner`), makes it with `teams/` and
+  `experiments/` inside, and keeps the answer as `TEAMRUNNER_WORKSPACE` in
+  `~/.teamrunner/.env`. **+ Team** in the page, and `teamrunner new <name>`
+  typed in the workspace, put the new team in `teams/`; a name with a slash is
+  used as written. `teamrunner ui <folder>` still opens that folder, this
+  once; add `--remember` to make it your workspace. **This changes what the
+  command opens:** for the current folder, type `teamrunner ui .`. In a script
+  with no one to ask and nothing remembered, the current folder is opened as
+  before.
+- `teamrunner ui`: a team can be moved to the system trash with the bin in
+  the team bar; the question names the files and recorded runs that go with
+  it. `runs/` is shown greyed, and nothing can be created beside a run record.
+  A **Feedback** button names where bugs, questions and ideas go, with your
+  version and system filled in; nothing is sent from the page.
+- `teamrunner ui`: a **+ Chair** button adds `chair.md` to the selected team,
+  with a commented starter for the flow. The chair is not a member, so
+  **+ Member** refuses `chair.md` and points to the button.
+- `teamrunner ui`: one **Validate** button does what `teamrunner validate`
+  does, and its tick goes away at the next edit. Saving makes the same check,
+  reusing a provider's list of models for a few minutes; the button asks again. The file list is a folder
+  tree showing each file's kind (team, chair, agent, toolkeeper); team actions
+  and file actions sit in separate bars; "As it will run" appears only for
+  members; "Set up keys" moved to the bottom of the sidebar. The page's tabs are
+  now **Files**, **Run** (the run in progress, or a saved run you opened) and
+  **Run history** (the archive); a finished run opens as a saved run in place.
+
 ## 0.0.4
 
 - **Local browser interface:** `teamrunner ui [folder]` (`gui` is an alias)

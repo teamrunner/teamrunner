@@ -26,10 +26,16 @@ class Reply:
     latency_ms: int = 0
     tool_calls: list[ToolCall] = field(default_factory=list)
     cost_source: str | None = None  # where the price came from (D120)
+    cost_charged_usd: float | None = None  # what the provider says it charged, when it says (D120, amended)
 
 
 class TransientError(Exception):
     """An outage, a rate limit or a timeout: worth trying again after a wait (D100)."""
+
+
+class CeilingReached(Exception):
+    """A call whose worst case does not fit an experiment's `max_cost_usd`: never
+    sent, and the run ends `stopped` (D138 (6))."""
 
 
 class Model(Protocol):

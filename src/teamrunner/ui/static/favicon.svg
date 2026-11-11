@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <title>TeamRunner</title>
+  <style>
+    .ring{fill:none;stroke:#14202b}.seat{fill:#14202b}.chair{fill:#2340c9}
+    @media (prefers-color-scheme: dark){.ring{stroke:#e4eaef}.seat{fill:#e4eaef}.chair{fill:#8ea2ff}}
+  </style>
+  <!-- the seats are cut out of the ring, so the mark works on any background -->
+  <mask id="cut"><rect width="48" height="48" fill="#fff"/><circle cx="24" cy="11" r="9" fill="#000"/><circle cx="11.9" cy="32" r="9" fill="#000"/><circle cx="36.1" cy="32" r="9" fill="#000"/></mask>
+  <circle class="ring" cx="24" cy="25" r="14" stroke-width="5" mask="url(#cut)"/>
+  <circle class="chair" cx="24" cy="11" r="7"/>
+  <circle class="seat" cx="11.9" cy="32" r="7"/>
+  <circle class="seat" cx="36.1" cy="32" r="7"/>
+</svg>

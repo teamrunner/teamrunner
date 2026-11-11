@@ -39,7 +39,7 @@ def go(folder, answers=None, options=None, listers=OPENAI, model=None):
 
 
 def read_run(folder):
-    run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    run = json.loads((folder / "record.json").read_text(encoding="utf-8"))
     events = [json.loads(line) for line in (folder / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     return run, events, (folder / "output.md").read_text(encoding="utf-8")
 
@@ -289,20 +289,36 @@ def test_run_warns_about_links_outside_every_time(tmp_path):
     assert any(e["event"] == "warning" and "outside the package" in e["message"] for e in events)
 
 
-def test_validate_online_runs_the_check_without_a_run(tmp_path, monkeypatch, capsys):
+def test_validate_checks_keys_and_models_without_a_run(tmp_path, monkeypatch, capsys):
     from teamrunner import checks
     from teamrunner.cli import main
     monkeypatch.setitem(checks.LISTERS, "openai", lambda key, settings: {"gpt-5"})
     monkeypatch.setattr(checks, "litellm_data", lambda m: {})
     team = debate(tmp_path, **{**TEAM, "against.md": NAMED["against.md"].replace("params:\n  temperature: 0.7\n", "")})
-    assert main(["validate", str(team), "--online"]) == 0
+    assert main(["validate", str(team)]) == 0  # D140: no switch needed
     assert "✓ 1 model · 1 key" in capsys.readouterr().out
     assert not (team / "runs").exists()
 
     monkeypatch.setitem(checks.LISTERS, "openai", lambda key, settings: {"gpt-4o"})
-    assert main(["validate", str(team), "--online", "--json"]) == 1
+    assert main(["validate", str(team), "--json"]) == 1
     data = json.loads(capsys.readouterr().out)
     assert data["ok"] is False and "does not serve `gpt-5`" in data["online"]["problems"][0]["wrong"]
+    assert main(["validate", str(team)]) == 1
+    assert "files OK, 1 warning, 1 problem with keys or models" in capsys.readouterr().out
+    assert main(["validate", str(team), "--online"]) == 1  # the old switch is still accepted
+
+    # --offline checks the files only and asks no one
+    monkeypatch.setitem(checks.LISTERS, "openai", lambda key, settings: 1 / 0)
+    assert main(["validate", str(team), "--offline"]) == 0
+    assert "keys and models not checked (--offline)" in capsys.readouterr().out
+
+    # no connection: the files are still valid, and the models are reported as not checked
+    import urllib.error
+    def unplugged(key, settings):
+        raise urllib.error.URLError("nodename nor servname provided")
+    monkeypatch.setitem(checks.LISTERS, "openai", unplugged)
+    assert main(["validate", str(team)]) == 0
+    assert "could not reach openai" in capsys.readouterr().out
 
 
 def test_settings_a_model_refuses_stop_the_run_before_it_starts(tmp_path):

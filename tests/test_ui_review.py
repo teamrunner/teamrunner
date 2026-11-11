@@ -20,7 +20,7 @@ def test_package_beneath_unrelated_runs_folder_remains_editable(tmp_path, relati
         file = json.loads(body)
         assert status == 200 and not file['readonly']
         assert post(server, '/api/save', {**file, 'text':file['text']+'\nAn edit.\n'})[0] == 200
-        assert post(server, '/api/validate', {'path':''})[0] == 200
+        assert post(server, '/api/validate', {'path':'', 'offline':True})[0] == 200
         assert post(server, '/api/member', {'path':'researcher.md'})[0] == 200
         assert post(server, '/api/new', {'path':'new_team'})[0] == 200
         (root/'runs'/'old').mkdir(parents=True)

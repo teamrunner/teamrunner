@@ -8,6 +8,7 @@ and `on` stay strings (D21), and no tag ever constructs an object.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,7 +25,32 @@ WHITEBOARD_FILE = "whiteboard.yaml"
 # Reserved folders at the top of a package (D66, D69, D93).
 TOOLS_DIR, MODELS_DIR, RUNS_DIR = "tools", "models", "runs"
 
-_yaml = YAML(typ="rt")
+class ThreadYAML:
+    """A round-trip YAML reader and writer, one per thread. ruamel's parser keeps
+    its state on the YAML object, so one shared by an experiment's runs, which
+    read their files at the same time, mixes their parses up."""
+
+    def __init__(self, **settings):
+        self._settings = settings
+        self._local = threading.local()
+
+    def _own(self) -> YAML:
+        mine = getattr(self._local, "yaml", None)
+        if mine is None:
+            mine = YAML(typ="rt")
+            for name, value in self._settings.items():
+                setattr(mine, name, value)
+            self._local.yaml = mine
+        return mine
+
+    def load(self, text):
+        return self._own().load(text)
+
+    def dump(self, data, stream) -> None:
+        self._own().dump(data, stream)
+
+
+_yaml = ThreadYAML()
 
 
 @dataclass

@@ -1,6 +1,6 @@
 "use strict";
 
-let runSource = "", runData = null, runRows = [], runRequest = 0, searchTimer;
+let runSource = "", runData = null, runRows = [], runRequest = 0, detailRequest = 0, searchTimer;
 const node = (tag, text, className) => {
   const item = document.createElement(tag);
   if (text !== undefined) item.textContent = typeof text === "string" ? text : JSON.stringify(text);
@@ -10,20 +10,35 @@ const node = (tag, text, className) => {
 const pretty = value => typeof value === "string" ? value : JSON.stringify(value, null, 2);
 const cost = value => typeof value === "number" ? `$${value.toFixed(value < 1 ? 4 : 2)}` : "not recorded";
 const runsNotice = text => { byId("runs-notice").textContent = text; };
+const runNotice = text => { byId("run-notice").textContent = text; };
 
-function fileView() {
-  byId("runs-workspace").hidden = true; byId("files-workspace").hidden = false;
-  byId("files-view").setAttribute("aria-pressed", "true"); byId("runs-view").setAttribute("aria-pressed", "false");
-  editor.refresh();
+// Three tabs: Files (the team), Run (one run, live or saved) and Run history (every
+// saved run). An experiment tab can join them later, opening its runs in Run.
+const VIEWS = {files: ["files-workspace", "files-view"], run: ["run-workspace", "run-view"], runs: ["runs-workspace", "runs-view"]};
+function showView(name) {
+  for (const [view, [workspace, tab]] of Object.entries(VIEWS)) {
+    byId(workspace).hidden = view !== name; byId(tab).setAttribute("aria-pressed", String(view === name));
+  }
+  document.title = `${info?.name || "TeamRunner"} · ${{files: "Files", run: "Run", runs: "Run history"}[name]}`;
+}
+function fileView() { showView("files"); editor.refresh(); }
+// What the Run tab shows: the run in progress, or the saved run opened last.
+function showRunPane(which) {
+  byId("live-run").hidden = which !== "live"; byId("run-detail").hidden = which !== "saved";
+  byId("run-empty").hidden = which !== "empty";
+  byId("show-live").hidden = which === "live" || !liveJob || liveJob.done;
+}
+function runView() {
+  showView("run");
+  if (byId("live-run").hidden && byId("run-detail").hidden) showRunPane(liveJob && !liveJob.done ? "live" : runData ? "saved" : "empty");
 }
 async function runsView(sourceOverride = null) {
   const source = sourceOverride ?? teamContext();
   if (source !== runSource) { byId("runs-team").value = ""; byId("runs-status").value = ""; byId("runs-search").value = ""; }
   runSource = source;
-  byId("files-workspace").hidden = true; byId("runs-workspace").hidden = false;
-  byId("files-view").setAttribute("aria-pressed", "false"); byId("runs-view").setAttribute("aria-pressed", "true");
+  showView("runs");
   byId("run-comparison").hidden = true;
-  byId("runs-list-panel").hidden = false; byId("run-detail").hidden = true;
+  byId("runs-list-panel").hidden = false;
   await loadRuns();
 }
 function options(id, values, label) {
@@ -193,43 +208,46 @@ function renderRecord() {
       await refresh(); await openFile(result.path);
     })); container.append(copy);
   }
-  container.append(jsonDetails("run.json · inputs, fingerprint, cost and environment", runData.record, true));
+  container.append(jsonDetails("record.json · inputs, fingerprint, cost and environment", runData.record, true));
 }
 async function openRun(path) {
   byId("run-comparison").hidden = true;
-  const request = ++runRequest; byId("refresh-runs").disabled = true; runsNotice("Reading this run…");
+  const request = ++detailRequest; showView("run"); runNotice("Reading this run…");
   try {
-    const result = await api("/api/run" + pathQuery(path)); if (request !== runRequest) return;
+    const result = await api("/api/run" + pathQuery(path)); if (request !== detailRequest) return;
     runData = result; const run = result.summary;
-    byId("runs-list-panel").hidden = true; byId("run-detail").hidden = false;
+    showRunPane("saved");
     byId("run-title").textContent = `${run.team} · ${run.when}`;
+    byId("run-bar-title").textContent = `${run.team} · ${run.when} · ${run.status}${run.rehearsal ? " · rehearsal" : ""}`;
     byId("run-meta").textContent = `${run.status}${run.rehearsal ? " · rehearsal" : ""}${run.backup ? " · backup model" : ""} · ${run.turns} turns · ${run.length} · ≈ ${run.cost}`;
     byId("raw-run-files").replaceChildren(...result.raw_files.map(file => downloadLink(file)));
     byId("run-warnings").textContent = result.warnings.join("\n");
     renderConversation(); renderRecord();
     byId("run-path").textContent = "Reading recorded path…";
-    api("/api/run-path" + pathQuery(path)).then(data => {if (request === runRequest) renderPath(byId("run-path"),data);}).catch(error => {if (request === runRequest) byId("run-path").textContent=error.message;});
+    api("/api/run-path" + pathQuery(path)).then(data => {if (request === detailRequest) renderPath(byId("run-path"),data);}).catch(error => {if (request === detailRequest) byId("run-path").textContent=error.message;});
     byId("run-output").replaceChildren(result.output ? markdown(result.output) : node("p", "No output was recorded."));
-    showRunTab("conversation"); runsNotice("");
-    byId("runs-command").textContent = `teamrunner runs ${JSON.stringify(context || ".")} ${JSON.stringify(path.split("/").pop())}`;
-  } catch (error) { runsNotice(error.message); }
-  finally { if (request === runRequest) byId("refresh-runs").disabled = false; }
+    showRunTab("conversation"); runNotice("");
+    byId("run-command").textContent = `teamrunner runs ${JSON.stringify(context || ".")} ${JSON.stringify(path.split("/").pop())}`;
+  } catch (error) { if (request === detailRequest) runNotice(error.message); }
 }
 byId("files-view").addEventListener("click", fileView);
 byId("runs-view").addEventListener("click", () => runsView());
-byId("refresh-runs").addEventListener("click", () => byId("run-detail").hidden ? loadRuns() : openRun(runData.summary.path));
-byId("back-runs").addEventListener("click", () => { byId("run-detail").hidden = true; byId("runs-list-panel").hidden = false; loadRuns(); });
+byId("run-view").addEventListener("click", runView);
+byId("refresh-runs").addEventListener("click", () => loadRuns());
+byId("refresh-run").addEventListener("click", () => openRun(runData.summary.path));
+byId("back-runs").addEventListener("click", () => runsView(runSource || null));
+byId("show-live").addEventListener("click", () => showRunPane("live"));
 for (const id of ["runs-team", "runs-status"]) byId(id).addEventListener("change", () => { loadRuns(); });
 byId("runs-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { loadRuns(); }, 250); });
 byId("more-runs").addEventListener("click", () => { loadRuns(true); });
 for (const name of ["conversation", "output", "record", "path"]) byId(name + "-tab").addEventListener("click", () => showRunTab(name));
 byId("open-run-folder").addEventListener("click", async () => {
-  try { await api("/api/open-run-folder", {path:runData.summary.path}); runsNotice("Run folder opened on your computer."); }
-  catch (error) { runsNotice(error.message); }
+  try { await api("/api/open-run-folder", {path:runData.summary.path}); runNotice("Run folder opened on your computer."); }
+  catch (error) { runNotice(error.message); }
 });
 document.addEventListener("teamrunner:file-open", fileView);
 document.addEventListener("teamrunner:team-select", event => {
-  if (!byId("runs-workspace").hidden) { runSource = event.detail; byId("runs-team").value = ""; byId("runs-status").value = ""; byId("run-detail").hidden = true; byId("runs-list-panel").hidden = false; loadRuns(); }
+  if (!byId("runs-workspace").hidden) { runSource = event.detail; byId("runs-team").value = ""; byId("runs-status").value = ""; byId("run-comparison").hidden = true; byId("runs-list-panel").hidden = false; loadRuns(); }
 });
 
 // Explicit controls also make wide tables usable without a trackpad gesture.

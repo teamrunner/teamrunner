@@ -4,6 +4,9 @@ import hashlib
 import os
 from pathlib import Path
 import tempfile
+import time
+
+from ..runfolder import record_file
 
 
 class OutsideRoot(ValueError):
@@ -71,7 +74,7 @@ def in_runs(root: Path, path: Path) -> bool:
         return True
     # Also recognize run folders and snapshots opened directly, or reached from
     # a workspace whose root happens to be named runs.
-    return any((folder / "run.json").is_file() for folder in (path, *path.parents))
+    return any(record_file(folder) is not None for folder in (path, *path.parents))
 
 
 def editable(root: Path, written: str) -> Path:
@@ -149,7 +152,29 @@ def guard_team(root: Path, folder: Path):
                     raise OutsideRoot("Folder links cannot be validated here. Use a package with ordinary folders.")
 
 
-def validate_team(root: Path, written: str, online: bool = False) -> dict:
+REMEMBER = 300  # seconds a provider's list of models is kept, so saving does not ask it each time
+_lists: dict[tuple, tuple[float, object]] = {}
+
+
+def remembering(listers: dict, fresh: bool) -> dict:
+    """The engine's listers, answering from memory for a few minutes. Only an answer is
+    remembered, never a failure; `fresh` asks again. Ollama is local and is always asked."""
+    from ..keys import NO_KEY
+
+    def remember(provider, lister):
+        def ask(key, settings):
+            slot = (provider, hashlib.sha256((key or "").encode()).hexdigest())
+            held = _lists.get(slot)
+            if held and not fresh and time.monotonic() - held[0] < REMEMBER:
+                return held[1]
+            found = lister(key, settings)
+            _lists[slot] = (time.monotonic(), found)
+            return found
+        return ask
+    return {p: lister if p in NO_KEY else remember(p, lister) for p, lister in listers.items()}
+
+
+def validate_team(root: Path, written: str, offline: bool = False, fresh: bool = True) -> dict:
     from ..validate import validate
     from ..checks import online_check
     folder = team_folder(root, written)
@@ -175,12 +200,13 @@ def validate_team(root: Path, written: str, online: bool = False) -> dict:
     if report.package.team.chair:
         roles[report.package.team.chair.relative_to(root).as_posix()] = "chair"
     result["roles"] = roles
-    if online and report.ok:
+    if not offline and report.ok:  # as `teamrunner validate` does (D140)
         from ..keys import package_envs
         for env in package_envs(report.package.top):
             if not env.resolve().is_relative_to(root):
                 raise OutsideRoot("A package key file points outside the opened folder. Set up keys in TeamRunner's key file instead.")
-        check, _ = online_check(report)
+        from ..checks import LISTERS
+        check, _ = online_check(report, listers=remembering(LISTERS, fresh))
         result["online"] = check.event()
         result["ok"] = check.ok
     return result
@@ -192,8 +218,9 @@ def show_member(root: Path, written: str) -> dict:
     team_folder(root, written)
     try:
         text, _ = show(str(path), path.parent)
-    except NotAMember as error:
-        return {"text": str(error)}
+    except NotAMember:
+        return {"text": "This view is for one member. Open a member's file, such as judge.md, "
+                        "to see it with every setting written out."}
     return {"text": text or "Fix the validation errors to see this member as it will run."}
 
 
@@ -214,10 +241,18 @@ def explain_team(root: Path, written: str) -> dict:
     return {"text": explain(team) if team else "Fix the validation errors to see the flow summary."}
 
 
+def join_written(folder: str, name: str) -> str:
+    return name if folder in ("", ".") else f"{folder.rstrip('/')}/{name}"
+
+
 def create_member(root: Path, written: str) -> dict:
     path = editable(root, written)
-    if path.suffix != ".md" or path.name in ("chair.md", "manager.md", "README.md"):
+    if path.suffix != ".md":
         raise ValueError("Give the member a Markdown filename, such as researcher.md.")
+    if path.name.lower() == "chair.md":
+        raise ValueError("The chair is not a member. Use + Chair to write the team’s flow.")
+    if path.name.lower() in ("manager.md", "readme.md"):
+        raise ValueError(f"{path.name} is not a member’s file. Choose another name, such as researcher.md.")
     from ..loader import member_name
     from ..validate import WORD
     from ..vocabulary import RESERVED_NAMES
@@ -228,6 +263,23 @@ def create_member(root: Path, written: str) -> dict:
     with path.open("x", encoding="utf-8") as stream:
         stream.write('---\ndescription: ""\n---\nWrite this member’s instructions here.\n')
     return read_file(root, written)
+
+
+def create_chair(root: Path, written: str) -> dict:
+    """Add chair.md to the team folder `written`, holding a commented starter and no flow yet."""
+    chair = join_written(written, "chair.md")
+    path = editable(root, chair)
+    if not (path.parent / "team.yaml").is_file():
+        raise ValueError("Choose a team folder (one containing team.yaml).")
+    guard_team(root, path.parent)
+    if path.exists() or path.is_symlink():
+        raise Conflict("This team already has a chair.md.")
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write("# The flow: who acts, and in what order. For example:\n#\n"
+                     "#   researcher -> writer -> reviewer\n#\n"
+                     "# Write the steps below, using your members' names. Delete this file\n"
+                     "# and members take one turn each, in alphabetical filename order.\n\n")
+    return read_file(root, chair)
 
 
 def rename_file(root: Path, written: str, destination: str, revision: str) -> dict:
@@ -259,8 +311,47 @@ def trash_file(root: Path, written: str, revision: str) -> dict:
     return {"ok": True}
 
 
+def _team_to_trash(root: Path, written: str) -> Path:
+    if not written or (root / written).is_symlink():
+        raise ValueError("Choose a team folder inside the opened folder.")
+    path = inside(root, written)
+    if in_runs(root, path):
+        raise OutsideRoot("Run records are read-only.")
+    if path == root or not (path / "team.yaml").is_file():
+        raise ValueError("Choose a team folder inside the opened folder.")
+    return path
+
+
+def team_contents(root: Path, written: str) -> dict:
+    """What moving this team to the trash would take with it."""
+    from ..runs import all_runs
+    path = _team_to_trash(root, written)
+    files = runs = 0
+    for directory, dirs, names in os.walk(path, followlinks=False):
+        here = Path(directory)
+        if here.name.lower() == "runs":
+            try:
+                runs += len(list(all_runs(here)))
+            except (OSError, ValueError):
+                pass
+            dirs[:] = []
+            continue
+        files += len(names)
+    return {"path": written, "name": path.name, "files": files, "runs": runs}
+
+
+def trash_team(root: Path, written: str) -> dict:
+    """The whole folder goes, records included; the system trash can put it back."""
+    from .trash import move_to_trash
+    move_to_trash(_team_to_trash(root, written))
+    return {"ok": True}
+
+
 def new_team(root: Path, written: str, example: str = "") -> dict:
     from ..new import EXAMPLES, examples, create, copy_from
+    from ..workspace import is_workspace
+    if "/" not in written and "\\" not in written and is_workspace(root):
+        written = f"teams/{written}"  # a team named on its own goes in the workspace's teams/ (D144)
     path = inside(root, written)
     if in_runs(root, path):
         raise OutsideRoot("Run records are read-only.")

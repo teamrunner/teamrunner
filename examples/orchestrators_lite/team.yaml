@@ -3,10 +3,11 @@
 # preregistered at osf.io/sw5hr). The engineers' names are the paper's; the wording and code are ours.
 # No id: here on purpose. Hand-written files may leave it out;
 # `teamrunner validate` assigns one and writes it in.
+id: 01M73WPYPGKPHRD5H1EH0X8EJ5  # added by teamrunner — keeps this team's history together
 name: orchestrators_lite
 description: Five-engineer code review team, flat vs. visible leader (lite recast of Fukui 2026, "Invisible Orchestrators", Act 2)
 
-# Every engineer runs on the shared demo model and settings, kept in one
+# Every engineer runs on the shared Claude model and settings, kept in one
 # profile. `teamrunner show derek` prints what derek will run with.
 default_model: engineer.yaml
 

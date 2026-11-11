@@ -17,7 +17,7 @@ function updateRunForm() {
   byId("input-mode-label").hidden = Boolean(rerunSource);
   byId("rerun-inputs").hidden = !rerunSource;
   byId("start-run").textContent = rehearsal ? "Rehearse team" : "Run with models";
-  byId("run-cost-note").textContent = rehearsal ? "Free: placeholder words and random answers to test the flow. No model or tool is called." : "This run calls the models and tools named by your team, using your keys. Provider charges may apply.";
+  byId("run-cost-note").textContent = rehearsal ? "Free: placeholder words and random answers to test the flow. No model or tool is called." : "Live runs send inputs to configured model/tool providers, or through our gateway for the sponsored demo. Do not send sensitive data to the demo. All costs are estimates; actual charges may exceed estimates and budgets. Monitor provider billing. See About & notices.";
   let shown = runSetup?.command_base || "teamrunner run";
   if (rerunSource) {
     const inputs = Object.values(runData.record.inputs || {});
@@ -31,7 +31,9 @@ function updateRunForm() {
 }
 async function showRunForm(rerun = false) {
   if (dirty) { fileView(); notice("Save your changes before starting a run."); return; }
-  let path = byId("runs-workspace").hidden ? teamContext() : runSource;
+  // The team to run: the one in Files, or the team a saved run in view belongs to.
+  const teamOf = run => { const parts = run.split("/"), at = parts.lastIndexOf("runs"); return at >= 0 ? parts.slice(0, at).join("/") : runSource; };
+  let path = !byId("files-workspace").hidden ? teamContext() : runData && !byId("run-workspace").hidden && byId("live-run").hidden ? teamOf(runData.summary.path) : runSource || teamContext();
   rerunSource = rerun && runData ? runData.summary.path : null;
   if (rerunSource) {
     const parts = rerunSource.split("/"), at = parts.lastIndexOf("runs");
@@ -46,7 +48,7 @@ async function showRunForm(rerun = false) {
     byId("run-rehearse").checked = rerunSource ? Boolean(runData.record.rehearsal) : runSetup.default_rehearse;
     byId("rerun-inputs").textContent = rerunSource ? JSON.stringify({inputs:Object.fromEntries(Object.entries(runData.record.inputs || {}).filter(([,item]) => !item.file).map(([name,item]) => [name,item.value]))}, null, 2) : "";
     updateRunForm(); byId("run-dialog").showModal();
-  } catch (error) { if (byId("runs-workspace").hidden) notice(error.message); else runsNotice(error.message); }
+  } catch (error) { (!byId("files-workspace").hidden ? notice : !byId("run-workspace").hidden ? runNotice : runsNotice)(error.message); }
 }
 function upload(file) {
   if (!file) return Promise.reject(new Error("Choose an input file."));
@@ -72,13 +74,16 @@ byId("run-form").addEventListener("submit", async event => {
     else if (data.mode === "message") data.message = byId("run-message").value;
     else if (["file", "task"].includes(data.mode)) data.upload = await upload(byId("run-file").files[0]);
     const job = await api("/api/start", data);
-    byId("run-dialog").close(); runsView(runSetup.team); connectJob(job);
+    byId("run-dialog").close(); runSource = runSetup.team; connectJob(job); runView();
   } catch (error) { byId("run-form-error").textContent = error.message; }
   finally { byId("start-run").disabled = false; }
 });
 function updateLiveStatus(state) {
   liveJob = state;
   byId("live-title").textContent = `${state.rehearse ? "Rehearsal" : "Run"} · ${state.name || runSetup?.name || state.team || "."}`;
+  byId("run-dot").hidden = Boolean(state.done);
+  if (!byId("live-run").hidden) byId("run-bar-title").textContent = `${byId("live-title").textContent} · ${state.done ? state.state : "in progress"}`;
+  byId("show-live").hidden = state.done || !byId("live-run").hidden;
   const who = state.speaking ? ` · current turn: ${state.speaking.member}${state.speaking.stage ? " · " + state.speaking.stage : ""}` : "";
   byId("live-status").textContent = `${state.state}${who}${state.reason ? " · " + state.reason : ""}`;
   byId("stop-run").disabled = state.done || state.state === "stopping";
@@ -111,7 +116,7 @@ function connectJob(job) {
   if (liveRender !== null) cancelAnimationFrame(liveRender);
   liveConversation = null; liveTotals = {known:0, unknown:false, turns:0};
   liveJob = job; liveData = {events:[], members:[], artifacts:[], raw_files:[]}; seenEvents = new Set();
-  byId("live-run").hidden = false; byId("live-connection").textContent = "Connecting to the run log…";
+  showRunPane("live"); byId("live-connection").textContent = "Connecting to the run log…";
   updateLiveStatus(job); renderLive();
   eventSource = new EventSource("/api/live-events?" + new URLSearchParams({id:job.id, token}));
   eventSource.addEventListener("status", event => { updateLiveStatus(JSON.parse(event.data)); byId("live-connection").textContent = "Live log connected."; });
@@ -126,6 +131,8 @@ function connectJob(job) {
     updateLiveStatus(JSON.parse(event.data)); renderLive(); eventSource.close();
     byId("live-connection").textContent = "The run finished. Its files stay in the run folder.";
     loadRuns(); refreshTree();
+    // Once it is saved, the run in view becomes the saved run: the same tabs, plus its output.
+    if (liveJob.folder && !byId("live-run").hidden) openRun(liveJob.folder);
   });
   eventSource.onerror = () => { if (!liveJob.done) byId("live-connection").textContent = "Connection interrupted; reconnecting. The run continues on your computer."; };
 }
@@ -134,11 +141,12 @@ byId("stop-run").addEventListener("click", async () => {
   try { updateLiveStatus(await api("/api/stop", {id:liveJob.id})); }
   catch (error) { byId("live-connection").textContent = error.message; }
 });
-byId("browse-finished").addEventListener("click", () => { byId("live-run").hidden = true; openRun(liveJob.folder); });
+byId("browse-finished").addEventListener("click", () => openRun(liveJob.folder));
 byId("run-team").addEventListener("click", () => showRunForm());
 byId("run-from-history").addEventListener("click", () => showRunForm());
+byId("run-from-run").addEventListener("click", () => showRunForm());
 byId("rerun").addEventListener("click", () => showRunForm(true));
 byId("cancel-run-form").addEventListener("click", () => byId("run-dialog").close());
 for (const id of ["input-mode", "run-rehearse", "run-file"]) byId(id).addEventListener("change", updateRunForm);
 byId("run-message").addEventListener("input", updateRunForm);
-workspaceReady.then(() => api("/api/job")).then(job => { if (job.active !== null) { runsView(job.team); connectJob(job); } }).catch(() => {});
+workspaceReady.then(() => api("/api/job")).then(job => { if (job.active !== null) { runSource = job.team; connectJob(job); runView(); } }).catch(() => {});

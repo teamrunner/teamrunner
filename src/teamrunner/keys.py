@@ -141,4 +141,10 @@ def find_keys(names: list[str], top: Path | None, ask: Ask | None, env: dict | N
 
 def extra_settings(keyfile: Path | None = None) -> dict[str, str]:
     """Machine settings from the key file, such as OLLAMA_API_BASE (D100)."""
-    return {k: v for k, v in read_env(keyfile or key_file()).items() if not k.endswith("_KEY")}
+    values = read_env(keyfile or key_file())
+    demo_base = os.environ.get("TEAMRUNNER_DEMO_API_BASE") or values.get("TEAMRUNNER_DEMO_API_BASE")
+    settings = {k: v for k, v in values.items()
+            if not k.endswith("_KEY") and not k.startswith("TEAMRUNNER_")}  # ours are not the provider's
+    if demo_base:
+        settings["TEAMRUNNER_DEMO_API_BASE"] = demo_base
+    return settings

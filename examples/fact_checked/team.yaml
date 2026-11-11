@@ -1,7 +1,8 @@
 name: fact_checked
 description: The debate in one team (no subteams) with a fact checker, a web toolkeeper and a sandbox toolkeeper — toolkeepers, side trips, card types, built-in tools and decisions in v0.1
 
-default_model: openrouter/google/gemma-4-31b-it
+# Requires ANTHROPIC_API_KEY in ~/.teamrunner/.env.
+default_model: anthropic/claude-haiku-5-5
 
 default_inputs:
   topic: "Remote work makes teams more productive"

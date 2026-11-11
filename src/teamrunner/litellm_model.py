@@ -30,6 +30,7 @@ class LiteLLMModel:
     def __init__(self, keys: dict[str, str], settings: dict[str, str], prices=None):
         import litellm
         litellm.suppress_debug_info = True
+        _no_logging_worker(litellm)
         self.litellm = litellm
         self.keys = keys
         self.settings = settings
@@ -39,6 +40,9 @@ class LiteLLMModel:
                           litellm.BadGatewayError)
 
     async def complete(self, model, params, messages, schema, tools=None):
+        if model.startswith("teamrunner/"):
+            from .demo import complete
+            return await complete(model, params, messages, schema, tools, self.settings)
         provider, _, name = model.partition("/")
         # A member says `ollama/<name>`; LiteLLM's `ollama/` route gave gpt-oss empty replies,
         # while its chat route calls tools and keeps to the answer form (tested 2026-11-02).
@@ -89,6 +93,7 @@ class LiteLLMModel:
             except Exception:
                 cost, source = None, None  # unknown price: recorded as unknown, never guessed
         message = response.choices[0].message
+        charged = _charged(response)
         calls = [ToolCall(c.id, c.function.name, c.function.arguments or "{}")
                  for c in (getattr(message, "tool_calls", None) or [])]
         return Reply(
@@ -100,4 +105,40 @@ class LiteLLMModel:
             cost_usd=cost,
             cost_source=source,
             latency_ms=latency,
+            cost_charged_usd=charged,
         )
+
+
+def _charged(response) -> float | None:
+    """What the provider says the call cost, when it says (OpenRouter does, with every
+    call); LiteLLM keeps it among the response's hidden details. D120, amended."""
+    try:
+        hidden = getattr(response, "_hidden_params", None) or {}
+        value = (hidden.get("additional_headers") or {}).get("llm_provider-x-litellm-response-cost")
+        return None if value is None else float(value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _no_logging_worker(litellm) -> None:
+    """LiteLLM queues every successful call's logging on one background worker, tied
+    to the first event loop that used it. An experiment runs each run on its own loop,
+    in its own thread, so the worker keeps finding itself on the wrong loop and prints
+    "Task was destroyed" and "bound to a different event loop" warnings. TeamRunner
+    sets no LiteLLM callbacks, so that logging has nothing to do: drop it instead,
+    unless someone has set callbacks of their own."""
+    try:
+        from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER as worker
+    except ImportError:
+        return
+    if getattr(worker, "_teamrunner_quiet", False):
+        return
+    original = worker.ensure_initialized_and_enqueue
+
+    def enqueue(async_coroutine):
+        if litellm.callbacks or litellm.success_callback or litellm._async_success_callback:
+            return original(async_coroutine=async_coroutine)
+        async_coroutine.close()  # nothing listens: never scheduled, so never left pending
+
+    worker.ensure_initialized_and_enqueue = enqueue
+    worker._teamrunner_quiet = True

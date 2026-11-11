@@ -12,11 +12,13 @@ the latest version is supported.
 
 ## What TeamRunner protects, and how
 
-**Your API keys.** Keys live in `~/.teamrunner/.env`, readable only by you,
-outside every team. A run folder never contains a key: `run.json` records only
-where each key came from. `validate` and `run` refuse a team whose files
-contain something that looks like a key. Code run by `run_code` never sees
-them.
+**Your API keys.** Keys live in `~/.teamrunner/.env`, with access restricted
+to your user account, outside every team. TeamRunner does not deliberately
+record configured key values: `record.json` (`run.json` in older folders) records
+only where each key came from. Inputs, prompts and tool results are logged, so
+secrets pasted into them can still appear in run folders. `validate` and `run` refuse a team whose files
+contain something that looks like a key. The sandbox is not given the host environment. Do not grant toolkeepers
+access to your key file or other secret-bearing folders.
 
 **`run_code`, the sandbox.** Python runs in WebAssembly (Pyodide), inside
 Deno, as a separate process. Before the code starts, Deno gives up reading
@@ -50,5 +52,11 @@ limits; every call, allowed or refused, is logged.
 - **`read_page` checks an address when it looks it up**, and the connection
   looks it up again; a site that changes its address in between (DNS
   rebinding) could reach a local address.
-- **What you send a hosted model goes to its provider.** See the README,
-  "What your runs keep, and where your words go".
+- **Hosted model requests leave your machine.** They go to your configured
+  endpoint, or, for the sponsored demo, through the Serenity Partners LLC
+  gateway, OpenRouter, and its upstream model provider. The gateway keeps
+  IP-based quota counters. Do not send private or sensitive data to the demo.
+  See [LEGAL.md](LEGAL.md) and the README data disclosures.
+- **Budget checks do not cap provider billing.** All monetary costs are
+  estimates; actual charges can exceed estimates or configured budgets.
+  Monitor your provider account and its spending controls. See [LEGAL.md](LEGAL.md).

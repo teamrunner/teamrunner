@@ -34,9 +34,9 @@ function compareCheckbox(run) {
 byId("compare-runs").addEventListener("click",async()=>{
   try {
     const [left,right]=comparedRuns,data=await api("/api/compare?"+new URLSearchParams({left,right}));
-    byId("runs-list-panel").hidden=true; byId("run-detail").hidden=true;
+    byId("runs-list-panel").hidden=true;
     const view=byId("run-comparison"); view.hidden=false; view.replaceChildren();
-    const back=node("button","← All runs"); back.addEventListener("click",()=>{view.hidden=true; byId("runs-list-panel").hidden=false;}); view.append(back,node("h3","Compare runs"));
+    const back=node("button","← Run history"); back.addEventListener("click",()=>{view.hidden=true; byId("runs-list-panel").hidden=false;}); view.append(back,node("h3","Compare runs"));
     const columns=node("div",undefined,"comparison-columns");
     for(const [run,path] of [[data.left,data.left_path],[data.right,data.right_path]]) {
       const column=node("section"),summary=run.summary;

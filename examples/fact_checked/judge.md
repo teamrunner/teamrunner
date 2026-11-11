@@ -6,7 +6,7 @@ output:
 ---
 You have heard a fact-checked debate on:
 
-> {{topic}}
+{{topic}}
 
 When your stage is "research": pick the most disputed factual claims
 in the debate and ask the web toolkeeper to read a relevant source URL
