@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner runs` (D102): a package's runs, and any one of them replayed.
 
 The list is newest first, one line per run. Opening a run prints exactly

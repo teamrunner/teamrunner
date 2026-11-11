@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Authenticated, loopback-only HTTP server. No team files are served directly."""
 
 from __future__ import annotations

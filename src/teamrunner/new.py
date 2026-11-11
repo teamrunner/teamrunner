@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner new` (D106): a new team folder, empty or copied from another.
 
     teamrunner new my_team                         # team.yaml and .gitignore
@@ -63,9 +65,9 @@ def create(folder: Path) -> Path:
     folder.mkdir(parents=True)
     (folder / TEAM_FILE).write_text(
         f"name: {folder.name}\n"
-        "description: \"\"   # one line: what this team does\n", encoding="utf-8")
+        "description: \"\"   # one line: what this team does\n", encoding="utf-8", newline="\n")
     write_team_id(folder / TEAM_FILE)
-    (folder / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
+    (folder / ".gitignore").write_text(GITIGNORE, encoding="utf-8", newline="\n")
     return folder
 
 
@@ -91,7 +93,7 @@ def _restamp_member(path: Path, what: str) -> None:
     front, body, _ = parts
     if re.search(r"^kind:\s*toolkeeper\b", front, re.MULTILINE):
         what = "toolkeeper"
-    path.write_text("---\n" + _restamp(front, what) + "---\n" + body, encoding="utf-8")
+    path.write_text("---\n" + _restamp(front, what) + "---\n" + body, encoding="utf-8", newline="\n")
 
 
 def copy_from(source: Path, folder: Path) -> tuple[Path, list[str]]:
@@ -121,11 +123,11 @@ def copy_from(source: Path, folder: Path) -> tuple[Path, list[str]]:
             if path.parent == folder:
                 text = re.sub(r"^name:.*$", f"name: {folder.name}", text, count=1, flags=re.MULTILINE) \
                     if re.search(r"^name:", text, re.MULTILINE) else f"name: {folder.name}\n" + text
-            path.write_text(_restamp(text, "team"), encoding="utf-8")
+            path.write_text(_restamp(text, "team"), encoding="utf-8", newline="\n")
         elif path.suffix == ".md" and path.name not in ("chair.md", "manager.md") and inside[0] != MODELS_DIR:
             _restamp_member(path, "agent")
     ignore = folder / ".gitignore"
     if not ignore.exists() or "runs/" not in ignore.read_text(encoding="utf-8"):
-        with ignore.open("a", encoding="utf-8") as f:
+        with ignore.open("a", encoding="utf-8", newline="\n") as f:
             f.write(("\n" if ignore.exists() and ignore.read_text(encoding="utf-8") else "") + GITIGNORE)
     return folder, warnings

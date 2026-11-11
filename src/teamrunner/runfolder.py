@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Where a run is kept: `runs/<YYYY-MM-DD_HHMMSS>_<entry-team>/` at the top
 of the package (D69), holding `record.json`, `events.jsonl` and `output.md`,
 and `inputs/` when the run was given a file (D108). Before 0.2 the record
@@ -19,7 +21,7 @@ RECORD, OLD_RECORD = "record.json", "run.json"
 
 
 def record_file(folder: Path) -> Path | None:
-    """A run folder's record: `record.json`, or `run.json` in a folder from before 0.2."""
+    """A run folder's record: `record.json`, or `run.json` in a folder from before 0.0.5."""
     for name in (RECORD, OLD_RECORD):
         if (folder / name).is_file():
             return folder / name

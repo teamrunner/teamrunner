@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """What a member's model is given on its turn (D111).
 
 Two parts: its own file's text as its instructions, with the inputs filled

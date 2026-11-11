@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Single-instance demo gateway. Python standard library; no prompt/key logging.
 
 Bind only to loopback behind Caddy. SQLite quotas survive restarts and count

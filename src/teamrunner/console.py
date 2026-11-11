@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """What a run prints while it runs (D101), read like minutes.
 
     run · multi_agent_debate · default input topic: "Remote work makes…"

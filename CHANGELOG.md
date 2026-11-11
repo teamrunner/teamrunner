@@ -1,8 +1,8 @@
 # Changelog
 
-TeamRunner is in preview: 0.0.x versions are a soft launch, and until 0.1.0
-is announced a version may change in ways that break teams and run folders
-made with an earlier one. Each such change is listed here.
+TeamRunner is an early release: a 0.0.x version may change in ways that
+break teams and run folders made with an earlier one. Each such change is
+listed here.
 
 ## 0.0.5 — experiments
 

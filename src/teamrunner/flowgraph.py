@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """A declared flow graph and stable locations for the engine's recorded path.
 
 Control nodes make block entry, return, repeat and termination explicit. The

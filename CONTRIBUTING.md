@@ -15,6 +15,12 @@ security@teamrunner.ai (see SECURITY.md), not to an issue.
 
 We will announce here when pull requests open.
 
+## Code of conduct
+
+Everyone taking part in TeamRunner's spaces, issues included, is asked to
+follow the [code of conduct](CODE_OF_CONDUCT.md). Reports go to
+hello@teamrunner.ai.
+
 ## Contributor License Agreement
 
 Once pull requests open, you will need to sign our

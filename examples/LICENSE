@@ -1,5 +1,5 @@
-The examples in this folder, the files `teamrunner new` writes, and the
-authoring guide `teamrunner skill` installs (AGENTS.md) are licensed under
+TeamRunner's shipped examples (examples/), the files `teamrunner new` writes,
+and the authoring guide `teamrunner skill` installs (AGENTS.md) are licensed under
 MIT-0, not under TeamRunner's GPL-3.0-or-later: a team made from them is
 yours, under any terms you like, with no notice to keep.
 

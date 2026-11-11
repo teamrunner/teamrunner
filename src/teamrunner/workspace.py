@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The teamrunner workspace (D143, D144): the one folder that holds a person's
 teams, in `teams/`, and experiments, in `experiments/`.
 

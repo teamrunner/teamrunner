@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """D120: where a run's prices come from, and that they are recorded as estimates."""
 
 import asyncio

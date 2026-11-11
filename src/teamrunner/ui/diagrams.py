@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Historical diagrams and comparisons use recorded data, never current files."""
 
 import difflib

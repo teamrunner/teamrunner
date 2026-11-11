@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The toolkeepers' desk: every request to a toolkeeper passes through here.
 
 A toolkeeper decides by its `access:` table (D95), on the asker's terms

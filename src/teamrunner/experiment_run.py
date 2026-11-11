@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner experiment <folder>`: run every (condition, replicate) slot (D138 (4)–(6)).
 
     plan → the estimate (nothing starts if it is over the ceiling) → round 1 →

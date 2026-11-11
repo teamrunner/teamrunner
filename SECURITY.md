@@ -7,8 +7,8 @@ Please report security problems privately, by email to
 reproduce it, and which version (`teamrunner --version`). You will hear back
 within a week.
 
-TeamRunner is in preview (0.0.x): fixes go into the next version, and only
-the latest version is supported.
+TeamRunner is an early release (0.0.x): fixes go into the next version, and
+only the latest version is supported.
 
 ## What TeamRunner protects, and how
 

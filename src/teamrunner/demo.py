@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Key-free client for the TeamRunner-sponsored demo gateway."""
 from __future__ import annotations
 

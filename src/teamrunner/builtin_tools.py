@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The built-in tools (D105, D108), each with the guardrails it enforces.
 
 TeamRunner enforces every guardrail, not the model (D77): a request that

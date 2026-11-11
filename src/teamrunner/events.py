@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The run's event log (SPEC §7, D103): every event, numbered, in order.
 
 `Log.emit` adds the envelope — `seq`, `ts`, `run_id` — and returns the

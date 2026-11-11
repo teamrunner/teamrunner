@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Problems found in a package: errors stop a run, warnings do not.
 
 Every problem names its file and, where it can, the line, the offending

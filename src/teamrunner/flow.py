@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The flow: the body of `chair.md`, parsed and checked (SPEC §3.3, D96).
 
     rounds(*3) -> judge:research -> web -> judge:verdict

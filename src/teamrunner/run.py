@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner run`: a call to a team (D69), start to finish.
 
     validate → inputs → keys and models checked (D99, D100) → run folder →

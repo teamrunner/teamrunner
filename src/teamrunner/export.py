@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner experiment <folder> --export <dir>` (D12, D138 (12), SPEC §5.5).
 
 Five long-format CSV tables, joined by `run_id`, rebuilt from the run folders

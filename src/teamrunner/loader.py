@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Read a package from disk: team folders, member files, model profiles.
 
 Loading only reads and records what is there, with line numbers; deciding

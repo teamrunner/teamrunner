@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The shipped local server, accessed over HTTP rather than mocked routes."""
 
 from contextlib import contextmanager

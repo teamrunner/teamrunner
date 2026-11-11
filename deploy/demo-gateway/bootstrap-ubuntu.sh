@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 # Install Docker Engine on a fresh Ubuntu 24.04 Lightsail instance.
 set -euo pipefail
 sudo apt-get update -qq

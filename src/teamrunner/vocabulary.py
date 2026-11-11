@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Every word TeamRunner's files may use, by file (D89).
 
 A word never changes its meaning, so every incompatibility is a word this

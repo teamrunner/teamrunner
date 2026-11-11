@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The summary (D138 (11), SPEC §5.5): it describes, it does not test.
 
 Per measure and condition: n, mean, SD and a 95% interval (Student's t for

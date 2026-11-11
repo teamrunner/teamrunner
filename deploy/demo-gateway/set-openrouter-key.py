@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Run on the server: enter an OpenRouter key privately and enable the demo."""
 from getpass import getpass
 from pathlib import Path

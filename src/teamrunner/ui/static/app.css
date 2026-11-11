@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later | Copyright 2026 Kumar Muthuraman */
 :root{color-scheme:light dark;--bg:#faf9f6;--panel:#f1f0eb;--text:#292c2b;--muted:#656a65;--line:#ddded5;--accent:#2340c9;--selected:#e5e9fb;--paper:#fffefb}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}

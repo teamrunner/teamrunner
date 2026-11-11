@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Kumar Muthuraman
 "use strict";
 
 let runSource = "", runData = null, runRows = [], runRequest = 0, detailRequest = 0, searchTimer;

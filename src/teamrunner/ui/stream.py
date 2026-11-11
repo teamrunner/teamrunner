@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Server-Sent Events tail the runner's append-only log; reconnects resume by seq."""
 
 import json

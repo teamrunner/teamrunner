@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Experiments, step 2 (D138): read, build, plan — nothing spent."""
 
 import io

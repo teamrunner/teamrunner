@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Check a file's values against its JSON Schema, in plain words (D26).
 
 The schemas in `schemas/` are the machine-checkable form of SPEC.md. Each

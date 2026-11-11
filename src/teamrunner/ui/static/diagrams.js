@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Kumar Muthuraman
 "use strict";
 mermaid.initialize({startOnLoad:false,securityLevel:"strict",theme:"neutral",htmlLabels:false,flowchart:{useMaxWidth:false},maxTextSize:200000});
 let diagramQueue=Promise.resolve(), diagramNumber=0;

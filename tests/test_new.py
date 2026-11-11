@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 import re
 
 import pytest
@@ -22,6 +24,24 @@ def test_new_makes_a_team_that_validates(tmp_path):
         create(folder)
     with pytest.raises(NewError, match="cannot be a team's name"):
         create(tmp_path / "my team")
+
+
+def test_new_and_ids_write_lf_and_keep_a_files_own_endings(tmp_path):
+    from teamrunner.ids import write_member_id, write_team_id
+    from teamrunner.new import EXAMPLES
+    folder = create(tmp_path / "plain")
+    copied, _ = copy_from(EXAMPLES / "round_robin", tmp_path / "copied")
+    written = [folder / "team.yaml", folder / ".gitignore", *copied.glob("*.md"), copied / "team.yaml"]
+    assert all(b"\r\n" not in path.read_bytes() for path in written)  # LF on every system
+    crlf = tmp_path / "crlf.md"
+    crlf.write_bytes(b"---\r\ndescription: x\r\n---\r\nBody\r\n")
+    write_member_id(crlf, "agent")
+    data = crlf.read_bytes()
+    assert data.count(b"\r\n") == data.count(b"\n") == 5  # the id line matches, nothing changed
+    team = tmp_path / "team.yaml"
+    team.write_bytes(b"name: t\r\ndescription: x")
+    write_team_id(team)
+    assert team.read_bytes().count(b"\r\n") == team.read_bytes().count(b"\n") == 3
 
 
 def test_new_from_copies_with_fresh_ids_and_lineage(tmp_path):

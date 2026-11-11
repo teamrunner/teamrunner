@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The versions a run depends on, recorded in every record.json (D14c: a study must be rerunnable)."""
 
 from __future__ import annotations

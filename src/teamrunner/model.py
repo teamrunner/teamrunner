@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The thin interface to models (D20): one call, a request in, a reply out.
 
 The real one, over LiteLLM, arrives with the key and model checks (D99,

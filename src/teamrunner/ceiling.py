@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """An experiment's hard ceiling (D138 (6)): `max_cost_usd`, never passed.
 
 Before every model call, the most it can cost — its prompt, counted by

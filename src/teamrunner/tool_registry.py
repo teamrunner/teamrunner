@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The built-in tools a toolkeeper may hold in 0.1 (D105, D108).
 
 Each tool declares the guardrails it understands (D77); a guardrail it

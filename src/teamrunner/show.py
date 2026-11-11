@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner show <member>` (D93): one member exactly as it will run.
 
 Every value is written out, and each one that is not in the member's own

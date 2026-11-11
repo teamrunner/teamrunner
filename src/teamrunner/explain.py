@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner explain` (D62, D96, D109): what a team folder will do, in words
 a non-coder can check — who acts when, who sees what, who may use which
 tool, what it takes, how many turns it can run — and its flow as a picture.

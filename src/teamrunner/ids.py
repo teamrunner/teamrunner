@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Ids: ULIDs (D33), written into hand-written files that lack one (D64).
 
 The id line goes in as text, just before the file's first setting, so
@@ -42,19 +44,34 @@ def _first_setting(lines: list[str], start: int, end: int) -> int:
 def write_member_id(path: Path, what: str, ulid: str | None = None) -> str:
     """Add an id to a member file's frontmatter — a new one, or `ulid`. Returns the id."""
     ulid = ulid or new_ulid()
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    text, eol = _read(path)
+    lines = text.splitlines(keepends=True)
     close = next(i for i in range(1, len(lines)) if lines[i].rstrip() == "---")
-    lines.insert(_first_setting(lines, 1, close), _line(ulid, what))
-    path.write_text("".join(lines), encoding="utf-8")
+    lines.insert(_first_setting(lines, 1, close), _line(ulid, what).replace("\n", eol))
+    _write(path, "".join(lines))
     return ulid
 
 
 def write_team_id(path: Path) -> str:
     """Add an id to a team.yaml. Returns the id."""
     ulid = new_ulid()
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    text, eol = _read(path)
+    lines = text.splitlines(keepends=True)
     if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    lines.insert(_first_setting(lines, 0, len(lines)), _line(ulid, "team"))
-    path.write_text("".join(lines), encoding="utf-8")
+        lines[-1] += eol
+    lines.insert(_first_setting(lines, 0, len(lines)), _line(ulid, "team").replace("\n", eol))
+    _write(path, "".join(lines))
     return ulid
+
+
+def _read(path: Path) -> tuple[str, str]:
+    """A file's text as written, and its line ending: an id line matches the file's
+    own endings, and a file's endings are never changed, on any system."""
+    with path.open(encoding="utf-8", newline="") as stream:
+        text = stream.read()
+    return text, "\r\n" if "\r\n" in text else "\n"
+
+
+def _write(path: Path, text: str) -> None:
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(text)

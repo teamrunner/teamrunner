@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The first cost estimate for an experiment's runs (D138 (6)), made without a model.
 
 The flow is walked as a rehearsal walks it (D115): every member takes its

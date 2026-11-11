@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The real model connection, over LiteLLM (D20). Imported only for a real
 run, because LiteLLM takes a while to load."""
 

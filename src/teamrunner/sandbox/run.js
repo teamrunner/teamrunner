@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Kumar Muthuraman
 // run_code's sandbox (D114): Python in WebAssembly (Pyodide), run by Deno.
 //
 // Reads one JSON request on stdin: {code, files: {path: base64}, network}.

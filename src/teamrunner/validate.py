@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner validate`: everything that can be wrong with a package, found
 offline and before any tokens are spent (D26, D89).
 

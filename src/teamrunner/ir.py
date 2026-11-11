@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The intermediate representation: a team as it will run.
 
 Everything here is resolved — every default filled in, every reference

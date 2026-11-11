@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner gather` (D94): make a package safe to hand over.
 
 Links (symbolic links) may point outside the package while you work; a

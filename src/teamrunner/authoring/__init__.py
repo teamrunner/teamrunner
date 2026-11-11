@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """AI-assisted authoring (D62, D106): one set of instructions, `AGENTS.md`,
 used three ways — read by any assistant working in a folder, made into a
 Claude Code skill, and sent to a model by `teamrunner new --describe`.

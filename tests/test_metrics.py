@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Experiments, step 5 (D138 (11), (13), amended): metrics, evaluators, the summary."""
 
 import io

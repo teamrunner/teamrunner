@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Prices (D118, D120): what a run's tokens and tool calls are counted at.
 
 Providers report tokens, never prices, so every cost is an estimate: exact

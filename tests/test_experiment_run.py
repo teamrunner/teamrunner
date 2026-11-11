@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Experiments, step 3 (D138 (4)–(6), (10)): running, the hard ceiling, record.json."""
 
 import io

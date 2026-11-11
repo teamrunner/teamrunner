@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Recoverable deletion using the operating system's trash; never unlink as fallback."""
 
 from datetime import datetime

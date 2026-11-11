@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The check before the first turn (D99, D100): every key found, every
 model reachable — every problem at once, in one table, before any tokens.
 

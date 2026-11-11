@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """From files to the IR: validate, then resolve everything (D57).
 
 `load_team` is the one way in. It returns no IR while any error stands, so

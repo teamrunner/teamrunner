@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Experiments (D138, SPEC §5): read `experiment.md`, build its conditions,
 check each as a team, and plan the runs — spending nothing.
 

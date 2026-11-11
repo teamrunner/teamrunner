@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Experiments, step 6 (D12, D138 (12), SPEC §5.5): the five CSV tables."""
 
 import csv

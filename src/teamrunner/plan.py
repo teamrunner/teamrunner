@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner experiment <folder> --plan` (D138 (4)): what would run, in what
 order, and about what it would cost — built and checked, and nothing spent.
 """

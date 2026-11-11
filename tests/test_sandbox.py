@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """run_code in the real sandbox (D114). Pyodide is fetched once into
 .cache/deno (git-ignored) and kept, so later runs need no network."""
 

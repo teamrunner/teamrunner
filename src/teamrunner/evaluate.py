@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """Evaluating an experiment's runs (D138 (13), amended; SPEC §5.4).
 
 Each evaluator evaluates each run that fills a slot, `evaluations:` times,

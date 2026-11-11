@@ -1,11 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """TeamRunner — the experimentation platform for agent organizations.
 
 Run multi-agent orchestrations and factorial experiments entirely from
 plain text files: agents are Markdown, teams are folders, experiments
 are declarative YAML.
 
-Status: preview (0.0.x, a soft launch). Until 0.1.0 is announced it may
-change in ways that break earlier teams and runs; see
+Status: early release (0.0.x). A version may change in ways that break
+earlier teams and runs; each such change is listed in the changelog at
 https://github.com/teamrunner/teamrunner.
 """
 

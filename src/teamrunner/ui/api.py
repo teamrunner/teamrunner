@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """File metadata for the browser; team operations stay in the existing engine."""
 
 import hashlib
@@ -260,7 +262,7 @@ def create_member(root: Path, written: str) -> dict:
     if not WORD.fullmatch(name) or name in RESERVED_NAMES:
         raise ValueError("Use a member name with letters, digits and underscores, starting with a letter or underscore; avoid flow words such as done and stop.")
     team_folder(root, str(path.parent.relative_to(root)))
-    with path.open("x", encoding="utf-8") as stream:
+    with path.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write('---\ndescription: ""\n---\nWrite this member’s instructions here.\n')
     return read_file(root, written)
 
@@ -274,7 +276,7 @@ def create_chair(root: Path, written: str) -> dict:
     guard_team(root, path.parent)
     if path.exists() or path.is_symlink():
         raise Conflict("This team already has a chair.md.")
-    with path.open("x", encoding="utf-8") as stream:
+    with path.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write("# The flow: who acts, and in what order. For example:\n#\n"
                      "#   researcher -> writer -> reviewer\n#\n"
                      "# Write the steps below, using your members' names. Delete this file\n"

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """An experiment's metrics (D138 (13), SPEC §5.4): `metrics/`, never the team's.
 
 Two kinds, each listed under `metrics:` in experiment.md:

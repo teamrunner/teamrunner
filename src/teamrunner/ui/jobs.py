@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """One in-process run at a time; only transient control state lives here."""
 
 import base64
@@ -122,7 +124,7 @@ class Jobs:
         task = staging / "recorded-inputs.yaml"
         if task == file:
             task = staging / "other-recorded-inputs.yaml"
-        with task.open("w", encoding="utf-8") as stream:
+        with task.open("w", encoding="utf-8", newline="\n") as stream:
             YAML().dump({"inputs": values}, stream)
         return file, task
 

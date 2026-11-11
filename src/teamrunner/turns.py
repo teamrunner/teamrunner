@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """A member's turn: the minutes in, its words and typed outputs out.
 
 `Members` is the engine's actor. For each turn it builds the request from

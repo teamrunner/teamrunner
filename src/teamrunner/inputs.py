@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """What a run is given (SPEC §8, D70, D108): `--message`, `--file`,
 `--task-file`, or nothing, with `default_inputs` filling the rest.
 

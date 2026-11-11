@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner run --rehearse` (D115): a run with no model.
 
 Every member answers with placeholder words, and each typed answer is

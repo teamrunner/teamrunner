@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """`teamrunner new <name> --describe "…"` (D106): a model writes the team.
 
 It is given AGENTS.md — the same instructions as the authoring skill — and

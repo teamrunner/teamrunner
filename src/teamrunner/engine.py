@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """The flow engine: walks a team's flow and says whose turn it is (D110).
 
 It knows the flow's rules and nothing else. Taking a turn — the prompt,

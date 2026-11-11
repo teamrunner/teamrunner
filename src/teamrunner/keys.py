@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 Kumar Muthuraman
 """API keys (D99): they live in `~/.teamrunner/.env`, under the provider's
 own names. A key found only in the shell, or in a `.env` inside the
 package, is offered a move there; it is never copied without consent.
