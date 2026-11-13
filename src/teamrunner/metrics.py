@@ -349,6 +349,12 @@ def _evaluator(path, data, body, problems, members) -> Evaluator | None:
         problems.error(path, f"`{{{{{name}}}}}` is not something an evaluator may read",
                        fix="an evaluator reads only {{output}}, {{transcript}}, {{inputs.<name>}} and "
                        "{{<member>.output.<field>}} — never the condition, seed, costs or models")
+    sees = [n for n in used if n in ("output", "transcript") or (SOURCE.match(n) and not n.startswith("inputs."))]
+    if not sees:
+        problems.error(path, "this evaluator sees nothing of the run: its text has no {{transcript}}, "
+                       "{{output}} or {{<member>.output.<field>}}, and it is sent only its own text",
+                       fix="add {{transcript}} (everything said) or {{output}} (the run's output.md) "
+                       "where the run should go")
     if len(problems.errors) > errors:
         return None
     settings = {k: v for k, v in data.items() if k != "id"}

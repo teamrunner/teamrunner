@@ -13,7 +13,7 @@ https://github.com/teamrunner/teamrunner.
 
 import os as _os
 
-__version__ = "0.0.5"
+__version__ = "0.0.5.1"
 
 # LiteLLM fetches its price table from the internet on import unless told not to. TeamRunner
 # uses the table that came with the installed LiteLLM, so a run's prices depend only on what

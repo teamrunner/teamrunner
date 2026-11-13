@@ -275,3 +275,18 @@ def test_small_numbers_and_intervals_inside_the_possible_range():
     assert _clip((-0.36, 0.76), (0.0, None)) == (0.0, 0.76)  # a count is never below zero
     assert _clip((2.24, 3.36), (0.0, 3.0)) == (2.24, 3.0)  # nor above the number of answers
     assert _clip((1.0, 2.0), (None, None)) == (1.0, 2.0)
+
+
+def test_an_evaluator_that_sees_nothing_of_the_run_is_refused(tmp_path):
+    files = write(tmp_path, {
+        "blind.md": "---\nkind: evaluator\nmodel: openai/gpt-5\noutput:\n  score: 0\n---\n"
+                    "Score the debate on {{inputs.topic}} from 1 to 5.\n",
+        "sighted.md": "---\nkind: evaluator\nmodel: openai/gpt-5\noutput:\n  score: 0\n---\n"
+                      "Score this debate from 1 to 5.\n\n{{transcript}}\n",
+    })
+    problems = Problems()
+    read_metrics([files / "blind.md"], problems, None)
+    assert "this evaluator sees nothing of the run" in "\n".join(p.message for p in problems.errors)
+    problems = Problems()
+    read_metrics([files / "sighted.md"], problems, None)
+    assert not problems.errors

@@ -232,12 +232,47 @@ def _condition_name(exp: Experiment, name, line) -> bool:
     return True
 
 
+def _bare(written: str) -> bool:
+    """A name with no slash names a team in your teamrunner workspace's `teams/`."""
+    written = written.strip()
+    return (written not in (".", "..") and not written.startswith("~")
+            and not any(c in written for c in "/\\") and not written.endswith(".md"))
+
+
 def _folder(exp: Experiment, written, line, what: str) -> Path | None:
     if not isinstance(written, str) or not written.strip():
         exp.problems.error(exp.path, f"{what} should be a folder, as a path from this experiment's folder",
                            line=line, value=str(written))
         return None
-    path = (exp.folder / written).resolve()
+    if _bare(written):
+        from . import workspace
+        place = exp.folder.parent
+        looked = []  # your teamrunner workspace's teams/; then the teams/ beside this experiment's experiments/
+        if (found := workspace.remembered()) and (found[0] / "teams").is_dir():
+            looked.append(found[0] / "teams")
+        if place.name == "experiments" and (place.parent / "teams").is_dir():
+            looked.append(place.parent / "teams")
+        looked = list({t.resolve(): t for t in looked}.values())  # once each, in order
+        if not looked:
+            exp.problems.error(exp.path, f"`{written}` names a team, but this experiment is not in a "
+                               "workspace's `experiments/` folder and no teamrunner workspace is remembered, "
+                               "so there is no `teams/` to find it in",
+                               line=line, value=written,
+                               fix="give a path from this experiment's folder, such as `../" + written + "`")
+            return None
+        path = next((t / written for t in looked if (t / written).is_dir()), None)
+        if path is None:
+            where = " or ".join(dict.fromkeys("this workspace's teams/" if t.parent.resolve() == place.parent.resolve()
+                                              else f"{workspace.shown(t.resolve())}/" for t in looked))
+            exp.problems.error(exp.path, f"there is no team `{written}` in {where}",
+                               line=line, value=written,
+                               fix="name a team in teams/, or give a path from this experiment's folder")
+            return None
+        path = path.resolve()
+    elif written.strip().startswith("~"):
+        path = Path(written.strip()).expanduser().resolve()
+    else:
+        path = (exp.folder / written).resolve()
     if path.is_file() and path.suffix == ".md":
         exp.problems.error(exp.path, f"`{written}` is an agent file; TeamRunner runs team folders so far",
                            line=line, value=written,

@@ -3,18 +3,26 @@
 """The flow: the body of `chair.md`, parsed and checked (SPEC §3.3, D96).
 
     rounds(*3) -> judge:research -> web -> judge:verdict
-
     rounds = for_turn -> against_turn
+    for_turn = for -> fact_checker --pass,*3--> done
+    fact_checker --fail--> for
 
-    for_turn = for -> fact_checker
-               fact_checker --fail--> for
-               fact_checker --pass,*3--> done
+Every line stands on its own: the order of the lines and their indentation
+are for the reader (D147). A line is one of three things:
 
-The lines before the first named block are the main flow; a line starting
-with `->` continues the line above. Each block has one line of steps;
-its other lines are decisions. A step is an occurrence, not a name: the
-same member may take several turns in one block, and an arrow names a step
-by `name` or `name:stage`, which must point to one of them.
+- a line of steps, `a -> b -> c`: the main flow;
+- a line of steps after a name, `name = a -> b`: the named block `name`;
+- a decision alone, `decider --option--> step`: it belongs wherever its
+  decider takes a turn, and if that is in several places, with the nearest
+  line above that holds the decider.
+
+Several lines of one flow join where one ends and the next begins
+(`a -> b` and `b -> c` are `a -> b -> c`). A labelled arrow inside a line
+of steps is a decision too: `checker --pass--> c` goes on to `c` when the
+checker says `pass`. A line starting with an arrow continues the line
+above. A step is an occurrence, not a name: the same member may take
+several turns in one line, and a joint or an arrow names a step by `name`
+or `name:stage`, which must point to one of them.
 
 Parsing reads the text alone. `check_flow` then looks the names up in the
 team, reports what is wrong, and completes the flow (which output each
@@ -32,25 +40,36 @@ from .vocabulary import suggest
 
 WORD = r"[A-Za-z_][A-Za-z0-9_]*"
 STEP = re.compile(rf"^(?P<name>{WORD})(?::(?P<stage>{WORD}))?(?:\((?P<args>[^)]*)\))?$")
-BLOCK_DEF = re.compile(rf"^(?P<name>{WORD})\s*=\s*(?P<rest>.*)$")
-DECISION = re.compile(r"^(?P<decider>\S+)\s*--(?P<labels>[^>]*?)-->\s*(?P<target>.*)$")
+BLOCK_DEF = re.compile(rf"^(?P<name>{WORD})\s*=(?!=)\s*(?P<rest>.*)$")
+ARROW = re.compile(r"(--[^>]*?-->|->)")
 COUNT = re.compile(r"^\*\s*(\d+)$")
 
 
 @dataclass
-class _Arrow:
-    decider: str
+class _Chain:
+    """One line of steps as written (with the lines that continue it)."""
+    block: str  # "" for the main flow
+    line: int
+    steps: list[Step] = field(default_factory=list)
+    arrows: list[list[str] | None] = field(default_factory=list)  # between steps; None is `->`
+    tail: tuple[list[str], str] | None = None  # `--option--> done` at the end: (labels, done|stop)
+
+
+@dataclass
+class _Lone:
+    """A decision written on a line of its own."""
+    decider: Step
     labels: list[str]
-    target: str
+    target: Step
     line: int
 
 
 @dataclass
-class _Draft:
-    block: Block
-    has_sequence: bool = False
-    last_was_sequence: bool = False
-    arrows: list[_Arrow] = field(default_factory=list)
+class _Route:
+    decider: int
+    labels: list[str]
+    where_to: int | str
+    line: int
 
 
 # --- parsing --------------------------------------------------------------------
@@ -59,86 +78,68 @@ def parse_flow(text: str, path, first_line: int, problems: Problems) -> Flow | N
     """Parse a chair's script. `first_line` is the file line of the text's
     first line. Returns None if nothing usable could be read."""
     errors_before = len(problems.errors)
-    main = _Draft(Block("", line=first_line))
-    drafts = {"": main}
-    current = main
+    written: list[tuple[str, list[tuple[str, int]]]] = []  # (block, [(text, line), ...])
 
     for i, raw in enumerate(text.splitlines()):
         line_no = first_line + i
-        stripped = raw.split("#", 1)[0].rstrip()
-        if not stripped.strip():
+        stripped = raw.split("#", 1)[0].strip()
+        if not stripped:
             continue
-        indented = stripped[0].isspace()
-        stripped = stripped.strip()
-
+        if stripped.startswith("-"):  # `-> b` or `--option--> b`: continues the line above
+            if not written:
+                problems.error(path, "a line starting with an arrow continues the line above, "
+                               "but there is none", line=line_no)
+                continue
+            written[-1][1].append((stripped, line_no))
+            continue
         definition = BLOCK_DEF.match(stripped)
         if definition:
-            name = definition["name"]
-            if indented:
-                problems.error(path, f"the named block `{name}` should start at the left edge",
-                               line=line_no, fix="remove the spaces before its name")
-            if name in drafts:
-                problems.error(path, f"the block `{name}` is defined twice", line=line_no,
-                               fix="rename one of them")
-                current = _Draft(Block(name, line=line_no))  # parse it, then drop it
+            if not definition["rest"].strip():
+                problems.error(path, f"the block `{definition['name']}` has no steps",
+                               line=line_no, fix=f"write them after the `=`: `{definition['name']} = a -> b`")
                 continue
-            current = _Draft(Block(name, line=line_no))
-            drafts[name] = current
-            if definition["rest"].strip():
-                _add_sequence(current, definition["rest"], path, line_no, problems)
-            continue
+            written.append((definition["name"], [(definition["rest"].strip(), line_no)]))
+        else:
+            written.append(("", [(stripped, line_no)]))
 
-        if current is not main and not indented:
-            problems.error(path, "this line is outside every named block",
-                           line=line_no,
-                           fix="indent it under its block, or move it above the first named block "
-                           "if it belongs to the main flow")
-            continue
-
-        if stripped.startswith("->"):
-            if not current.last_was_sequence:
-                problems.error(path, "a line starting with `->` continues a line of steps, "
-                               "but there is none just above it", line=line_no)
-                continue
-            _add_steps(current, stripped[2:], path, line_no, problems)
-            continue
-
-        arrow = DECISION.match(stripped)
-        if arrow:
-            current.last_was_sequence = False
-            target = arrow["target"].strip()
-            if "->" in target:
-                problems.error(path, "a decision points to one step; put what follows it in the flow",
-                               line=line_no, value=target)
-                continue
-            labels = [label.strip() for label in arrow["labels"].split(",")]
-            current.arrows.append(_Arrow(arrow["decider"], labels, target, line_no))
-            continue
-
-        if "-->" in stripped or "--" in stripped:
-            problems.error(path, "this decision should read `decider --option--> step`",
-                           line=line_no, value=stripped)
-            continue
-        if current.has_sequence:
-            problems.error(path, "a block has one line of steps; its other lines are decisions "
-                           "(`decider --option--> step`)", line=line_no,
-                           fix="join this line to the steps above with `->`")
-            continue
-        _add_sequence(current, stripped, path, line_no, problems)
+    chains: list[_Chain] = []
+    lones: list[_Lone] = []
+    for block, pieces in written:
+        item = _read_line(block, pieces, path, problems)
+        if isinstance(item, _Lone):
+            lones.append(item)
+        elif item is not None:
+            chains.append(item)
 
     if len(problems.errors) > errors_before:
         return None
-    if not main.has_sequence:
+    if not any(c.block == "" for c in chains):
         problems.error(path, "this chair.md has no flow", line=first_line,
                        fix="write the steps, such as `for -> against -> judge`, "
                        "or delete the file and members take turns in filename order")
         return None
-    for draft in drafts.values():
-        _resolve_arrows(draft, path, problems)
+
+    names = list(dict.fromkeys(c.block for c in chains))  # in the order first written
+    built: dict[str, Block] = {}
+    routes: dict[str, list[_Route]] = {}
+    for name in names:
+        mine = [c for c in chains if c.block == name]
+        line = first_line if name == "" else mine[0].line
+        result = _join(Block(name, line=line), mine, path, problems)
+        if result is not None:
+            built[name], routes[name] = result
     if len(problems.errors) > errors_before:
         return None
-    blocks = {name: d.block for name, d in drafts.items() if name}
-    flow = Flow(main.block, blocks, source="chair.md")
+
+    for lone in lones:
+        _place(lone, chains, built, routes, path, problems)
+    for name, block in built.items():
+        _resolve(block, routes[name], path, problems)
+    if len(problems.errors) > errors_before:
+        return None
+
+    blocks = {name: b for name, b in built.items() if name}
+    flow = Flow(built[""], blocks, source="chair.md")
     for block in [flow.main, *blocks.values()]:
         for step in block.steps:
             if step.kind == "name":
@@ -146,23 +147,69 @@ def parse_flow(text: str, path, first_line: int, problems: Problems) -> Flow | N
     return flow
 
 
-def _add_sequence(draft: _Draft, text: str, path, line_no, problems) -> None:
-    draft.has_sequence = True
-    _add_steps(draft, text, path, line_no, problems)
+def _where(name: str) -> str:
+    return f"the block `{name}`" if name else "the main flow"
 
 
-def _add_steps(draft: _Draft, text: str, path, line_no, problems) -> None:
-    draft.last_was_sequence = True
-    for token in text.split("->"):
-        step = _parse_step(token.strip(), path, line_no, problems, allow_repeat=True)
-        if step is None:
+def _read_line(block: str, pieces: list[tuple[str, int]], path, problems) -> _Chain | _Lone | None:
+    """Read one line (and its continuations) into steps and the arrows between them."""
+    tokens: list[tuple[str, int]] = []
+    for n, (text, line_no) in enumerate(pieces):
+        parts = [p.strip() for p in ARROW.split(text)]
+        if n > 0:
+            parts = parts[1:]  # a continuation starts with its arrow
+        tokens += [(p, line_no) for p in parts]
+
+    steps: list[Step] = []
+    arrows: list[list[str] | None] = []
+    for k, (token, line_no) in enumerate(tokens):
+        if k % 2:  # an arrow
+            if token == "->":
+                arrows.append(None)
+                continue
+            labels = [label.strip() for label in token[2:-3].split(",")]
+            if not any(labels) or "" in labels:
+                problems.error(path, "an arrow label is empty: write `--option-->` or `--*3-->`",
+                               line=line_no)
+                return None
+            arrows.append(labels)
             continue
-        steps = draft.block.steps
+        if "--" in token or token.endswith("-") or token.startswith(">"):
+            problems.error(path, "this decision should read `decider --option--> step`",
+                           line=line_no, value=token)
+            return None
+        step = _parse_step(token, path, line_no, problems, allow_repeat=True)
+        if step is None:
+            return None
         if steps and steps[-1].kind in (DONE, STOP):
             problems.error(path, f"nothing after `{steps[-1].kind}` would ever run", line=line_no,
                            value=step.label)
+            return None
         steps.append(step)
-    draft.block.sequence_length = len(draft.block.steps)
+
+    line = pieces[0][1]
+    if len(steps) == 2 and not block and arrows[0] is not None:
+        decider, target = steps
+        if target.repeat > 1:
+            problems.error(path, "a decision points to a step, not a repeat", line=line,
+                           value=target.label, fix="repeat it in the flow instead")
+            return None
+        return _Lone(decider, arrows[0], target, line)
+
+    chain = _Chain(block, line, steps, arrows)
+    for k, labels in enumerate(arrows):
+        if labels is None:
+            continue
+        if steps[k].kind in (DONE, STOP):
+            problems.error(path, f"`{steps[k].name}` cannot decide anything", line=steps[k].line)
+            return None
+        if steps[k + 1].repeat > 1:
+            problems.error(path, "a decision points to a step, not a repeat", line=steps[k + 1].line,
+                           value=steps[k + 1].label, fix="repeat it in the flow instead")
+            return None
+    if arrows and arrows[-1] is not None and steps[-1].kind in (DONE, STOP):
+        chain.tail = (arrows.pop(), steps.pop().kind)
+    return chain
 
 
 def _parse_step(token: str, path, line_no, problems, allow_repeat: bool) -> Step | None:
@@ -203,82 +250,182 @@ def _parse_step(token: str, path, line_no, problems, allow_repeat: bool) -> Step
     return Step("name", name, stage, repeat, line_no)
 
 
-def _matches(block: Block, ref_name: str, ref_stage: str | None, upto: int | None = None) -> list[int]:
-    steps = block.steps if upto is None else block.steps[:upto]
-    return [i for i, s in enumerate(steps)
-            if s.name == ref_name and (ref_stage is None or s.stage == ref_stage)]
+def _joinable(step: Step) -> bool:
+    return step.kind not in (DONE, STOP)
 
 
-def _resolve_arrows(draft: _Draft, path, problems) -> None:
-    block = draft.block
-    where = f"the block `{block.name}`" if block.name else "the main flow"
-    for arrow in draft.arrows:
-        decider = _parse_step(arrow.decider, path, arrow.line, problems, allow_repeat=False)
-        if decider is None:
+def _join(block: Block, chains: list[_Chain], path, problems) -> tuple[Block, list[_Route]] | None:
+    """Join the lines of one flow into its sequence: a line that begins where
+    another ends goes on from there."""
+    where = _where(block.name)
+    after: dict[int, list[int]] = {i: [] for i in range(len(chains))}
+    before: dict[int, list[int]] = {i: [] for i in range(len(chains))}
+    for i, a in enumerate(chains):
+        if a.tail or not _joinable(a.steps[-1]):
             continue
-        if decider.kind in (DONE, STOP):
-            problems.error(path, f"`{decider.name}` cannot decide anything", line=arrow.line)
+        for j, b in enumerate(chains):
+            if i != j and _joinable(b.steps[0]) and b.steps[0].label == a.steps[-1].label:
+                after[i].append(j)
+                before[j].append(i)
+
+    ok = True
+    for i, nexts in after.items():
+        if len(nexts) > 1:
+            joint = chains[i].steps[-1].label
+            problems.error(path, f"two lines in {where} go on from `{joint}`", line=chains[nexts[1]].line,
+                           fix=f"a step goes on to one next step; to choose between them, "
+                           f"`{joint}` decides: `{joint} --option--> …`")
+            ok = False
+    for j, prevs in before.items():
+        if len(prevs) > 1:
+            joint = chains[j].steps[0].label
+            problems.error(path, f"two lines in {where} lead into `{joint}`", line=chains[prevs[1]].line,
+                           fix="steps run one after another: join the lines end to start, "
+                           "or give each turn a stage (`name:first`, `name:second`)")
+            ok = False
+    if not ok:
+        return None
+
+    starts = [i for i in before if not before[i]]
+    if not starts:
+        problems.error(path, f"the lines of {where} go round in a circle, so it has no first step",
+                       line=chains[0].line, fix="a loop is a decision: `checker --fail--> writer`")
+        return None
+    if len(starts) > 1:
+        a, b = chains[starts[0]], chains[starts[1]]
+        problems.error(path, f"the lines of {where} do not join up: one starts at "
+                       f"`{a.steps[0].label}`, another at `{b.steps[0].label}`", line=b.line,
+                       fix="a line that goes on from another starts with the step that one ends with: "
+                       "`a -> b` and `b -> c`")
+        return None
+
+    order = [starts[0]]
+    while after[order[-1]]:
+        order.append(after[order[-1]][0])
+    if len(order) < len(chains):
+        rest = next(c for i, c in enumerate(chains) if i not in order)
+        problems.error(path, f"some lines of {where} go round in a circle", line=rest.line,
+                       fix="a loop is a decision: `checker --fail--> writer`")
+        return None
+
+    index_of: dict[int, list[int]] = {}
+    for n, i in enumerate(order):
+        chain = chains[i]
+        if n == 0:
+            index_of[i] = list(range(len(chain.steps)))
+            block.steps.extend(chain.steps)
             continue
-        hits = _matches(block, decider.name, decider.stage, upto=block.sequence_length)
-        if not hits:
-            problems.error(path, f"`{decider.label}` does not take a turn in {where}",
-                           line=arrow.line, value=decider.label,
-                           fix="a decision belongs to the block where its decider takes a turn")
-            continue
-        if len(hits) > 1:
-            problems.error(path, f"`{decider.label}` takes more than one turn in {where}, "
-                           "so this decision could belong to either",
-                           line=arrow.line, value=decider.label,
+        joint = block.steps[-1]
+        if chain.steps[0].repeat != joint.repeat:
+            problems.error(path, f"`{joint.label}` is written with two different counts",
+                           line=chain.line, value=chain.steps[0].label)
+            return None
+        start = len(block.steps) - 1
+        index_of[i] = [start + k for k in range(len(chain.steps))]
+        block.steps.extend(chain.steps[1:])
+    block.sequence_length = len(block.steps)
+
+    for i in order[1:]:
+        joint = chains[i].steps[0].label
+        if sum(s.label == joint for s in block.steps) > 1:
+            problems.error(path, f"`{joint}` takes more than one turn in {where}, "
+                           "so it is unclear where this line joins", line=chains[i].line,
+                           value=joint,
                            fix="give each turn a stage (`name:first`, `name:second`) and use it here")
-            continue
-        index = hits[0]
-        if block.steps[index].repeat > 1:
-            problems.error(path, f"`{decider.label}` is repeated with `(*N)`, so it cannot also decide",
-                           line=arrow.line)
-            continue
+            return None
 
-        target = _parse_step(arrow.target, path, arrow.line, problems, allow_repeat=False)
-        if target is None:
-            continue
-        if target.kind in (DONE, STOP):
-            where_to: int | str = target.kind
-        else:
-            found = _matches(block, target.name, target.stage)
-            if len(found) > 1:
-                problems.error(path, f"`{target.label}` takes more than one turn in {where}, "
-                               "so this arrow could point to either", line=arrow.line,
-                               value=target.label,
-                               fix="give each turn a stage (`name:first`, `name:second`) and use it here")
-                continue
-            if found:
-                where_to = found[0]
-            else:  # a step reached only by this decision (SPEC §3.3's `con:reply`)
-                block.steps.append(target)
-                where_to = len(block.steps) - 1
+    routes: list[_Route] = []
+    for i in order:
+        chain, idx = chains[i], index_of[i]
+        for k, labels in enumerate(chain.arrows):
+            if labels is not None:
+                routes.append(_Route(idx[k], labels, idx[k + 1], chain.steps[k].line))
+        if chain.tail:
+            labels, kind = chain.tail
+            routes.append(_Route(idx[-1], labels, kind, chain.steps[-1].line))
+    return block, routes
 
-        decision = block.decisions.setdefault(index, Decision("", {}, line=arrow.line))
-        if not any(arrow.labels) or "" in arrow.labels:
-            problems.error(path, "an arrow label is empty: write `--option-->` or `--*3-->`",
-                           line=arrow.line)
+
+def _turns(block: Block, label: str) -> list[int]:
+    return [i for i, s in enumerate(block.steps[:block.sequence_length]) if s.label == label]
+
+
+def _place(lone: _Lone, chains: list[_Chain], built: dict[str, Block], routes, path, problems) -> None:
+    """A decision on its own line goes where its decider takes a turn."""
+    decider, target = lone.decider, lone.target
+    if decider.kind in (DONE, STOP):
+        problems.error(path, f"`{decider.name}` cannot decide anything", line=lone.line)
+        return
+    places = [name for name, block in built.items() if _turns(block, decider.label)]
+    if not places:
+        problems.error(path, f"`{decider.label}` does not take a turn anywhere in this flow",
+                       line=lone.line, value=decider.label,
+                       fix="a decision goes with the line where its decider takes a turn")
+        return
+    if len(places) > 1:
+        above = [c for c in chains if c.line < lone.line and c.block in places
+                 and any(s.label == decider.label for s in c.steps)]
+        if not above:
+            problems.error(path, f"`{decider.label}` takes a turn in "
+                           + " and ".join(_where(p) for p in places)
+                           + ", so it is unclear which this decision belongs to", line=lone.line,
+                           fix="put it below the line it belongs to")
+            return
+        places = [max(above, key=lambda c: c.line).block]
+    name = places[0]
+    block, where = built[name], _where(name)
+
+    hits = _turns(block, decider.label)
+    if len(hits) > 1:
+        problems.error(path, f"`{decider.label}` takes more than one turn in {where}, "
+                       "so this decision could belong to either",
+                       line=lone.line, value=decider.label,
+                       fix="give each turn a stage (`name:first`, `name:second`) and use it here")
+        return
+    if target.kind in (DONE, STOP):
+        where_to: int | str = target.kind
+    else:
+        found = [i for i, s in enumerate(block.steps) if s.label == target.label]
+        if len(found) > 1:
+            problems.error(path, f"`{target.label}` takes more than one turn in {where}, "
+                           "so this arrow could point to either", line=lone.line,
+                           value=target.label,
+                           fix="give each turn a stage (`name:first`, `name:second`) and use it here")
+            return
+        if found:
+            where_to = found[0]
+        else:  # a step reached only by this decision (SPEC §3.3's `con:reply`)
+            block.steps.append(target)
+            where_to = len(block.steps) - 1
+    routes[name].append(_Route(hits[0], lone.labels, where_to, lone.line))
+
+
+def _resolve(block: Block, routes: list[_Route], path, problems) -> None:
+    for route in routes:
+        step = block.steps[route.decider]
+        if step.repeat > 1:
+            problems.error(path, f"`{step.label}` is repeated with `(*N)`, so it cannot also decide",
+                           line=route.line)
             continue
-        for label in arrow.labels:
+        decision = block.decisions.setdefault(route.decider, Decision("", {}, line=route.line))
+        for label in route.labels:
             count = COUNT.match(label)
             if count:
                 if decision.bound is not None:
-                    problems.error(path, f"`{decider.label}` has two counted ways out; keep one",
-                                   line=arrow.line, value=label)
+                    problems.error(path, f"`{step.label}` has two counted ways out; keep one",
+                                   line=route.line, value=label)
                 elif int(count[1]) < 1:
-                    problems.error(path, "a count starts at 1", line=arrow.line, value=label)
+                    problems.error(path, "a count starts at 1", line=route.line, value=label)
                 else:
-                    decision.bound = Bound(int(count[1]), where_to)
+                    decision.bound = Bound(int(count[1]), route.where_to)
             elif not re.fullmatch(r"[A-Za-z0-9_]+", label):
                 problems.error(path, f"`{label}` is not an option: options are single words",
-                               line=arrow.line, value=label)
+                               line=route.line, value=label)
             elif label in decision.routes:
-                problems.error(path, f"`{decider.label}` has two arrows for `{label}`; keep one",
-                               line=arrow.line, value=label)
+                problems.error(path, f"`{step.label}` has two arrows for `{label}`; keep one",
+                               line=route.line, value=label)
             else:
-                decision.routes[label] = where_to
+                decision.routes[label] = route.where_to
 
 
 # --- the default flow -----------------------------------------------------------

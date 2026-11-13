@@ -4,6 +4,33 @@ TeamRunner is an early release: a 0.0.x version may change in ways that
 break teams and run folders made with an earlier one. Each such change is
 listed here.
 
+## 0.0.5.1 — names from anywhere
+
+- **In `chair.md`, every line stands on its own.** The order of the lines
+  and their indentation no longer matter: `rounds(*3) -> judge` may come
+  after `rounds = for -> against`. Lines join where one ends and the next
+  begins (`a -> b` and `b -> c`). A decision on its own line belongs
+  wherever its decider takes a turn, or, if that is in several blocks,
+  with the nearest line above that holds it. A labelled arrow may sit
+  inside a line of steps: `for -> fact_checker --pass,*3--> done`. Every
+  flow that was valid before means the same thing.
+- **A team or experiment named alone is in your teamrunner workspace,
+  from anywhere.** `teamrunner run debate`, `validate debate`, `explain
+  debate` and `runs debate` mean `teams/debate` in your workspace;
+  `teamrunner experiment study` means `experiments/study`; an experiment's
+  `from: debate` means the same team. Anything that starts with `/`, `~`,
+  `./` or `../`, or has a slash in it, is a path from where you are, as
+  before. When nothing is found, the message says where it looked and how
+  to write the other one. **This changes what `new` does:** `teamrunner new
+  debate` now makes the team in your workspace's `teams/` wherever it is
+  typed (asking where the workspace is, the first time); `teamrunner new
+  ./debate` makes it where you are.
+- **An evaluator that sees nothing of the run is refused.** Its rubric must
+  use `{{transcript}}`, `{{output}}` or a member's typed answer.
+- **`validate` starts faster**: it reads LiteLLM's model table without
+  importing LiteLLM, and says "Checking keys and models…" while it asks the
+  providers.
+
 ## 0.0.5 — experiments
 
 - **`teamrunner experiment <folder>`** runs versions of a team side by side,

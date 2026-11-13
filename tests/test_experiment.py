@@ -406,3 +406,46 @@ def test_a_profile_change_is_checked(tmp_path):
     text = messages(e)
     assert "there is no model profile `fats` in models/" in text and "did you mean `models/fast`?" in text
     assert "a model profile is a whole file" in text
+
+
+def _workspace_experiment(tmp_path, condition: str) -> Path:
+    write(tmp_path / "ws" / "teams" / "review", TEAM)
+    exp = tmp_path / "ws" / "experiments" / "study"
+    front = SIMPLE.replace("flat: ../review", f"flat: {condition}").replace("from: ../review", f"from: {condition}")
+    return write(exp, {"experiment.md": f"---\n{front}---\n", **VARIANTS})
+
+
+def test_from_may_name_a_team_in_the_workspace_by_name_alone(tmp_path):
+    exp = read_experiment(_workspace_experiment(tmp_path, "review"))
+    assert not exp.problems.errors, [p.message for p in exp.problems.errors]
+    team = (tmp_path / "ws" / "teams" / "review").resolve()
+    assert {c.base for c in exp.conditions} == {team}
+
+
+def test_a_bare_name_that_finds_no_team_is_an_error(tmp_path):
+    exp = read_experiment(_workspace_experiment(tmp_path, "reveiw"))
+    assert "there is no team `reveiw` in this workspace's teams/" in "\n".join(p.message for p in exp.problems.errors)
+
+
+def test_a_bare_name_falls_back_to_the_remembered_workspace(tmp_path, monkeypatch):
+    remembered = tmp_path / "home_ws"
+    write(remembered / "teams" / "review", TEAM)
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(remembered))
+    exp = experiment(tmp_path / "elsewhere", SIMPLE.replace("../review", "review"), VARIANTS)  # not in experiments/
+    found = read_experiment(exp)
+    assert not found.problems.errors, [p.message for p in found.problems.errors]
+    assert {c.base for c in found.conditions} == {(remembered / "teams" / "review").resolve()}
+
+
+def test_the_remembered_workspace_comes_before_the_one_the_experiment_sits_in(tmp_path, monkeypatch):
+    other = tmp_path / "other_ws"
+    write(other / "teams" / "review", TEAM)
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(other))
+    exp = read_experiment(_workspace_experiment(tmp_path, "review"))
+    assert {c.base for c in exp.conditions} == {(other / "teams" / "review").resolve()}
+
+
+def test_a_bare_name_outside_a_workspace_is_an_error(tmp_path):
+    exp = experiment(tmp_path, SIMPLE.replace("../review", "review"), VARIANTS)
+    found = read_experiment(exp)
+    assert "is not in a workspace's `experiments/` folder" in "\n".join(p.message for p in found.problems.errors)

@@ -15,10 +15,10 @@ debate/                      ← a package: this folder gets a debate done, anyw
 └── runs/                    ← every run of this team, logged here (git-ignored)
 
 experiments/advocate_model/
-└── experiment.md            ← two versions of ../../debate — GPT vs. Claude as advocate, 20 runs each
+└── experiment.md            ← two versions of debate — GPT vs. Claude as advocate, 20 runs each
 ```
 
-> **This README describes TeamRunner 0.0.5**, which adds experiments, `record.json`, the remembered workspace, revised browser controls and the hosted demo provider. See [CHANGELOG.md](CHANGELOG.md).
+> **This README describes TeamRunner 0.0.5.1**, which finds your teams and experiments by name from anywhere; 0.0.5 added experiments, `record.json`, the remembered workspace, revised browser controls and the hosted demo provider. See [CHANGELOG.md](CHANGELOG.md).
 
 ```bash
 teamrunner run debate --message "Remote work makes teams more productive"
@@ -176,17 +176,17 @@ Or open `teamrunner ui` and choose **Set up keys** after selecting a team. It sa
 
 ```bash
 teamrunner new debate
-cd debate
+cd ~/teamrunner/teams/debate
 ```
 
-`new` only makes files — no model is called. It creates the `debate/` folder, a starter `team.yaml`, and a `.gitignore` that keeps run logs out of git.
+`new` only makes files — no model is called. It creates the `debate/` folder, a starter `team.yaml`, and a `.gitignore` that keeps run logs out of git. A team named alone goes in your **teamrunner workspace**, the one folder for all your work: the first time, `new` asks where that should be (press Enter for `~/teamrunner`), then makes `debate` in its `teams/` folder and says where. (`teamrunner new ./debate` makes it right where you are instead.)
 
 Two other ways to start, when you'd rather not begin from nothing:
 
 - `teamrunner new my_debate --from fact_checked` copies one of the examples that ship with TeamRunner (or any team folder you name), with fresh ids; each file remembers what it was copied from.
 - `teamrunner new my_debate --describe "two debaters argue a topic, a fact checker checks each speech, and a judge decides"` asks a model to write the team for you. It checks its own work with `validate`, never overwrites files, tells you what it cost, and ends by printing `teamrunner explain`, so you can read what it made before you run it. (If you work with an AI coding assistant, `teamrunner skill` gives it the same instructions: it installs a skill for Claude Code and Codex, and `teamrunner skill --agents-md <folder>` writes an `AGENTS.md` for other assistants that read one.)
 
-Or run `teamrunner ui`. The first time, it asks where your teamrunner workspace should be (press Enter for a `teamrunner` folder in your home folder) and remembers the answer; new teams go in its `teams/` folder. Choose **+ Team**, enter `debate`, and select an empty team or a shipped example. Select `team.yaml` on the left to edit it.
+Or run `teamrunner ui`, which opens your workspace (asking where it should be, if nothing has asked yet); new teams go in its `teams/` folder. Choose **+ Team**, enter `debate`, and select an empty team or a shipped example. Select `team.yaml` on the left to edit it.
 
 This tutorial starts from nothing, so you see every file.
 
@@ -357,7 +357,8 @@ The flow grammar is deliberately tiny — it is a whiteboard sketch that happens
 
 - `a -> b` — sequence. `b:label` attaches a **stage** annotation, which is recorded in the events and injected into the agent's context so it knows where it is (`advocate:opening`, `critic:closing`).
 - `rounds(*3)` — **repeat** a step exactly three times.
-- `name = …` — a **named block**: any step name can be defined below, as `rounds` is here. Its further lines are indented under it.
+- `name = …` — a **named block**: any step name can be defined on its own line, as `rounds` is here.
+- **Every line stands on its own.** Write the lines in any order, indented or not: `rounds = advocate -> critic` may come before `rounds(*3) -> judge` or after it. Lines join where one ends and the next begins, so a long flow can be written as `a -> b -> c` and `c -> d -> e`.
 - `#` starts a **note** for the reader. If the chair ever needs settings, they go in a frontmatter block at the top, like any member file.
 - `done` ends the flow — or, inside a named block, just that block; `stop` ends the whole run immediately.
 
@@ -409,6 +410,15 @@ critic_turn = critic -> fact_checker
 ```
 
 `--pass,*3--> done` reads "on pass, or the third time, go to done": the comma means "or", and `*3` means "the third time". Here `done` ends only `advocate_turn` (or `critic_turn`), not the debate: that speaker's turn is over and the debate moves on to the next speaker. A speech that fails three times still stands — but everything said is heard by everyone, so the judge has heard the fact checker fail it, and the judge's prompt says to weigh that. Want a different ending? `fact_checker --*3--> stop` ends the whole run instead (the future Deb8flow recast uses this pattern); a forfeit that hands the debate to the other side needs a whiteboard item, which comes in 0.3.
+
+The indentation is only for reading. The fact checker takes a turn in both blocks, so each decision line belongs with the nearest line above it that holds the fact checker. A labelled arrow may also sit inside a line of steps, so this says the same thing:
+
+```
+advocate_turn = advocate -> fact_checker --pass,*3--> done
+fact_checker --fail--> advocate
+critic_turn = critic -> fact_checker --pass,*3--> done
+fact_checker --fail--> critic
+```
 
 An agent whose declared options have labelled outgoing arrows is a **decider**, and its labelled arrows are a **decision**. That's a role, not a different file format — any agent can be one. `done` inside a named block ends that block, so a passed speech hands over to the next speaker.
 
@@ -468,11 +478,10 @@ Here's the question that started the whole project: **does it matter which model
 
 ### Step 8 — write the experiment
 
-Don't touch the debate. Next to it, make a folder for the experiment:
+Don't touch the debate. Experiments go in your workspace's `experiments/` folder:
 
 ```bash
-cd ..
-mkdir -p experiments/advocate_model
+mkdir -p ~/teamrunner/experiments/advocate_model
 ```
 
 and in it, one file, `experiment.md`:
@@ -482,11 +491,11 @@ and in it, one file, `experiment.md`:
 name: advocate-model
 conditions:
   gpt:
-    from: ../../debate
+    from: debate
     change:
       advocate.model: openai/gpt-6-luna
   claude:
-    from: ../../debate
+    from: debate
     change:
       advocate.model: anthropic/claude-sonnet-4-5
 
@@ -508,32 +517,32 @@ Does the model playing the advocate change who wins the debate?
 
 Read it top to bottom:
 
-- **`conditions:`** are the versions you compare. Each one starts `from:` a team and says what to `change:` in it. `advocate.model` means the `model` setting of the member `advocate`; `advocate.prompt: file:variants/bold.md` would swap its prompt, and `judge: file:variants/strict_judge.md` a whole file. A condition with no `change:` (`control: ../../debate`) is the team as it is — the control, written as a condition like any other.
+- **`conditions:`** are the versions you compare. Each one starts `from:` a team and says what to `change:` in it. `advocate.model` means the `model` setting of the member `advocate`; `advocate.prompt: file:variants/bold.md` would swap its prompt, and `judge: file:variants/strict_judge.md` a whole file. A condition with no `change:` (`control: debate`) is the team as it is — the control, written as a condition like any other. A name alone (`from: debate`) is the team `teams/debate` in your teamrunner workspace; anything with a slash (`../../debate`, `~/projects/debate`) is a path from the experiment's folder.
 - **Your team is never edited.** Each changed condition is built as a folder of its own under `experiments/advocate_model/conditions/`, rebuilt before every run, so you can open it, rehearse it or run it alone.
 - **`replications: 20`** runs each condition twenty times. Fewer than two needs `allow_single_run: true`: we made the anecdote the awkward thing to write.
 - **`seed: 42`** fixes everything TeamRunner controls: the order of the runs and each run's own seed. It can't make a model give the same answer twice; it makes the design the same every time.
-- **`metrics:`** says what to measure. `judge.output.winner` is the judge's typed answer — declared outputs are the only thing metrics ever read. A metric can also be a file in `metrics/`: an answer key that scores against a known answer, or an evaluator, a model with its own rubric that grades each run without being told which condition it came from.
+- **`metrics:`** says what to measure. `judge.output.winner` is the judge's typed answer — declared outputs are the only thing metrics ever read. A metric can also be a file in `metrics/`: an answer key that scores against a known answer, or an evaluator, a model with its own rubric that grades each run without being told which condition it came from. The rubric shows the evaluator the run through placeholders: `{{transcript}}` (everything said), `{{output}}` (the run's `output.md`), `{{judge.output.winner}}` (a member's typed answer) and `{{inputs.topic}}` (an input). An evaluator with none of the first three is refused, since it would grade nothing.
 - **`limits:`** — `max_concurrent` keeps you inside your provider's rate limits; `max_cost_usd` limits estimated spending within TeamRunner (below), not provider billing.
 - **The body** — your question, hypothesis, reasons — is for people. Every run records it.
 
-For many factors at once, use `base: ../../debate` and `factors:` instead of `conditions:`. Each factor lists levels with a `label:` and a `change:` mapping; TeamRunner generates every combination of levels.
+For many factors at once, use `base: debate` and `factors:` instead of `conditions:`. Each factor lists levels with a `label:` and a `change:` mapping; TeamRunner generates every combination of levels.
 
 ### Step 9 — plan, rehearse, run
 
 ```bash
-teamrunner experiment experiments/advocate_model --plan
+teamrunner experiment advocate_model --plan
 ```
 
 `--plan` builds every condition, checks it as a team, and shows what would happen — spending nothing: the conditions, the difference between them file by file (``advocate.md  changed  `model`: openai/gpt-6-luna → anthropic/claude-sonnet-4-5``), the order of runs, and the cost estimate. The runs go in **rounds**: each round runs every condition once, in an order drawn from the seed, so if anything stops the experiment early, the conditions are at most one run apart.
 
 ```bash
-teamrunner experiment experiments/advocate_model --rehearse
+teamrunner experiment advocate_model --rehearse
 ```
 
 A rehearsal runs all 40 with no model, for free, so you see the whole thing work end to end — and it ends with what the real experiment would cost. Then run it for real. Besides the Brave key from step 7, it needs an Anthropic key as well as the OpenAI one:
 
 ```bash
-teamrunner experiment experiments/advocate_model
+teamrunner experiment advocate_model
 ```
 
 ```
@@ -564,10 +573,10 @@ cost_usd               n    mean     sd   95% interval
   claude              20    0.08   0.01   [0.08, 0.09]
 ```
 
-It describes; it does not test. Per condition: how many runs, and for each measure its mean or shares with a 95% interval. Cost and time are always there. `teamrunner experiment experiments/advocate_model --summary` prints it again at any time, calling nothing. Tests belong in your own analysis, so take the data out:
+It describes; it does not test. Per condition: how many runs, and for each measure its mean or shares with a 95% interval. Cost and time are always there. `teamrunner experiment advocate_model --summary` prints it again at any time, calling nothing. Tests belong in your own analysis, so take the data out:
 
 ```bash
-teamrunner experiment experiments/advocate_model --export results/
+teamrunner experiment advocate_model --export results/
 ```
 
 Five long-format tables, joined by `run_id`: `runs.csv` (one row per run: condition, round, seed, status, cost), `turns.csv` (everything said), `outputs.csv` (every typed answer), `metrics.csv` and `evaluations.csv`. Straight into R:
@@ -592,7 +601,9 @@ The local browser interface was introduced in 0.0.4. The workspace layout and co
 teamrunner ui
 ```
 
-Plain `teamrunner ui` opens your **teamrunner workspace**, the one folder that holds all your work, from wherever you type it: your teams in its `teams/` folder and your experiments in `experiments/`. The first time, it asks once where your workspace should be; pressing Enter makes a `teamrunner` folder in your home folder, with `teams/` and `experiments/` inside. The answer is kept as `TEAMRUNNER_WORKSPACE` in `~/.teamrunner/.env`, beside your keys. **+ Team** in the page, and `teamrunner new <name>` typed in the workspace, put the new team in `teams/`; a name with a slash is used as the path it says.
+Plain `teamrunner ui` opens your **teamrunner workspace**, the one folder that holds all your work, from wherever you type it: your teams in its `teams/` folder and your experiments in `experiments/`. The first time (here or in `teamrunner new`), it asks once where your workspace should be; pressing Enter makes a `teamrunner` folder in your home folder, with `teams/` and `experiments/` inside. The answer is kept as `TEAMRUNNER_WORKSPACE` in `~/.teamrunner/.env`, beside your keys; the same variable set in your shell wins. **+ Team** in the page, like `teamrunner new <name>`, puts the new team in `teams/`; a name with a slash is used as the path it says.
+
+The commands find your work by name from anywhere: `teamrunner new debate`, `run debate`, `validate debate` and `runs debate` all mean `teams/debate` in your workspace, and `teamrunner experiment study` means `experiments/study`; an experiment's `from: debate` means the same team. Anything that starts with `/`, `~`, `./` or `../`, or has a slash in it (`teams/debate`), is a path from where you are, used as written: `teamrunner run .` runs the team you are in, and `teamrunner new ./debate` makes a team right here.
 
 - `teamrunner ui debate` opens another folder, this once: a single team, or a folder of examples. Your workspace stays as it was.
 - `teamrunner ui <folder> --remember` makes that folder your teamrunner workspace from now on.
@@ -651,7 +662,7 @@ Query it with DuckDB directly over the files, or `--export` an experiment to CSV
 **`resolved/`** is the quiet favourite. In every experiment run it is an exact copy of the team that ran, with the condition's changes applied — nothing added, nothing left out. `diff -r` between two runs' `resolved/` shows exactly what differed between their conditions. And:
 
 ```bash
-teamrunner run experiments/advocate_model/runs/2026-11-12_101502_claude_r07/resolved
+teamrunner run ~/teamrunner/experiments/advocate_model/runs/2026-11-12_101502_claude_r07/resolved
 ```
 
 runs that exact team again. Every experiment run folder is a self-contained replication package.
@@ -723,7 +734,7 @@ Add `--rehearse` to check a flow without calling a model; a rehearsal does not v
 
 ## Status
 
-**Early release.** The current release is 0.0.5. Teams and run folders may need changes between 0.0.x versions; each such change, and everything else that changed in each version, is in the [changelog](https://github.com/teamrunner/teamrunner/blob/main/CHANGELOG.md).
+**Early release.** The current release is 0.0.5.1. Teams and run folders may need changes between 0.0.x versions; each such change, and everything else that changed in each version, is in the [changelog](https://github.com/teamrunner/teamrunner/blob/main/CHANGELOG.md).
 
 **License:** [GPL-3.0-or-later](https://github.com/teamrunner/teamrunner/blob/main/LICENSE), like R. Using TeamRunner does not by itself put your teams, runs or results under the GPL. You choose terms for material you own; provider terms and third-party rights still apply, and AI output ownership or exclusivity is not guaranteed; the shipped examples, the files `teamrunner new` writes and the authoring guide use MIT-0. Pull requests are not open yet — see [CONTRIBUTING.md](https://github.com/teamrunner/teamrunner/blob/main/CONTRIBUTING.md).
 

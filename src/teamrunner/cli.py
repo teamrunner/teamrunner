@@ -24,6 +24,19 @@ class Style:
         self.dim = (lambda s: f"\033[2m{s}\033[0m") if on else str
 
 
+class NotFound(Exception):
+    pass
+
+
+def _named(text: str, kind: str) -> Path:
+    """A team or experiment named alone is in your teamrunner workspace; a path is used as written."""
+    from .workspace import find, not_found
+    why = not_found(text, kind)
+    if why:
+        raise NotFound(why)
+    return find(text, kind)
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
@@ -56,7 +69,16 @@ def _online_check(report, out, quiet: bool):
     It never asks: a key found only in the shell is used for the check, not saved."""
     from .checks import online_check
     from .console import Console
-    check, keys = online_check(report)
+    # The check asks each provider over the network; say so while it does, as the browser
+    # does. Only on a terminal, and erased once done, so piped and --json output stay the same.
+    waiting = sys.stderr.isatty()
+    if waiting:
+        print(out.dim("Checking keys and models…"), end="", file=sys.stderr, flush=True)
+    try:
+        check, keys = online_check(report)
+    finally:
+        if waiting:
+            print("\r\033[K", end="", file=sys.stderr, flush=True)
     if not quiet:
         Console(False, sys.stdout).check(check, keys)
     return check
@@ -65,7 +87,7 @@ def _online_check(report, out, quiet: bool):
 def cmd_validate(args) -> int:
     out = Style(sys.stdout)
     try:
-        report = validate(Path(args.team), write_ids=True)
+        report = validate(_named(args.team, "teams"), write_ids=True)
     except NotATeam as e:
         print(out.red(f"✗ {e}"), file=sys.stderr)
         return 2
@@ -130,7 +152,7 @@ def cmd_run(args) -> int:
                       ask=ask_at_keyboard if interactive else None, rehearse=args.rehearse,
                       max_cost=args.max_cost, max_cost_from="--max-cost" if args.max_cost is not None else None)
     try:
-        outcome = run_team(Path(args.team), options)
+        outcome = run_team(_named(args.team, "teams"), options)
     except NotATeam as e:
         if not args.quiet:
             print(out.red(f"✗ {e}"), file=sys.stderr)
@@ -144,11 +166,14 @@ def cmd_run(args) -> int:
 def cmd_runs(args) -> int:
     from .console import Console
     from .runs import NoRuns, all_runs, pick, print_list, replay, runs_folder
+    from .workspace import find
     out = Console(args.verbose)
     folder, when = Path("."), None
     for given in args.args:
-        if Path(given).is_dir() and any((Path(given) / f).is_file() for f in ("team.yaml", "experiment.md")):
-            folder = Path(given)
+        named = next((p for p in (find(given, "teams"), find(given, "experiments"))
+                      if p.is_dir() and any((p / f).is_file() for f in ("team.yaml", "experiment.md"))), None)
+        if named:
+            folder = named
         else:
             when = given if when is None else f"{when} {given}"
     try:
@@ -195,7 +220,7 @@ def cmd_show(args) -> int:
 def cmd_gather(args) -> int:
     from .gather import envs, outside_links, replace
     out = Style(sys.stdout)
-    folder = Path(args.team)
+    folder = _named(args.team, "teams")
     if not (folder / "team.yaml").is_file():
         print(out.red(f"✗ {folder} is not a team folder: it has no team.yaml"), file=sys.stderr)
         return 1
@@ -288,9 +313,12 @@ def _describe(args, out) -> int:
 
 def cmd_new(args) -> int:
     from .new import NewError, copy_from, create, find_source
-    from .workspace import team_place
+    from .workspace import shown
     out = Style(sys.stdout)
-    args.name = str(team_place(Path("."), args.name))  # typed in a workspace: into teams/ (D144)
+    place = _new_place(args.name)
+    if place is None:
+        return 1
+    args.name = str(place)
     if args.describe and args.source:
         print(out.red("✗ give either --from or --describe, not both"), file=sys.stderr)
         return 1
@@ -309,7 +337,7 @@ def cmd_new(args) -> int:
     report = validate(folder)
     print_problems(report, out)
     made = "copied from " + str(args.source) if args.source else "made"
-    print(f"{out.green('✓')} {folder} {made} · {_summary(report)}")
+    print(f"{out.green('✓')} {shown(folder) if folder.is_absolute() else folder} {made} · {_summary(report)}")
     return 0
 
 
@@ -319,7 +347,7 @@ def cmd_explain(args) -> int:
     from .explain import diagram_page, explain, mermaid
     out = Style(sys.stdout)
     try:
-        team, report = load_team(Path(args.team))
+        team, report = load_team(_named(args.team, "teams"))
     except NotATeam as e:
         print(out.red(f"✗ {e}"), file=sys.stderr)
         return 1
@@ -378,20 +406,20 @@ def cmd_experiment(args) -> int:
     try:
         if args.plan:
             from .plan import plan
-            return plan(Path(args.folder), out, max_cost=args.max_cost)
+            return plan(_named(args.folder, "experiments"), out, max_cost=args.max_cost)
         if args.summary:
             from .experiment_run import print_summary
-            return print_summary(Path(args.folder), out)
+            return print_summary(_named(args.folder, "experiments"), out)
         if args.export is not None:
             from .experiment_run import export_experiment
-            return export_experiment(Path(args.folder), args.export, out, completed=args.completed)
+            return export_experiment(_named(args.folder, "experiments"), args.export, out, completed=args.completed)
         if args.completed:
             print(Style(sys.stderr).red("✗ --completed goes with --export <dir>"), file=sys.stderr)
             return 1
         from .experiment_run import run_experiment
         change = "restart" if args.restart else "keep_unchanged" if args.keep_unchanged else None
         evaluating = "only" if args.evaluate else "none" if args.no_evaluate else "both"
-        return run_experiment(Path(args.folder), out, rehearse=args.rehearse, max_cost=args.max_cost,
+        return run_experiment(_named(args.folder, "experiments"), out, rehearse=args.rehearse, max_cost=args.max_cost,
                               change=change, evaluating=evaluating)
     except NotAnExperiment as e:
         print(Style(sys.stderr).red(f"✗ {e}"), file=sys.stderr)
@@ -428,22 +456,48 @@ def cmd_ui(args) -> int:
         print(f"No teamrunner workspace is remembered yet, so this folder is opened. {change[0].upper() + change[1:]}.",
               file=sys.stderr)
         return serve(Path("."))
+    folder = _ask_workspace()
+    return 1 if folder is None else serve(folder)
+
+
+def _ask_workspace() -> Path | None:
+    """The first-time question (D143, D144): make the workspace, with teams/ and experiments/, and remember it."""
+    from . import workspace
     suggested = workspace.default()
     try:
         answer = input(f"Where should your teamrunner workspace be? [{workspace.shown(suggested)}] ").strip()
     except (EOFError, KeyboardInterrupt):
         print()
-        return 1
+        return None
     folder = Path(answer).expanduser().absolute() if answer else suggested
     try:
-        workspace.make(folder)  # with teams/ and experiments/ (D144)
+        workspace.make(folder)
         workspace.remember(folder.resolve())
     except OSError as error:
         print(f"Could not use {folder}: {error}", file=sys.stderr)
-        return 1
+        return None
     print(f"Your teamrunner workspace is {workspace.shown(folder.resolve())}. `teamrunner ui` opens it from anywhere; "
-          f"`teamrunner ui <folder>` opens another folder once, and {change}.")
-    return serve(folder)
+          "`teamrunner ui <folder>` opens another folder once, and `teamrunner ui <folder> --remember` chooses another.")
+    return folder
+
+
+def _new_place(name: str) -> Path | None:
+    """A team named alone goes in your teamrunner workspace's teams/; a path is used as written.
+    With no workspace yet, the first-time question is asked; with no one to ask, it is made here."""
+    from . import workspace
+    if not workspace.is_name(name):
+        return Path(name).expanduser()
+    found = workspace.remembered()
+    if found:
+        root = found[0]
+    elif sys.stdin.isatty() and sys.stdout.isatty():
+        root = _ask_workspace()
+        if root is None:
+            return None
+    else:
+        return workspace.team_place(Path("."), name)
+    (root / "teams").mkdir(parents=True, exist_ok=True)
+    return root / "teams" / name
 
 
 def main(argv=None) -> int:
@@ -574,7 +628,11 @@ def main(argv=None) -> int:
     e.set_defaults(func=cmd_experiment)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except NotFound as e:
+        print(Style(sys.stderr).red(f"✗ {e}"), file=sys.stderr)
+        return 2 if args.func is cmd_validate else 1  # what each command gave for a missing folder before
 
 
 if __name__ == "__main__":

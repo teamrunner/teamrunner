@@ -378,7 +378,32 @@ LISTERS: dict[str, Lister] = {"openai": _openai, "anthropic": _anthropic, "gemin
                               "ollama": _ollama, "teamrunner": _teamrunner}
 
 
+_table: dict | None = None
+
+
+def _model_table() -> dict:
+    """LiteLLM's model table. TeamRunner tells LiteLLM to use the table it was installed
+    with (D120), so the file is read directly: importing LiteLLM to look up a model's
+    retirement date takes seconds, reading its table a few milliseconds."""
+    global _table
+    if _table is None:
+        import os
+        import sys
+        if "litellm" in sys.modules or os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP", "").lower() != "true":
+            import litellm
+            return litellm.model_cost
+        from importlib.util import find_spec
+        from pathlib import Path
+        try:  # find_spec only locates the package; importlib.resources would import it
+            folder = Path(find_spec("litellm").submodule_search_locations[0])
+            _table = json.loads((folder / "model_prices_and_context_window_backup.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, AttributeError, TypeError):
+            import litellm
+            _table = litellm.model_cost
+    return _table
+
+
 def litellm_data(model: str) -> dict:
-    import litellm
+    table = _model_table()
     name = model.split("/", 1)[1]
-    return litellm.model_cost.get(model) or litellm.model_cost.get(name) or {}
+    return table.get(model) or table.get(name) or {}

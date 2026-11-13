@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "teamrunner"
-version = "0.0.5"
+version = "0.0.5.1"
 description = "The experimentation platform for agent organizations — run multi-agent orchestrations and factorial experiments entirely from text files."
 readme = "README.md"
 license = "GPL-3.0-or-later AND MIT-0"

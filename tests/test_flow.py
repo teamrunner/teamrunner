@@ -80,21 +80,96 @@ def test_an_option_and_a_count_on_one_arrow():
     ("talk(deal is agreed, *12)\ntalk = a -> b\n", "a loop that leaves on a condition arrives in TeamRunner 0.3"),
     ("a -> -> b\n", "a step is missing between two arrows"),
     ("a(3) -> b\n", "`(3)` should be a count, such as `(*3)`"),
-    ("a -> b\nc -> d\n", "a block has one line of steps"),
-    ("-> a\n", "a line starting with `->` continues a line of steps"),
-    ("a -> b\nb = c\nd -> e\n", "this line is outside every named block"),
+    ("a -> b\nc -> d\n", "the lines of the main flow do not join up: one starts at `a`, another at `c`"),
+    ("a -> b\nb -> c\nb -> d\n", "two lines in the main flow go on from `b`"),
+    ("a -> c\nb -> c\nc -> d\n", "two lines in the main flow lead into `c`"),
+    ("a -> b\nb -> a\n", "the lines of the main flow go round in a circle"),
+    ("a -> b -> a\na -> c\n", "`a` takes more than one turn in the main flow, so it is unclear where this line joins"),
+    ("r(*2) -> b\nx -> r\n", "`r` is written with two different counts"),
+    ("-> a\n", "a line starting with an arrow continues the line above"),
+    ("a -> b\nr =\n", "the block `r` has no steps"),
     ("a -> stop -> b\n", "nothing after `stop` would ever run"),
-    ("a -> a\na --x--> b -> c\n", "a decision points to one step"),
+    ("a --x--> done -> b\n", "nothing after `done` would ever run"),
     ("a -> b\nb --x-> a\n", "this decision should read"),
-    ("a -> b\nr = a\nr = b\n", "the block `r` is defined twice"),
-    ("a -> b\nc --x--> a\n", "`c` does not take a turn in the main flow"),
+    ("a -> b\nb --x--> c(*2)\n", "a decision points to a step, not a repeat"),
+    ("a -> b\nc --x--> a\n", "`c` does not take a turn anywhere in this flow"),
     ("a -> b -> a\na --x--> b\n", "`a` takes more than one turn in the main flow"),
+    ("r -> s\nc --x--> done\nr = a -> c\ns = b -> c\n",
+     "`c` takes a turn in the block `r` and the block `s`, so it is unclear"),
     ("# only a note\n", "this chair.md has no flow"),
 ])
 def test_parse_errors(text, message):
     flow, problems = parse(text)
     assert flow is None
     assert any(p.message.startswith(message) for p in problems.errors), [p.message for p in problems]
+
+
+def test_order_and_indentation_do_not_matter():
+    flow, problems = parse("""\
+rounds = for -> against
+      rounds(*3) -> judge
+""")
+    assert problems == []
+    assert labels(flow.main) == ["rounds(*3)", "judge"]
+    assert labels(flow.blocks["rounds"]) == ["for", "against"]
+
+
+def test_lines_join_where_one_ends_and_the_next_begins():
+    flow, problems = parse("c -> d -> e\na -> b -> c\nr = x -> y\nr = y -> z\nr -> a\n")
+    assert problems == []
+    assert labels(flow.main) == ["r", "a", "b", "c", "d", "e"]
+    assert labels(flow.blocks["r"]) == ["x", "y", "z"]
+    assert flow.main.steps[2].line == 2  # each step keeps the line it was written on
+
+
+def test_a_member_may_take_several_turns_in_one_line():
+    flow, problems = parse("moderator -> talks(*3) -> moderator\ntalks = a -> b\n")
+    assert problems == []
+    assert labels(flow.main) == ["moderator", "talks(*3)", "moderator"]
+
+
+def test_a_labelled_arrow_inside_a_line_is_a_decision():
+    flow, problems = parse("""\
+drafter -> reviewer --ok--> clerk -> outbox
+reviewer --revise--> drafter
+reviewer --*3--> done
+""")
+    assert problems == []
+    block = flow.main
+    assert labels(block) == ["drafter", "reviewer", "clerk", "outbox"]
+    assert block.decisions[1].routes == {"ok": 2, "revise": 0}
+    assert (block.decisions[1].bound.count, block.decisions[1].bound.target) == (3, DONE)
+
+
+def test_a_labelled_arrow_to_done_ends_the_line():
+    flow, problems = parse("t -> judge\nt = for -> checker --pass,*3--> done\nchecker --fail--> for\n")
+    assert problems == []
+    block = flow.blocks["t"]
+    assert labels(block) == ["for", "checker"]
+    assert block.decisions[1].routes == {"pass": DONE, "fail": 0}
+    assert (block.decisions[1].bound.count, block.decisions[1].bound.target) == (3, DONE)
+
+
+def test_a_decision_goes_with_the_nearest_line_above_that_holds_its_decider():
+    flow, problems = parse("""\
+rounds = for_turn -> against_turn
+rounds(*3) -> judge
+for_turn = for -> fact_checker --pass,*3--> done
+                     fact_checker --fail--> for
+against_turn = against -> fact_checker --pass,*3--> done
+                     fact_checker --fail--> against
+""")
+    assert problems == []
+    assert flow.blocks["for_turn"].decisions[1].routes == {"pass": DONE, "fail": 0}
+    assert flow.blocks["against_turn"].decisions[1].routes == {"pass": DONE, "fail": 0}
+    assert labels(flow.blocks["against_turn"]) == ["against", "fact_checker"]
+
+
+def test_a_decision_alone_finds_its_block_wherever_it_is_written():
+    flow, problems = parse("checker --fail--> for\nt -> judge\nchecker --pass,*3--> done\nt = for -> checker\n")
+    assert problems == []
+    assert flow.blocks["t"].decisions[1].routes == {"fail": 0, "pass": DONE}
+    assert flow.main.decisions == {}
 
 
 # --- checks against the team --------------------------------------------------

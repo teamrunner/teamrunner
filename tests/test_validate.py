@@ -326,3 +326,20 @@ def test_only_input_must_name_an_input_a_prompt_uses(tmp_path):
     assert messages(validate(mailroom("email"))) == []
     [(file, line, message)] = messages(validate(mailroom("emial")))
     assert (file, line) == ("mailroom.md", 4) and message == "`only_input: emial` names an input no prompt uses"
+
+
+def test_model_lookup_reads_litellm_s_table_without_importing_it():
+    """validate looks up retirement dates in LiteLLM's installed table (D120). Importing
+    LiteLLM for that took seconds per run; reading the file gives the same answer."""
+    import json
+    import subprocess
+    import sys
+    script = ("import sys, json; from teamrunner.checks import litellm_data; "
+              "row = litellm_data('anthropic/claude-haiku-4-5'); "
+              "print(json.dumps({'row': row, 'imported': 'litellm' in sys.modules}))")
+    found = json.loads(subprocess.run([sys.executable, "-c", script], capture_output=True,
+                                      text=True, check=True).stdout)
+    assert found["imported"] is False
+    import litellm
+    assert found["row"] and found["row"] == (litellm.model_cost.get("anthropic/claude-haiku-4-5")
+                                             or litellm.model_cost.get("claude-haiku-4-5"))

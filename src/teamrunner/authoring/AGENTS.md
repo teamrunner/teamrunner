@@ -191,13 +191,24 @@ against_turn = against -> fact_checker
            fact_checker --pass,*3--> done
 ```
 
-- `a -> b -> c` — one after another. A line starting with `->` continues
-  the line above.
+- `a -> b -> c` — one after another. A line starting with an arrow
+  continues the line above.
 - `name:stage` — a turn with a stage, which the member is told.
 - `name(*3)` — exactly three times, a member or a block.
-- `block = ...` — a named block, defined at the left edge, its further lines
-  indented under it. The lines before the first block are the main flow.
-  Each block has one line of steps; its other lines are decisions.
+- `block = ...` — a named block. A line of steps without a name is the
+  main flow.
+- **Every line stands on its own.** Order and indentation are for the
+  reader: the main flow may come before or after its blocks.
+- Lines join where one ends and the next begins: `a -> b` and `b -> c` are
+  `a -> b -> c`. A step goes on to one next step; to branch, decide.
+- A decision on its own line belongs wherever its decider takes a turn. If
+  the decider takes turns in several blocks (one fact checker in two), it
+  belongs with the nearest line above that holds the decider.
+- A labelled arrow may sit inside a line of steps:
+  `for -> fact_checker --pass,*3--> done`, plus `fact_checker --fail--> for`
+  for the other option.
+- A member may take several turns in one line; where a line joins at, or a
+  decision names, such a member, give each turn a stage.
 - `decider --option--> step` — a **decision**. The decider is a member with
   a choice in its `output:`; each option needs exactly one arrow. The arrow
   may point to a step in the same block, to `done` (end this block; at the

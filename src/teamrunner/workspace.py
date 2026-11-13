@@ -66,6 +66,48 @@ def is_workspace(folder: Path) -> bool:
         return False
 
 
+def is_name(text: str) -> bool:
+    """A name alone: no slash, not `.` or `..`, not starting with `~`. Anything else is a path."""
+    text = text.strip()
+    return (bool(text) and text not in (".", "..") and not text.startswith("~")
+            and not any(c in text for c in "/\\:"))
+
+
+def find(text: str, kind: str, here: Path = Path(".")) -> Path:
+    """The folder a command names (`kind` is "teams" or "experiments").
+
+    A name alone is in your teamrunner workspace: `debate` is `teams/debate` there,
+    from wherever it is typed. A path (`/…`, `~/…`, `./…`, `../…`, or anything with a
+    slash, such as `teams/debate`) is used as written, from `here`. With no workspace
+    remembered, a name alone is a folder here, as before."""
+    path = Path(text).expanduser()
+    if not is_name(text):
+        return path if path.is_absolute() else Path(here) / path
+    found = remembered()
+    return found[0] / kind / text if found else Path(here) / path
+
+
+def not_found(text: str, kind: str, here: Path = Path(".")) -> str | None:
+    """Why `find` found nothing, with the other way to write it; None when the folder is there."""
+    path = find(text, kind, here)
+    if path.exists():
+        return None
+    what = kind[:-1]
+    found = remembered()
+    if is_name(text):
+        if not found:
+            return (f"there is no {what} `{text}` here, and no teamrunner workspace is remembered "
+                    "to look in (`teamrunner ui` sets one)")
+        message = f"there is no {what} `{text}` in your teamrunner workspace ({shown(found[0] / kind)}/)"
+        if (Path(here) / text).is_dir():
+            message += f"; for the folder here, write ./{text}"
+        return message
+    message = f"there is no folder {text} here"
+    if found and (found[0] / kind / path.name).is_dir():
+        message += f"; for the {what} in your teamrunner workspace, write `{path.name}`"
+    return message
+
+
 def team_place(base: Path, name: str) -> Path:
     """Where a new team named on its own goes: in `teams/` when `base` is a workspace.
     A name with a slash is a path and is used as written."""

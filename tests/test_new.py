@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Kumar Muthuraman
 import re
+from pathlib import Path
 
 import pytest
 
@@ -109,3 +110,60 @@ def test_every_shipped_example_validates_clean(name, tmp_path):
     for m in team.members.values():  # every model takes its member's settings (gpt-5: no temperature)
         if m.model and m.params:
             assert litellm_params(m.model.value, {k: s.value for k, s in m.params.items()}) is None, m.name
+
+
+def test_a_name_alone_is_in_the_workspace_and_a_path_is_used_as_written(tmp_path, monkeypatch):
+    from teamrunner.workspace import find, not_found
+    ws = tmp_path / "ws"
+    (ws / "teams" / "debate").mkdir(parents=True)
+    (ws / "experiments" / "study").mkdir(parents=True)
+    here = tmp_path / "here"
+    (here / "debate").mkdir(parents=True)
+    monkeypatch.chdir(here)
+    assert find("debate", "teams") == Path("debate")  # nothing remembered: here, as before
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(ws))
+    assert find("debate", "teams") == ws / "teams" / "debate"  # even with a debate/ here
+    assert find("study", "experiments") == ws / "experiments" / "study"
+    for path in (".", "./debate", "../x", "teams/debate"):
+        assert find(path, "teams") == Path(path)
+    assert find("~/x", "teams") == Path.home() / "x"
+    assert find(str(ws), "teams") == ws
+    assert not_found("debate", "teams") is None
+    assert "write `debate`" in not_found("teams/debate", "teams")  # the slash makes it a path from here
+    (here / "mine").mkdir()
+    assert "for the folder here, write ./mine" in not_found("mine", "teams")
+
+
+def test_new_puts_a_named_team_in_the_workspace_and_run_finds_it_from_anywhere(tmp_path, capsys, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(ws))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert main(["new", "fresh"]) == 0 and (ws / "teams/fresh/team.yaml").exists()
+    assert "teams/fresh made" in capsys.readouterr().out.replace("\\", "/")
+    assert main(["new", "./here"]) == 0 and (elsewhere / "here/team.yaml").exists()  # ./ keeps it here
+    capsys.readouterr()
+    assert main(["validate", "fresh"]) in (0, 1)
+    assert "there is no" not in capsys.readouterr().err
+    assert main(["validate", "here"]) == 2
+    assert "for the folder here, write ./here" in capsys.readouterr().err
+    assert main(["run", "missing", "--rehearse"]) == 1
+    assert "there is no team `missing` in your teamrunner workspace" in capsys.readouterr().err
+
+
+def test_new_asks_where_the_workspace_is_the_first_time(tmp_path, capsys, monkeypatch):
+    from teamrunner import workspace
+    asked = []
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "me")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or "")
+    monkeypatch.chdir(tmp_path)
+    assert main(["new", "fresh"]) == 0
+    assert asked == ["Where should your teamrunner workspace be? [~/teamrunner] "]
+    assert (tmp_path / "me/teamrunner/teams/fresh/team.yaml").exists()
+    assert workspace.remembered()[0] == (tmp_path / "me/teamrunner").resolve()
+    assert "~/teamrunner/teams/fresh made" in capsys.readouterr().out.replace("\\", "/")
+    assert main(["new", "second"]) == 0 and len(asked) == 1  # never asked again
