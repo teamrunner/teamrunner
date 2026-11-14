@@ -74,8 +74,8 @@ def listing(root: Path) -> dict:
 
 
 def _problem(p, root: Path) -> dict:
-    return {"where": p.where(root) if p.file.is_relative_to(root) else _rel(p.file, root)
-            + (f":{p.line}" if p.line else ""), "message": p.message, "fix": p.fix,
+    # Always with `/`: the page opens the file named here, on Windows too.
+    return {"where": _rel(p.file, root) + (f":{p.line}" if p.line else ""), "message": p.message, "fix": p.fix,
             "level": "error" if p.level == ERROR else "warning"}
 
 

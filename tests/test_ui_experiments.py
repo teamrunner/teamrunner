@@ -14,6 +14,7 @@ from teamrunner.experiment import build, read_experiment
 from teamrunner.experiment_run import Study, experiment_records, run_experiment
 from teamrunner.keys import PROVIDER_KEYS
 from teamrunner.runs import read_events
+from teamrunner.ui.jobs import command
 from teamrunner.summary import summary
 from teamrunner.ui import experiments
 from test_experiment_run import FRONT, OPENAI, TEAM, Paid, write
@@ -234,7 +235,7 @@ def wait_done(server, path="experiments/exp", seconds=30):
 def test_rehearse_from_the_page_prints_what_the_cli_prints_and_fills_the_rehearsal_grid(workspace):
     with running(workspace) as server:
         status, job = post(server, "/api/experiment-start", {"path": "experiments/exp", "rehearse": True})
-        assert status == 200 and job["command"] == "teamrunner experiment experiments/exp --rehearse"
+        assert status == 200 and job["command"] == command(["teamrunner", "experiment", "experiments/exp", "--rehearse"])
         job = wait_done(server)
         assert job["state"] == "finished" and job["finished"] == 6 and job["running"] == []
         printed = "\n".join(job["lines"])
@@ -314,7 +315,7 @@ def test_a_real_run_starts_only_on_the_quote_it_showed(workspace):
         assert not (workspace / "experiments" / "exp" / "runs").exists()
         status, job = post(server, "/api/experiment-start", {"path": "experiments/exp", "rehearse": False,
                                                              "fingerprint": q["fingerprint"]})
-        assert status == 200 and job["command"] == "teamrunner experiment experiments/exp", job
+        assert status == 200 and job["command"] == command(["teamrunner", "experiment", "experiments/exp"]), job
         job = wait_done(server)
         assert job["state"] == "finished" and job["finished"] == 6 and job["spent_usd"] > 0
         _, data = detail(server)
