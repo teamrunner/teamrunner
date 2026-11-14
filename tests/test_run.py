@@ -492,3 +492,36 @@ def test_runs_started_in_the_same_second_get_their_own_folders(tmp_path):
     with ThreadPoolExecutor(8) as pool:
         folders = list(pool.map(lambda _: RunFolder.create(tmp_path, "team", now=moment).path, range(8)))
     assert len(set(folders)) == 8
+
+
+@pytest.mark.parametrize("message, permanent", [
+    ("You have no credits remaining. Add credits to continue.", True),
+    ("You exceeded your current quota, please check your plan and billing details.", True),
+    ("Error code: 429 - {'error': {'code': 'insufficient_quota'}}", True),
+    ("Rate limit reached for requests per min. Please try again in 1s.", False),
+])
+def test_out_of_credit_fails_at_once_but_a_rate_limit_is_retried(monkeypatch, message, permanent):
+    """Found in the 0.0.6 end-to-end test: an empty OpenAI account was retried for a minute."""
+    import asyncio
+    import litellm
+    from teamrunner.litellm_model import LiteLLMModel
+    from teamrunner.model import TransientError
+
+    async def refuse(**kwargs):
+        raise litellm.RateLimitError(message, llm_provider="openai", model="gpt-5")
+    monkeypatch.setattr(litellm, "acompletion", refuse)
+    expected = RuntimeError if permanent else TransientError
+    with pytest.raises(expected) as caught:
+        asyncio.run(LiteLLMModel({"OPENAI_API_KEY": "sk-test"}, {}).complete(
+            "openai/gpt-5", {}, [{"role": "user", "content": "hi"}], None))
+    assert isinstance(caught.value, TransientError) is not permanent
+    if permanent:
+        assert "out of credit" in str(caught.value)
+
+
+@pytest.mark.parametrize("model", ["teamrunner/demoLLM", "ollama/llama3.2"])
+def test_a_free_model_fits_any_ceiling_without_a_known_longest_reply(model):
+    """Found in the 0.0.6 end-to-end test: `--max-cost` refused the free demo model."""
+    from teamrunner.ceiling import worst_case
+    from teamrunner.prices import load_prices
+    assert worst_case(model, {}, [{"role": "user", "content": "hi"}], None, None, load_prices()) == 0.0

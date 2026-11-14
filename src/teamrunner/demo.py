@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .model import Reply, TransientError
+from .version_check import user_agent
 
 DEFAULT_API_BASE = "https://demollm.teamrunner.ai/v1"
 PARAMS = frozenset({"temperature", "top_p", "max_tokens", "seed"})
@@ -38,7 +39,9 @@ async def complete(model, params, messages, schema, tools, settings) -> Reply:
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=75, follow_redirects=False) as client:
-            response = await client.post(api_base(settings) + "/chat/completions", json=body)
+            # The gateway may refuse versions too old for the demo (D148 (11), D149).
+            response = await client.post(api_base(settings) + "/chat/completions", json=body,
+                                         headers={"User-Agent": user_agent()})
     except httpx.TransportError as e:
         raise TransientError("could not reach the TeamRunner demo server; try again later") from e
     if response.status_code != 200:

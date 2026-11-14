@@ -168,7 +168,7 @@ def test_over_the_ceiling_nothing_starts_and_nothing_asks(exp):
     ceiling(exp, 0.05)  # the estimate is ≈ $0.0745
     code, out = go(exp, model=Paid(0.0))
     assert code == 1 and not (exp / "runs").exists()
-    assert "Estimated cost ≈ $0.0745. 149% of max ($0.0500)" in out
+    assert "Estimated cost ≈ $0.0745. 149% of the ceiling: $0.0500 for the whole experiment, running and judging (experiment.md)" in out
     assert "✗ over the ceiling, so nothing was run. To allow more: --max-cost <usd>" in out
 
     code, out = go(exp, model=Paid(0.0), max_cost=1)  # --max-cost replaces max_cost_usd, and says so
@@ -183,7 +183,7 @@ def test_after_round_1_the_rest_does_not_start_if_real_costs_pass_the_ceiling(ex
     code, out = go(exp, model=model)
     assert code == 2, out
     assert len(records(exp)) == 2 and model.calls == 10
-    assert "After round 1, from real costs: estimated cost ≈ $0.12. 120% of max ($0.10)" in out
+    assert "After round 1, from real costs: estimated cost ≈ $0.12. 120% of the ceiling: $0.10 for the whole experiment, running and judging" in out
     assert "the other rounds were not started. To allow more: --max-cost <usd>, then run again" in out
 
 
@@ -195,7 +195,7 @@ def test_the_estimate_says_more_only_as_it_nears_the_ceiling():
         say_estimate(Console(False, stream), est, limit)
         return stream.getvalue().splitlines()
 
-    assert lines(1, 100) == ["Estimated cost ≈ $1.00. 1% of max ($100.00)"]
+    assert lines(1, 100) == ["Estimated cost ≈ $1.00. 1% of the ceiling: $100.00 for the whole experiment, running and judging"]
     assert lines(0, 100) == []
     assert lines(70, 100)[1] == "  The ceiling is hard: runs stop before passing it. To allow more: --max-cost <usd>"
     assert len(lines(60, 100)) == 1 and len(lines(70, 100)) == 2
@@ -205,7 +205,7 @@ def test_the_estimate_says_more_only_as_it_nears_the_ceiling():
 
 def test_a_rehearsal_ignores_the_ceiling_and_ends_with_the_estimate(exp):
     code, out = go(exp, rehearse=True)
-    assert out.rstrip().endswith("Estimated cost ≈ $0.0745. 1% of max ($10.00)")
+    assert out.rstrip().endswith("Estimated cost ≈ $0.0745. 1% of the ceiling: $10.00 for the whole experiment, running and judging (experiment.md)")
     assert "ceiling is hard" not in out
 
     ceiling(exp, 0.004)
@@ -213,7 +213,7 @@ def test_a_rehearsal_ignores_the_ceiling_and_ends_with_the_estimate(exp):
     assert code == 0 and "rehearsal complete" in out and "nothing spent" in out
     assert all(r["status"] == "completed" and r["cost_usd"] == 0 for _, r in records(exp))
     assert out.rstrip().splitlines()[-2:] == [
-        "Estimated cost ≈ $0.0745. 1862% of max ($0.0040)",
+        "Estimated cost ≈ $0.0745. 1862% of the ceiling: $0.0040 for the whole experiment, running and judging (experiment.md)",
         "  ! over the ceiling: a real run would not start. To allow more: --max-cost <usd>"]
 
 

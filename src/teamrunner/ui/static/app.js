@@ -8,6 +8,9 @@ byId("legal-notices").addEventListener("click", () => byId("legal-dialog").showM
 let current = null, dirty = false, setting = false, validationTimer, validating = 0;
 let roles = {}, problems = [], info = null, modalAction = null, saving = false;
 let context = "", generation = 0;
+// The experiment the open file belongs to (its folder holds experiment.md), else "".
+// Then the bar is the experiment's: Validate checks it as --plan does, and Run… opens it.
+let experimentContext = "";
 // What the last check found. Saving and the Validate button make the same check,
 // the one `teamrunner validate` makes: files, then keys and models (D140). Saving
 // may use a provider's model list from the last few minutes; the button asks again.
@@ -29,7 +32,7 @@ async function api(route, data) {
     headers: {"X-TeamRunner-Token": token, ...(data === undefined ? {} : {"Content-Type": "application/json"})},
     ...(data === undefined ? {} : {body: JSON.stringify(data)})});
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "The action could not be completed.");
+  if (!response.ok) throw Object.assign(new Error(result.error || "The action could not be completed."), {status: response.status, result});
   return result;
 }
 const notice = text => { byId("notice").textContent = text; };
@@ -39,7 +42,8 @@ const join = (folder, name) => folder ? `${folder}/${name}` : name;
 const inRuns = path => path.split("/").some(part => part.toLowerCase() === "runs");
 const teamContext = () => current ? current.path : context;
 const command = (action, path = context || ".") => {
-  byId("command").textContent = `teamrunner ${action} ${JSON.stringify(path || ".")}`;
+  byId("command").textContent = experimentContext ? `teamrunner experiment ${JSON.stringify(experimentContext)} --plan`
+    : `teamrunner ${action} ${JSON.stringify(path || ".")}`;
 };
 
 CodeMirror.defineMode("teamrunner-flow", () => ({token(stream) {
@@ -74,6 +78,7 @@ function showChecks() {
   if (!fileCheck) set("", "");
   else if (stale) { set("", ""); summary = "Edited since the last check"; }
   else if (errors) { set("error", `✕ ${errors}`); summary = `${errors} error${errors === 1 ? "" : "s"} in the files`; said = summary; }
+  else if (fileCheck.experiment) { set("ok", "✓"); summary = `Experiment valid · ${fileCheck.runs} run${fileCheck.runs === 1 ? "" : "s"} planned`; said = "experiment valid"; }
   else if (!onlineCheck) { set("", ""); summary = "Press Validate to check files, keys and models"; }
   else if (online) { set("error", `✕ ${online}`); summary = `Files valid · ${online} problem${online === 1 ? "" : "s"} with keys or models`; said = summary; }
   else { set("ok", "✓"); summary = "Files, keys and models valid"; said = "files, keys and models valid"; }
@@ -92,7 +97,8 @@ function chairState() {
   const record = Boolean(current?.readonly) || inRuns(context);
   const exists = [...byId("files").querySelectorAll("button.file")].some(button => button.dataset.path === join(context, "chair.md"));
   byId("new-chair").disabled = record || !hasTeam() || exists;
-  byId("new-chair").title = record ? "Run records are read-only. Select a team’s file to add a chair."
+  byId("new-chair").title = current?.generated ? "Built from experiment.md: read-only. Edit experiment.md or its variants/ instead."
+    : record ? "Run records are read-only. Select a team’s file to add a chair."
     : !hasTeam() ? "Select a team to add its chair"
     : exists ? "This team already has a chair.md" : "Add chair.md, the team’s flow, to the selected team";
 }
@@ -104,14 +110,25 @@ function updateState() {
   const record = Boolean(current?.readonly);
   byId("new-team").disabled = byId("new-member").disabled = record;
   chairState();
-  byId("new-team").title = record ? "Run records are read-only. Select a team’s file to create a team." : "Create a new team folder";
-  byId("new-member").title = record ? "Run records are read-only. Select a team’s file to add a member." : "Add a member to the selected team";
-  byId("trash-team").disabled = !context || inRuns(context);
+  const built = current?.generated ? "Built from experiment.md: read-only. Edit experiment.md or its variants/ instead." : "";
+  byId("new-team").title = built || (record ? "Run records are read-only. Select a team’s file to create a team." : "Create a new team folder");
+  byId("new-member").title = built || (record ? "Run records are read-only. Select a team’s file to add a member." : "Add a member to the selected team");
+  byId("trash-team").disabled = !context || inRuns(context) || Boolean(current?.generated);
   byId("trash-team").title = context ? `Move the team ${context} to the trash` : info?.team ? "This team is the folder you opened; it can’t be moved to the trash from here." : "Select a team to move it to the trash";
-  byId("save-state").textContent = current ? (current.readonly ? "Read-only run record" : dirty ? "● Unsaved" : "Saved") : "";
+  byId("save-state").textContent = current ? (current.generated ? "Built from experiment.md · read-only" : current.readonly ? "Read-only run record" : dirty ? "● Unsaved" : "Saved") : "";
   byId("breadcrumb").textContent = current ? current.path : "";
-  byId("show-tab").hidden = !current || current.readonly || !isMember(current.path);
-  byId("team-name").textContent = context ? context.split("/").pop() : info?.team ? info.name : "—";
+  // "As it will run" and the flow diagram are a team's views; an experiment has its own tab.
+  byId("show-tab").hidden = !current || current.readonly || !isMember(current.path) || Boolean(experimentContext);
+  byId("flow-tab").hidden = Boolean(experimentContext);
+  if (experimentContext && byId("edit-tab").getAttribute("aria-pressed") !== "true") showEdit();
+  byId("team-label").textContent = experimentContext ? "EXPERIMENT" : "TEAM";
+  byId("team-name").textContent = experimentContext ? (fileCheck?.experiment === experimentContext && fileCheck.name || experimentContext.split("/").pop())
+    : context ? context.split("/").pop() : info?.team ? info.name : "—";
+  byId("run-team").textContent = experimentContext ? "Open in Experiments" : "Run…";
+  byId("run-team").title = experimentContext ? "This experiment’s plan, runs and summary" : "";
+  byId("validate").title = experimentContext
+    ? "Check this experiment as teamrunner experiment --plan does: its settings, every condition’s team, each change and each metric. Saving does this too. Free; needs no keys."
+    : "Check this team’s files, then its keys and models (teamrunner validate). Saving does this too; use the button to check again without an edit. Free; asks each provider which models it serves.";
 }
 function mayLeave() { return !dirty || window.confirm("Discard the unsaved changes in this file?"); }
 window.addEventListener("beforeunload", event => { if (dirty) { event.preventDefault(); event.returnValue = ""; } });
@@ -145,7 +162,7 @@ async function openFile(path, line) {
     editor.setOption("mode", yaml ? "yaml" : path.endsWith("chair.md") ?
       {name: "yaml-frontmatter", base: "teamrunner-flow"} : {name: "yaml-frontmatter", base: "markdown"});
     showEdit(); updateState(); markers(); highlightSelection(); editor.focus();
-    notice("");
+    notice(file.generated ? `This is condition ${file.generated.condition}, built by TeamRunner from ${file.generated.experiment}/experiment.md and built again before every run, so it is read-only. To change it, edit experiment.md or its variants/.` : "");
     if (line) jump(line);
     if (!file.readonly) await validate(false);
   } catch (error) { notice(error.message); }
@@ -196,7 +213,8 @@ async function validate(full = false, pathOverride = null, remembered = false) {
     const result = await api("/api/validate", {path, offline: !full, remembered});
     if (id !== validating) return;
     const edited = dirty || editor.getValue() !== checked;  // typed while the check ran
-    context = result.team === "." ? "" : result.team;
+    experimentContext = result.experiment || "";
+    context = result.experiment ? "" : result.team === "." ? "" : result.team;
     if (current && result.ids_added.includes(current.path)) {
       if (dirty) { byId("disk-warning").hidden = false; }
       else {
@@ -299,7 +317,8 @@ async function loadFiles(path, list) {
         try {
           if (nested.hidden) await loadFiles(entry.path, nested);
           nested.hidden = !nested.hidden; button.setAttribute("aria-expanded", String(!nested.hidden)); open(!nested.hidden);
-          if (entry.team) { context = entry.path; updateState(); document.dispatchEvent(new CustomEvent("teamrunner:team-select", {detail:entry.path})); }
+          if (entry.experiment) { experimentContext = entry.path; context = ""; updateState(); }
+          if (entry.team) { context = entry.path; experimentContext = ""; updateState(); document.dispatchEvent(new CustomEvent("teamrunner:team-select", {detail:entry.path})); }
           updateRoles(); highlightSelection();
         } catch (error) { notice(error.message); } finally { button.disabled = false; }
       }); item.append(nested);

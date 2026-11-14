@@ -18,7 +18,7 @@ experiments/advocate_model/
 └── experiment.md            ← two versions of debate — GPT vs. Claude as advocate, 20 runs each
 ```
 
-> **This README describes TeamRunner 0.0.5.1**, which finds your teams and experiments by name from anywhere; 0.0.5 added experiments, `record.json`, the remembered workspace, revised browser controls and the hosted demo provider. See [CHANGELOG.md](CHANGELOG.md).
+> **This README describes TeamRunner 0.0.6**, which runs, rehearses and evaluates experiments from the browser page and checks once a day for a newer version; 0.0.5 added experiments, `record.json`, the remembered workspace and the hosted demo provider, and 0.0.5.1 finds your teams and experiments by name from anywhere. See [CHANGELOG.md](CHANGELOG.md).
 
 ```bash
 teamrunner run debate --message "Remote work makes teams more productive"
@@ -547,7 +547,7 @@ teamrunner experiment advocate_model
 
 ```
 experiment · advocate-model · 40 runs (2 conditions × 20)
-Estimated cost ≈ $2.20. 6% of max ($40.00)
+Estimated cost ≈ $2.20. 6% of the ceiling: $40.00 for the whole experiment, running and judging (experiment.md)
   ✓ round  1 · claude   completed  13 turns   41.2s   $0.0820  runs/2026-11-12_101502_claude_r01
   ✓ round  1 · gpt      completed  13 turns   38.7s   $0.0790  runs/2026-11-12_101502_gpt_r01
   …
@@ -556,6 +556,8 @@ Estimated cost ≈ $2.20. 6% of max ($40.00)
 **Budget checks use estimated costs.** Before every model call, TeamRunner reserves an estimated upper cost; a call that does not fit the remaining estimated budget is not sent, and that run stops. Actual provider charges can exceed this budget; the check is not a provider billing cap. See the cost-overrun notice below. Nothing asks you anything: the estimate says what to expect, and a second line appears once it passes 60% of the ceiling, a warning after 90%. If the estimate is over the ceiling, nothing starts. To allow more, raise `max_cost_usd`, or give `--max-cost <usd>` for this one session.
 
 **Running it again picks up where it left off.** Stopped with Ctrl-C, cut off at the ceiling, or a provider failed? Run the same command again: completed runs are kept, and each interrupted one is redone in its slot with the same seed, reusing its recorded turns and calling models only from where it stopped. If you edit the team or a condition after runs were made, the command stops, says what changed, and offers `--restart` (the changed study from round 1) or `--keep-unchanged` (keep the runs of conditions that didn't change).
+
+**Or run it from the page.** In `teamrunner ui`, the **Experiments** tab lists your experiments. **Rehearse · free** does what `--rehearse` does. **Run…** first shows what the missing runs would cost against the ceiling, and starts only when you press **Run ≈ $…**; if the files or runs change before you press it, it shows the new figures instead. From the page an experiment needs `max_cost_usd`, unless every model it uses is free, and the ceiling is raised in `experiment.md`, not on the page. The grid fills as runs finish, **Stop** works as Ctrl-C does, and **Evaluate…** appears when evaluations are due.
 
 ### Step 10 — read the result, and take it with you
 
@@ -595,7 +597,7 @@ Every run's folder keeps `resolved/`, an exact copy of the team as it ran, so a 
 
 ## Use TeamRunner in your browser
 
-The local browser interface was introduced in 0.0.4. The workspace layout and controls below are those of 0.0.5:
+The local browser interface was introduced in 0.0.4. The workspace layout and controls below are those of 0.0.6:
 
 ```bash
 teamrunner ui
@@ -685,7 +687,20 @@ model provider. Do not send private or sensitive information to the demo. The
 gateway stores IP-based quota counters; its supplied configuration does not log
 prompt/response bodies or keys. Upstream providers have their own data practices.
 
-The local client sends no separate usage telemetry to the publisher. Model
+**The daily version check.** Once a day, TeamRunner reads
+`https://version.teamrunner.ai/version.json` to learn whether your version should
+be updated or, if it has a known security problem, must not run. The request sends
+two headers and nothing else: `User-Agent: TeamRunner/<version> (python
+<major.minor>; <platform>)` and `X-TeamRunner-Install: <install id>`. No team
+names, models, files, paths, keys or commands. We use them to know which versions
+are in use before raising a minimum, and how many copies are active. The install
+id is random, made on the first check and kept in `~/.teamrunner/install-id`; it is
+tied to nothing, and deleting it makes a new one. The server does not store your IP
+address. If the check fails, TeamRunner says nothing and carries on.
+`TEAMRUNNER_NO_VERSION_CHECK=1` hides the update reminder; the check itself still
+runs, because a version with a known security problem refuses to run whatever is set.
+
+Apart from this check, the local client sends no usage telemetry to the publisher. Model
 requests, web tools, provider model-list checks, runtime/package downloads,
 diagram assets, and configured integrations can still contact external services.
 Local models do not prevent those other network requests. See
@@ -734,7 +749,7 @@ Add `--rehearse` to check a flow without calling a model; a rehearsal does not v
 
 ## Status
 
-**Early release.** The current release is 0.0.5.1. Teams and run folders may need changes between 0.0.x versions; each such change, and everything else that changed in each version, is in the [changelog](https://github.com/teamrunner/teamrunner/blob/main/CHANGELOG.md).
+**Early release.** The current release is 0.0.6. Teams and run folders may need changes between 0.0.x versions; each such change, and everything else that changed in each version, is in the [changelog](https://github.com/teamrunner/teamrunner/blob/main/CHANGELOG.md).
 
 **License:** [GPL-3.0-or-later](https://github.com/teamrunner/teamrunner/blob/main/LICENSE), like R. Using TeamRunner does not by itself put your teams, runs or results under the GPL. You choose terms for material you own; provider terms and third-party rights still apply, and AI output ownership or exclusivity is not guaranteed; the shipped examples, the files `teamrunner new` writes and the authoring guide use MIT-0. Pull requests are not open yet — see [CONTRIBUTING.md](https://github.com/teamrunner/teamrunner/blob/main/CONTRIBUTING.md).
 

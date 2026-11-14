@@ -14,14 +14,15 @@ const cost = value => typeof value === "number" ? `$${value.toFixed(value < 1 ? 
 const runsNotice = text => { byId("runs-notice").textContent = text; };
 const runNotice = text => { byId("run-notice").textContent = text; };
 
-// Three tabs: Files (the team), Run (one run, live or saved) and Run history (every
-// saved run). An experiment tab can join them later, opening its runs in Run.
-const VIEWS = {files: ["files-workspace", "files-view"], run: ["run-workspace", "run-view"], runs: ["runs-workspace", "runs-view"]};
+// Four tabs: Files (the team), Run (one run, live or saved), Run history (every saved
+// run) and Experiments, whose runs open in Run (D141).
+const VIEWS = {files: ["files-workspace", "files-view"], run: ["run-workspace", "run-view"], runs: ["runs-workspace", "runs-view"],
+  experiments: ["experiments-workspace", "experiments-view"]};
 function showView(name) {
   for (const [view, [workspace, tab]] of Object.entries(VIEWS)) {
     byId(workspace).hidden = view !== name; byId(tab).setAttribute("aria-pressed", String(view === name));
   }
-  document.title = `${info?.name || "TeamRunner"} · ${{files: "Files", run: "Run", runs: "Run history"}[name]}`;
+  document.title = `${info?.name || "TeamRunner"} · ${{files: "Files", run: "Run", runs: "Run history", experiments: "Experiments"}[name]}`;
 }
 function fileView() { showView("files"); editor.refresh(); }
 // What the Run tab shows: the run in progress, or the saved run opened last.
@@ -212,15 +213,17 @@ function renderRecord() {
   }
   container.append(jsonDetails("record.json · inputs, fingerprint, cost and environment", runData.record, true));
 }
-async function openRun(path) {
-  byId("run-comparison").hidden = true;
+// `experiment`: the experiment it was opened from, so the Run tab leads back to it.
+async function openRun(path, experiment = null) {
+  byId("run-comparison").hidden = true; byId("back-experiment").hidden = !experiment;
   const request = ++detailRequest; showView("run"); runNotice("Reading this run…");
   try {
     const result = await api("/api/run" + pathQuery(path)); if (request !== detailRequest) return;
     runData = result; const run = result.summary;
     showRunPane("saved");
     byId("run-title").textContent = `${run.team} · ${run.when}`;
-    byId("run-bar-title").textContent = `${run.team} · ${run.when} · ${run.status}${run.rehearsal ? " · rehearsal" : ""}`;
+    const slot = run.experiment ? ` · ${run.experiment.condition}, replicate ${run.experiment.replicate}` : "";
+    byId("run-bar-title").textContent = `${run.team}${slot} · ${run.when} · ${run.status}${run.rehearsal ? " · rehearsal" : ""}`;
     byId("run-meta").textContent = `${run.status}${run.rehearsal ? " · rehearsal" : ""}${run.backup ? " · backup model" : ""} · ${run.turns} turns · ${run.length} · ≈ ${run.cost}`;
     byId("raw-run-files").replaceChildren(...result.raw_files.map(file => downloadLink(file)));
     byId("run-warnings").textContent = result.warnings.join("\n");
@@ -236,7 +239,7 @@ byId("files-view").addEventListener("click", fileView);
 byId("runs-view").addEventListener("click", () => runsView());
 byId("run-view").addEventListener("click", runView);
 byId("refresh-runs").addEventListener("click", () => loadRuns());
-byId("refresh-run").addEventListener("click", () => openRun(runData.summary.path));
+byId("refresh-run").addEventListener("click", () => openRun(runData.summary.path, byId("back-experiment").hidden ? null : experimentPath));
 byId("back-runs").addEventListener("click", () => runsView(runSource || null));
 byId("show-live").addEventListener("click", () => showRunPane("live"));
 for (const id of ["runs-team", "runs-status"]) byId(id).addEventListener("change", () => { loadRuns(); });

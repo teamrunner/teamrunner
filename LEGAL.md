@@ -82,7 +82,20 @@ does not log prompt/response bodies or API keys; this is not a promise about
 upstream provider logging, retention, or training practices. Do not submit
 private, confidential, sensitive, or regulated information to the demo.
 
-The local client does not send separate usage telemetry to the publisher.
+Once a day the local client requests https://version.teamrunner.ai/version.json
+from a server operated by Serenity Partners LLC, to learn whether its version
+should be updated or must not run because of a known security problem. The
+request carries two headers: the TeamRunner version, Python version and platform
+(in User-Agent), and a random install id made on the first check and stored in
+~/.teamrunner/install-id (in X-TeamRunner-Install). It carries no team, model,
+file, path, key, username or command. The server logs the time, those versions,
+the platform and the install id, to count active installs and the versions in
+use; it does not log the IP address. The install id is not derived from the
+machine, user or network, and deleting the file makes a new one.
+TEAMRUNNER_NO_VERSION_CHECK=1 hides the update reminder but not the request,
+because the client must still learn whether its version may run.
+
+Apart from this check, the local client does not send usage telemetry to the publisher.
 That does not mean it makes no network requests: model APIs, the demo gateway,
 web tools, provider model-list checks, runtime/package downloads, diagram
 assets, and configured integrations can contact their respective services.

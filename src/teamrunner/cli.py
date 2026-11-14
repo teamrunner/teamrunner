@@ -628,6 +628,10 @@ def main(argv=None) -> int:
     e.set_defaults(func=cmd_experiment)
 
     args = parser.parse_args(argv)
+    from . import version_check  # before anything else is done (D148 (5))
+    refused = version_check.check(quiet=getattr(args, "quiet", False))
+    if refused is not None:
+        return refused
     try:
         return args.func(args)
     except NotFound as e:

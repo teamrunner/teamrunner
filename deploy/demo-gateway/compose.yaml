@@ -12,11 +12,16 @@ services:
     pids_limit: 128
     volumes:
       - quotas:/data
+      # Served read-only; edit in Git and copy here (README, "The version file").
+      - ./version.json:/srv/version.json:ro
+      # One line per install per day; a host folder, so it survives rebuilds.
+      - ./version-logs:/logs
   caddy:
     image: caddy:2
     network_mode: host
     environment:
       DEMO_DOMAIN: ${DEMO_DOMAIN:-demollm.teamrunner.ai}
+      VERSION_DOMAIN: ${VERSION_DOMAIN:-version.teamrunner.ai}
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]

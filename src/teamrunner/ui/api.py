@@ -54,6 +54,7 @@ def files(root: Path, written: str = "") -> dict:
             entries.append({"name": child.name, "path": relative.as_posix(),
                             "kind": "folder" if directory else "file",
                             "team": directory and (target / "team.yaml").is_file(),
+                            "experiment": directory and (target / "experiment.md").is_file(),
                             "size": None if directory else target.stat().st_size})
         except (OutsideRoot, OSError, RuntimeError):
             continue  # External, broken and cyclic links are not browsable.
@@ -79,9 +80,28 @@ def in_runs(root: Path, path: Path) -> bool:
     return any(record_file(folder) is not None for folder in (path, *path.parents))
 
 
+def generated(root: Path, path: Path) -> Path | None:
+    """The experiment condition folder `path` is in, when TeamRunner builds it: it is rebuilt
+    from experiment.md before every run, so an edit made there would be lost."""
+    from ..experiment import CONDITIONS_DIR, EXPERIMENT_FILE, MARKER
+    for folder in (path, *path.parents):
+        if folder == root.parent or not folder.is_relative_to(root):
+            return None
+        if ((folder / MARKER).is_file() and folder.parent.name == CONDITIONS_DIR
+                and (folder.parent.parent / EXPERIMENT_FILE).is_file()):
+            return folder
+    return None
+
+
+BUILT = ("This folder is built from experiment.md and built again before every run, so it is "
+         "read-only. Edit experiment.md, its variants/ or the base team instead.")
+
+
 def editable(root: Path, written: str) -> Path:
     path = inside(root, written)
     parts = path.relative_to(root).parts
+    if parts and generated(root, path):
+        raise OutsideRoot(BUILT)
     if (not parts or in_runs(root, path)
             or "runs" in [p.lower() for p in Path(written).parts]
             or path.suffix.lower() not in TEXT):
@@ -100,10 +120,13 @@ def read_file(root: Path, written: str) -> dict:
         text = data.decode("utf-8")
     except UnicodeError:
         raise ValueError("This file isn’t plain text. Choose a UTF-8 text file.") from None
+    built = generated(root, path)
     return {"path": written, "text": text,
             "revision": hashlib.sha256(data).hexdigest(),
-            "readonly": in_runs(root, path)
-                        or "runs" in [p.lower() for p in Path(written).parts]}
+            "readonly": bool(built) or in_runs(root, path)
+                        or "runs" in [p.lower() for p in Path(written).parts],
+            "generated": {"condition": built.name,
+                          "experiment": built.parent.parent.relative_to(root).as_posix()} if built else None}
 
 
 def save_file(root: Path, written: str, text: str, revision: str) -> dict:
@@ -176,9 +199,28 @@ def remembering(listers: dict, fresh: bool) -> dict:
     return {p: lister if p in NO_KEY else remember(p, lister) for p, lister in listers.items()}
 
 
+def experiment_folder(root: Path, written: str) -> Path | None:
+    """The experiment a file belongs to: the nearest folder up holding experiment.md,
+    unless a team.yaml is nearer (a condition's folder is a team)."""
+    path = inside(root, written)
+    folder = path if path.is_dir() else path.parent
+    while True:
+        if (folder / "team.yaml").is_file():
+            return None
+        if (folder / "experiment.md").is_file():
+            return folder
+        if folder == root or not folder.is_relative_to(root):
+            return None
+        folder = folder.parent
+
+
 def validate_team(root: Path, written: str, offline: bool = False, fresh: bool = True) -> dict:
     from ..validate import validate
     from ..checks import online_check
+    experiment = experiment_folder(root, written)
+    if experiment is not None:  # Validate in an experiment checks it as --plan does (files only)
+        from .experiments import check
+        return check(root, experiment)
     folder = team_folder(root, written)
     report = validate(folder, write_ids=True)
     def item(problem):
@@ -319,6 +361,8 @@ def _team_to_trash(root: Path, written: str) -> Path:
     path = inside(root, written)
     if in_runs(root, path):
         raise OutsideRoot("Run records are read-only.")
+    if generated(root, path):
+        raise OutsideRoot(BUILT)
     if path == root or not (path / "team.yaml").is_file():
         raise ValueError("Choose a team folder inside the opened folder.")
     return path
@@ -357,6 +401,8 @@ def new_team(root: Path, written: str, example: str = "") -> dict:
     path = inside(root, written)
     if in_runs(root, path):
         raise OutsideRoot("Run records are read-only.")
+    if generated(root, path):
+        raise OutsideRoot(BUILT)
     if example:
         if example not in examples():
             raise ValueError("Choose one of the shipped examples.")

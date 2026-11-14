@@ -11,3 +11,26 @@
         }
     }
 }
+
+# The version check (D148, D149): only /version.json, and the caller's IP is not passed on.
+{$VERSION_DOMAIN} {
+    request_body {
+        max_size 1KB
+    }
+    @version {
+        method GET
+        path /version.json
+    }
+    handle @version {
+        reverse_proxy 127.0.0.1:8080 {
+            header_up -X-Forwarded-For
+            header_up -X-Forwarded-Proto
+            header_up -X-Forwarded-Host
+            header_up -Forwarded
+            header_up -X-Real-Ip
+        }
+    }
+    handle {
+        respond "not found" 404
+    }
+}

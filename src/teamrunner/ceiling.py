@@ -54,6 +54,8 @@ def worst_case(model: str, params: dict, messages, schema, tools, prices: Prices
     price = model_price(model, prices)
     if price["input_per_million"] is None:
         raise NoWorstCase(f"{model} has no list price; add it to {prices.shown}")
+    if price["input_per_million"] == 0 and price["output_per_million"] == 0:
+        return 0.0  # a free model (the demo, a local one) fits any ceiling, however long its reply
     reply = max_reply(model, params)
     if reply is None:
         raise NoWorstCase(f"{model} has no known longest reply; give its members `params: {{max_tokens: …}}`")

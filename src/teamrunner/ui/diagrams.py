@@ -121,6 +121,8 @@ def restore(root: Path, written: str, destination: str):
     target = api.inside(root, destination)
     if api.in_runs(root, target):
         raise api.OutsideRoot("Run records are read-only.")
+    if api.generated(root, target):
+        raise api.OutsideRoot(api.BUILT)
     parent = target.parent
     while parent.is_relative_to(root):
         if (parent / "team.yaml").exists():

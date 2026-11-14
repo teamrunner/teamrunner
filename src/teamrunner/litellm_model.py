@@ -28,6 +28,13 @@ def _broken_install(error: BaseException) -> bool:
     return any(isinstance(e, (ImportError, AttributeError, TypeError, NameError)) for e in _chain(error))
 
 
+def _out_of_credit(error) -> bool:
+    """A 429 that is about billing, not speed: OpenAI's `insufficient_quota` and its kin."""
+    text = str(error).lower()
+    return any(sign in text for sign in ("insufficient_quota", "no credits remaining",
+                                         "exceeded your current quota", "credit balance is too low"))
+
+
 class LiteLLMModel:
     def __init__(self, keys: dict[str, str], settings: dict[str, str], prices=None):
         import litellm
@@ -75,6 +82,9 @@ class LiteLLMModel:
         try:
             response = await self.litellm.acompletion(**kwargs)
         except self.transient as e:
+            if _out_of_credit(e):  # retrying cannot help; say so at once rather than after a minute
+                raise RuntimeError(f"{provider} says this account is out of credit or over its quota; "
+                                   f"add credit there or choose another model. {str(e)[:300]}") from e
             if _broken_install(e):  # LiteLLM reports some of its own failures as connection errors
                 raise RuntimeError(f"TeamRunner's model library could not make the call: {_root(e)}") from e
             raise TransientError(str(e)) from e

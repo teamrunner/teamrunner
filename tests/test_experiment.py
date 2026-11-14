@@ -345,7 +345,7 @@ def test_the_plan(tmp_path):
     assert "alice.md" in text and "prompt from variants/alice.md" in text
     assert "bob.md" in text and "`model` added: anthropic/claude-sonnet-4-5" in text
     assert "round   1" in text and "round   3" in text
-    assert "Estimated cost ≈ $" in text and "of max ($10.00)" in text
+    assert "Estimated cost ≈ $" in text and "of the ceiling: $10.00 for the whole experiment, running and judging (experiment.md)" in text
     assert "at most ≈ $" in text
     assert "bob (openai/gpt-5): no max_tokens, so LiteLLM's maximum is used: 128,000 tokens a reply" in text
     assert "Nothing was run and nothing was spent." in text

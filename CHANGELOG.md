@@ -4,6 +4,69 @@ TeamRunner is an early release: a 0.0.x version may change in ways that
 break teams and run folders made with an earlier one. Each such change is
 listed here.
 
+## 0.0.6 — experiments in the browser page
+
+- **A daily version check.** Once a day TeamRunner reads
+  `https://version.teamrunner.ai/version.json`. Below its `min_version` it
+  says a newer version is wanted and runs anyway
+  (`TEAMRUNNER_NO_VERSION_CHECK=1` hides this); below its
+  `min_secure_version`, the oldest version still considered secure, it
+  refuses to run until updated, even offline once it has seen that floor.
+  The request sends two headers only: TeamRunner, Python and platform in
+  `User-Agent`, and a random install id kept in `~/.teamrunner/install-id`.
+  The server logs those, never the IP address. If the check fails,
+  TeamRunner says nothing and carries on. The README and `LEGAL.md` say
+  exactly what is sent.
+- **The demo model is sent TeamRunner's version** in the `User-Agent` of
+  each request, so the demo can stop answering versions that are too old.
+- **A free model fits any cost ceiling.** `--max-cost` and `max_cost_usd`
+  no longer stop the demo model or a local Ollama model for want of a
+  longest reply: a call that costs nothing always fits.
+- **An account out of credit fails at once**, saying so, instead of being
+  retried for a minute as if it were a rate limit.
+- **The browser page has an Experiments tab.** It lists the experiments
+  in the opened folder; opening one shows its plan (conditions, the
+  differences file by file, the order of runs and the cost estimate
+  against the ceiling), its runs as a grid of conditions by replicates,
+  and its summary, with marginal means for two or more factors. Each run
+  opens in the Run tab. It reads the same figures as `teamrunner
+  experiment --plan` and `--summary` and spends nothing.
+- **Files in an experiment are checked as an experiment.** With
+  `experiment.md`, or a file in its `variants/` or `metrics/`, open in the
+  Files tab, the bar names the experiment, and Validate (and saving)
+  checks it as `teamrunner experiment --plan` does: its settings, every
+  condition's team, each change and each metric, with each problem at its
+  line. No keys are needed and nothing is spent. Run… becomes Open in
+  Experiments.
+- **Rehearse and Stop from the Experiments tab.** Rehearse · free runs
+  `teamrunner experiment --rehearse` from the page: running slots pulse on
+  the grid, each run's line appears as it finishes, and the tab shows a dot
+  while anything runs. Stop works as Ctrl-C does. Several experiments can
+  run at once, each only once.
+- **Run and Evaluate from the Experiments tab, after seeing the cost.**
+  Run… shows the missing runs, the estimate, what is already spent and the
+  ceiling, and what would stop it (a missing key, a model that cannot be
+  reached, no list price); it starts only when you press Run ≈ $…, and only
+  if nothing changed since. A changed study offers Start over or Keep
+  unchanged conditions' runs. From the page an experiment needs
+  `max_cost_usd`, unless every model it uses is free. Evaluate… appears
+  when evaluations are missing or out of date.
+- **The ceiling reads as the whole experiment's**: "6% of the ceiling:
+  $40.00 for the whole experiment, running and judging (experiment.md)".
+- **A condition's generated folder is read-only.** Files under an
+  experiment's `conditions/` are built from `experiment.md` and built again
+  before every run, so the Files tab opens them read-only and says where to
+  make the change instead.
+- **Runs that cost far more than usual are flagged.** In an experiment's
+  summary (and its Runs grid in the browser page), a run that cost more
+  than 3× the typical run of its condition is listed with both costs. It
+  still counts: the flag only says it is worth reading.
+- **An evaluator's settings are checked before anything is spent.** A
+  setting its model refuses (`temperature: 0` on a model that takes only
+  1, say) stops `teamrunner experiment` before the first run, and is listed
+  on the page's Run… and Evaluate… as what would stop it. Before, the runs
+  were made and paid for, and every evaluation then failed.
+
 ## 0.0.5.1 — names from anywhere
 
 - **In `chair.md`, every line stands on its own.** The order of the lines

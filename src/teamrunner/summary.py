@@ -130,75 +130,139 @@ def _clip(ci: tuple[float, float], bounds) -> tuple[float, float]:
     return lo, hi
 
 
+def cell(m: Measure, values: list) -> dict:
+    """One condition's (or one level's) figures for a measure: n, and a mean with its
+    interval, or a share for each answer of a choice."""
+    n = len(values)
+    if m.kind == "choice":
+        counts = Counter(values)
+        order = [o for o in m.options if o in counts] + sorted(str(a) for a in counts if a not in m.options)
+        return {"n": n, "shares": [{"answer": a, "share": counts[a] / n, "ci": wilson(counts[a], n)}
+                                   for a in order]}
+    if m.kind == "yes_no":
+        k = sum(1 for v in values if v)
+        return {"n": n, "mean": k / n, "sd": None, "ci": wilson(k, n), "wilson": True}
+    mean, sd, ci = mean_interval([float(v) for v in values])
+    return {"n": n, "mean": mean, "sd": sd, "ci": _clip(ci, m.bounds) if ci else None}
+
+
+COSTLY = 3  # a run is flagged when it cost more than this many times its condition's typical run
+COSTLY_FROM = 3  # the fewest runs a condition needs before "typical" means anything
+
+
+def _cost(record: dict) -> float | None:
+    c = record.get("cost_usd")
+    return c if c is not None else record.get("cost_known_usd")
+
+
+def costly(runs: list[tuple[Path, dict]]) -> list[dict]:
+    """Runs that cost far more than their condition's typical (median) run: flagged, never
+    cut. A cost ceiling per run would drop the expensive condition's long runs and bias
+    the summary; the flag only points at them."""
+    by_cond: dict[str, list[tuple[Path, dict, float]]] = {}
+    for folder, record in runs:
+        c = _cost(record)
+        if c is not None:
+            by_cond.setdefault(record["experiment"]["condition"], []).append((folder, record, c))
+    found = []
+    for cond, items in by_cond.items():
+        if len(items) < COSTLY_FROM:
+            continue
+        values = sorted(c for _, _, c in items)
+        mid = len(values) // 2
+        typical = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+        if typical <= 0:
+            continue
+        for folder, record, c in items:
+            if c > COSTLY * typical:
+                found.append({"folder": folder, "run_id": record.get("run_id"), "condition": cond,
+                              "replicate": record["experiment"].get("replicate"),
+                              "cost_usd": c, "typical_usd": typical})
+    return sorted(found, key=lambda f: (f["condition"], f["replicate"] or 0))
+
+
+def table(exp, runs: list[tuple[Path, dict]], metrics, events_of) -> list[dict]:
+    """Every measure's figures by condition, and by factor level when there are two or more
+    factors: what the summary prints and the browser page shows (D141 (4))."""
+    by_cond = {c.name: [] for c in exp.conditions}
+    for folder, record in runs:
+        by_cond.setdefault(record["experiment"]["condition"], []).append(record.get("run_id"))
+    levels_of = {r.get("run_id"): r["experiment"].get("levels") or {} for _, r in runs}
+    out = []
+    for m in measures_of(runs, metrics, events_of):
+        rows = []
+        for cond, ids in by_cond.items():
+            values = [m.values[i] for i in ids if m.values.get(i) is not None]
+            rows.append({"condition": cond, **(cell(m, values) if values else {"n": 0})})
+        marginals = []
+        if exp.factors and len(exp.factors) >= 2 and m.kind != "choice":
+            for factor, levels in exp.factors.items():
+                for level in levels:
+                    values = [float(m.values[i]) for i, lv in levels_of.items()
+                              if lv.get(factor) == level and m.values.get(i) is not None]
+                    if values:
+                        mean, sd, ci = mean_interval(values)
+                        marginals.append({"factor": factor, "level": level, "n": len(values), "mean": mean,
+                                          "sd": sd, "ci": _clip(ci, m.bounds) if ci else None})
+        out.append({"label": m.label, "span": m.span, "kind": m.kind, "rows": rows,
+                    "marginals": marginals, "left_out": dict(sorted(m.why.items()))})
+    return out
+
+
 def summary(exp, runs: list[tuple[Path, dict]], left_out: Counter, metrics, out, events_of,
             spent_runs: float | None = None, spent_evaluating: float | None = None, note: str = "") -> None:
     """Print the summary of the runs that count."""
     from .plan import _money
     say, paint = out.say, out.paint
-    by_cond = {c.name: [] for c in exp.conditions}
-    for folder, record in runs:
-        by_cond.setdefault(record["experiment"]["condition"], []).append(record.get("run_id"))
     money = ""
     if spent_runs is not None:
         money = f" · {_money(spent_runs)} runs" + (f" + {_money(spent_evaluating)} evaluating"
                                                    if spent_evaluating else "")
     title = exp.name or exp.folder.name
     say(f"{title} · {len(runs)} of {exp.runs} runs completed{money}{note}")
-    measures = measures_of(runs, metrics, events_of)
-    width = max([len(n) for n in by_cond] + [12]) + 2
+    measures = table(exp, runs, metrics, events_of)
+    width = max([len(r["condition"]) for r in measures[0]["rows"]] + [12]) + 2  # cost_usd is always there
     for m in measures:
         say("")
-        head = f"{m.label} {m.span}".strip()
+        head = f"{m['label']} {m['span']}".strip()
         w = max(width, len(head) - 1)  # every row's first column, so `n` lines up
-        if m.kind == "choice":
+        if m["kind"] == "choice":
             say(f"{head:<{w + 2}}{'n':>4}   share by answer, 95% interval")
         else:
             say(f"{head:<{w + 2}}{'n':>4}  {'mean':>7} {'sd':>7}   95% interval")
-        for cond, ids in by_cond.items():
-            values = [m.values[i] for i in ids if m.values.get(i) is not None]
-            if not values:
+        for row in m["rows"]:
+            cond, n = row["condition"], row["n"]
+            if not n:
                 say(f"  {cond:<{w}}{0:>4}")
-                continue
-            n = len(values)
-            if m.kind == "choice":
-                counts = Counter(values)
-                order = [o for o in m.options if o in counts] + sorted(str(a) for a in counts
-                                                                         if a not in m.options)
-                parts = [f"{a} {counts[a] / n:.0%} [{wilson(counts[a], n)[0]:.0%}, {wilson(counts[a], n)[1]:.0%}]"
-                         for a in order]
+            elif m["kind"] == "choice":
+                parts = [f"{s['answer']} {s['share']:.0%} [{s['ci'][0]:.0%}, {s['ci'][1]:.0%}]"
+                         for s in row["shares"]]
                 say(f"  {cond:<{w}}{n:>4}   " + " · ".join(parts))
-            elif m.kind == "yes_no":
-                k = sum(1 for v in values if v)
-                lo, hi = wilson(k, n)
-                say(f"  {cond:<{w}}{n:>4}  {k / n:>6.2f} {'':>6}   [{lo:.2f}, {hi:.2f}]  (Wilson)")
+            elif m["kind"] == "yes_no":
+                lo, hi = row["ci"]
+                say(f"  {cond:<{w}}{n:>4}  {row['mean']:>6.2f} {'':>6}   [{lo:.2f}, {hi:.2f}]  (Wilson)")
             else:
-                mean, sd, ci = mean_interval([float(v) for v in values])
-                if ci:
-                    ci = _clip(ci, m.bounds)
+                ci = row["ci"]
                 interval = f"[{_num(ci[0])}, {_num(ci[1])}]" if ci else ""
-                say(f"  {cond:<{w}}{n:>4}  {_fmt(mean, 7)} {_fmt(sd, 7)}   {interval}")
-        if exp.factors and len(exp.factors) >= 2 and m.kind != "choice":
-            _marginals(exp, runs, m, say, w)
-        for why, k in sorted(m.why.items()):
+                say(f"  {cond:<{w}}{n:>4}  {_fmt(row['mean'], 7)} {_fmt(row['sd'], 7)}   {interval}")
+        if m["marginals"]:
+            say(f"  {'marginal means':<{w}}")
+        for row in m["marginals"]:
+            ci = row["ci"]
+            interval = f"[{_num(ci[0])}, {_num(ci[1])}]" if ci else ""
+            say(f"    {row['factor']}={row['level']:<{max(w - len(row['factor']) - 3, 1)}}{row['n']:>4}  "
+                f"{_fmt(row['mean'], 7)} {_fmt(row['sd'], 7)}   {interval}")
+        for why, k in m["left_out"].items():
             say(paint.dim(f"  left out: {k} run{'s' if k != 1 else ''} {why}"))
+    flagged = costly(runs)
+    if flagged:
+        say("")
+        say(paint.yellow(f"! {len(flagged)} run{'s' if len(flagged) != 1 else ''} cost over {COSTLY}× "
+                         "the typical run of its condition (counted; worth reading):"))
+        for f in flagged:
+            say(f"  {f['condition']} replicate {f['replicate']}  {_money(f['cost_usd'])}, typical "
+                f"{_money(f['typical_usd'])}  " + paint.dim(f["folder"].name))
     if left_out:
         say("")
         parts = [f"{k} {why}" for why, k in sorted(left_out.items())]
         say(paint.dim(f"Not counted: {', '.join(parts)}."))
-
-
-def _marginals(exp, runs, m: Measure, say, width: int) -> None:
-    say(f"  {'marginal means':<{width}}")
-    levels_of = {r.get("run_id"): r["experiment"].get("levels") or {} for _, r in runs}
-    for factor, levels in exp.factors.items():
-        for level in levels:
-            values = [float(m.values[i]) for i, lv in levels_of.items()
-                      if lv.get(factor) == level and m.values.get(i) is not None]
-            if not values:
-                continue
-            mean, sd, ci = mean_interval(values)
-            if ci:
-                ci = _clip(ci, m.bounds)
-            interval = f"[{_num(ci[0])}, {_num(ci[1])}]" if ci else ""
-            say(f"    {factor}={level:<{max(width - len(factor) - 3, 1)}}{len(values):>4}  {_fmt(mean, 7)} "
-                f"{_fmt(sd, 7)}   {interval}")

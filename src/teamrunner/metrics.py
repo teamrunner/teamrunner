@@ -326,7 +326,7 @@ def _evaluator(path, data, body, problems, members) -> Evaluator | None:
         problems.error(path, "an evaluator pins its own `model:`, as provider/name (it never takes a team's)")
     params = data.get("params") or {}
     if not isinstance(params, dict):
-        problems.error(path, "`params:` holds the model's settings, such as `temperature: 0`")
+        problems.error(path, "`params:` holds the model's settings, such as `max_tokens: 400`")
         params = {}
     output = ir.output_fields(data.get("output")) if isinstance(data.get("output"), dict) else {}
     if not output:

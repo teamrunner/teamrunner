@@ -144,7 +144,8 @@ byId("stop-run").addEventListener("click", async () => {
   catch (error) { byId("live-connection").textContent = error.message; }
 });
 byId("browse-finished").addEventListener("click", () => openRun(liveJob.folder));
-byId("run-team").addEventListener("click", () => showRunForm());
+// In an experiment, the button opens it in the Experiments tab; running it from the page comes later.
+byId("run-team").addEventListener("click", () => experimentContext ? openExperiment(experimentContext) : showRunForm());
 byId("run-from-history").addEventListener("click", () => showRunForm());
 byId("run-from-run").addEventListener("click", () => showRunForm());
 byId("rerun").addEventListener("click", () => showRunForm(true));

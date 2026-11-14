@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "teamrunner"
-version = "0.0.5.1"
+version = "0.0.6"
 description = "The experimentation platform for agent organizations — run multi-agent orchestrations and factorial experiments entirely from text files."
 readme = "README.md"
 license = "GPL-3.0-or-later AND MIT-0"
 # The engine is GPL; the examples, what `new` writes and the authoring guide are MIT-0 (D130)
 license-files = ["LICENSE", "NOTICE", "LEGAL.md", "examples/LICENSE", "src/teamrunner/authoring/LICENSE", "src/teamrunner/ui/static/vendor/*LICENSE*"]
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 authors = [
     { name = "Kumar Muthuraman", email = "hello@teamrunner.ai" },
 ]

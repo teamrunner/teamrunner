@@ -58,8 +58,13 @@ def _where(p, root: Path) -> str:
     return p.where(root) if p.file.is_relative_to(root) else _rel(p.file, root) + (f":{p.line}" if p.line else "")
 
 
+def ceiling_words(limit: float, limit_from: str | None = None) -> str:
+    """The ceiling as it is shown everywhere (D151 (3)): the whole experiment's."""
+    return f"{_money(limit)} for the whole experiment, running and judging" + (f" ({limit_from})" if limit_from else "")
+
+
 def say_estimate(out, est: float | None, limit: float | None, spent: float = 0.0,
-                 lead: str = "Estimated cost", brief: bool = False) -> bool:
+                 lead: str = "Estimated cost", brief: bool = False, limit_from: str | None = None) -> bool:
     """The estimate against the ceiling, in one to three lines (`brief`: the first only).
     True when it is over the ceiling; the caller says what that means where it is."""
     say, paint = out.say, out.paint
@@ -76,7 +81,7 @@ def say_estimate(out, est: float | None, limit: float | None, spent: float = 0.0
         say(paint.yellow("  ! no max_cost_usd: nothing caps what this spends"))
         return False
     share = est / limit
-    say(f"{lead} ≈ {_money(est)}{already}. {share:.0%} of max ({_money(limit)})")
+    say(f"{lead} ≈ {_money(est)}{already}. {share:.0%} of the ceiling: {ceiling_words(limit, limit_from)}")
     if share > 1 or brief:
         return share > 1
     if share > HARD_AT:
@@ -165,7 +170,7 @@ def plan(folder: Path, out, prices=None, walks: int = WALKS, max_cost: float | N
         say(f"  round {r:>3}  " + " · ".join(s.condition for s in row))
     say("")
 
-    _estimate(exp, out, prices if prices is not None else load_prices(), walks, ceiling_of(exp, max_cost)[0])
+    _estimate(exp, out, prices if prices is not None else load_prices(), walks, *ceiling_of(exp, max_cost))
     for w in warnings:
         say(out.paint.yellow(f"! {_where(w, root)}  {w.message}"))
     say(out.paint.dim("Nothing was run and nothing was spent."))
@@ -182,8 +187,9 @@ def per_run(exp: Experiment, prices, walks: int = WALKS, reply_tokens: int | Non
     return out
 
 
-def _estimate(exp: Experiment, out, prices, walks: int, ceiling: float | None) -> None:
-    say = out.say
+def costs(exp: Experiment, prices, walks: int = WALKS) -> dict:
+    """The estimate's figures: each condition's typical run, the whole experiment typically
+    and at most, and evaluating. What `--plan` prints and the browser page shows."""
     typical = per_run(exp, prices, walks)
     worst = per_run(exp, prices, walks, reply_tokens=None)
     reps = exp.replications
@@ -203,14 +209,25 @@ def _estimate(exp: Experiment, out, prices, walks: int, ceiling: float | None) -
             evaluating = None if one is None or evaluating is None else evaluating + one * ev.evaluations * reps
     if est is not None:
         est = None if evaluating is None else est + evaluating
-    if say_estimate(out, est, ceiling):
+    return {"typical": typical, "estimate": est, "most": most, "evaluating": evaluating,
+            "evaluators": evaluators, "evaluations": sum(ev.evaluations for ev in evaluators) * exp.runs,
+            "unpriced": sorted({m for e in typical.values() for m in e.unpriced})}
+
+
+def _estimate(exp: Experiment, out, prices, walks: int, ceiling: float | None, ceiling_from: str | None = None) -> None:
+    say = out.say
+    c = costs(exp, prices, walks)
+    typical, est, most, evaluating, evaluators = (c["typical"], c["estimate"], c["most"], c["evaluating"],
+                                                  c["evaluators"])
+    reps = exp.replications
+    if say_estimate(out, est, ceiling, limit_from=ceiling_from):
         say(out.paint.yellow(f"  ! over the ceiling: a run would not start. {RAISE}"))
     width = max(len(n) for n in typical)
     for name, e in typical.items():
         say(f"  {name:<{width}}  ≈ {_money(e.per_run_usd)} a run × {reps}"
             f"   {out.paint.dim(f'{e.calls:.0f} calls, ≈ {e.tokens_in:,} tokens in, {e.tokens_out:,} out')}")
     if evaluators:
-        n = sum(ev.evaluations for ev in evaluators) * exp.runs
+        n = c["evaluations"]
         say(f"  {'evaluating':<{width}}  ≈ {_money(evaluating)}   "
             + out.paint.dim(f"{n} evaluations: {', '.join(ev.name for ev in evaluators)}"))
     say(out.paint.dim(f"  from {walks} rehearsal walks of each flow, prompts as they "
@@ -219,7 +236,7 @@ def _estimate(exp: Experiment, out, prices, walks: int, ceiling: float | None) -
     say(f"  at most ≈ {_money(most)} if every reply ran to its max_tokens")
     for line in litellm_max_lines(exp):
         say(f"    {line}")
-    unpriced = sorted({m for e in typical.values() for m in e.unpriced})
+    unpriced = c["unpriced"]
     if unpriced:
         say(out.paint.yellow(f"! no list price for {', '.join(unpriced)}; add it to {prices.shown}"))
     say("")

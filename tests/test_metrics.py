@@ -22,7 +22,6 @@ RUBRIC = """---
 kind: evaluator
 model: openai/gpt-5
 params:
-  temperature: 0
   max_tokens: 100
 output:
   score: 0

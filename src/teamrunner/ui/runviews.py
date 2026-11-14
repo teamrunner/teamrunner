@@ -115,7 +115,9 @@ def row(root: Path, record, warnings: list[str]) -> dict:
             "message": record.input, "result": result, "turns": run.get("turns", 0),
             "length": seconds(run.get("latency_ms")), "cost": money(run.get("cost_usd")),
             "cost_known": money(run.get("cost_known_usd")),
-            "rehearsal": bool(run.get("rehearsal")), "backup": bool(run.get("backup_models"))}
+            "rehearsal": bool(run.get("rehearsal")), "backup": bool(run.get("backup_models")),
+            "experiment": ({k: block.get(k) for k in ("condition", "replicate", "round")}
+                           if isinstance(block := run.get("experiment"), dict) else None)}
 
 
 def listing(root: Path, written: str = "", *, team: str = "", status: str = "",

@@ -128,3 +128,79 @@ dialog::backdrop{background:#0005}dialog h2{font-size:26px;letter-spacing:-.7px;
 .tree button.record{color:var(--muted)}.tree button.record .ic{opacity:.6}
 .file-actions button:disabled{opacity:.45;cursor:not-allowed}
 .feedback-links{padding-left:18px;line-height:1.9}.feedback-warning{color:var(--muted);font-size:12px}#feedback-dialog code{font-size:12px}#feedback-dialog{max-width:520px}
+
+/* Experiments (D141 (4)): the same look as Run history, one study at a time. */
+#experiments-workspace{padding:0;overflow-x:hidden;overflow-y:auto}
+#experiments-workspace footer{margin-top:auto}
+#experiments-workspace button{border:1px solid var(--line);border-radius:5px;padding:5px 11px;background:var(--paper);font-size:12px;color:var(--text)}
+#experiments-workspace button:hover{border-color:var(--accent);color:var(--accent)}
+#experiments-workspace .run-tabs button[aria-pressed=true],.exp-toggle button[aria-pressed=true]{background:var(--selected);border-color:var(--accent);color:var(--accent)}
+#experiments-notice{margin:10px 30px;font-size:12px;color:var(--muted);white-space:pre-wrap}
+#experiments-notice:empty{display:none}
+.exp-intro{margin:4px 30px 0;font-size:13px;color:var(--muted);max-width:640px}
+#experiments-empty{margin:20px 30px}
+#experiment-detail{padding:5px 30px 35px}
+#experiment-title{font-size:23px;letter-spacing:-.5px;margin:10px 0 0}
+#experiment-meta{font-size:12px;color:var(--muted);margin:4px 0 0}
+.exp-question{margin-top:14px;padding:4px 16px;border-left:3px solid var(--accent);background:var(--paper);max-width:760px}
+.exp-question h2{font-size:15px;margin:10px 0 4px}
+.exp-question p{margin:4px 0 10px}
+.exp-section{margin:22px 0}
+.exp-section h3{font-size:15px;margin:0 0 8px}
+.exp-section h4{font-size:13px;margin:14px 0 6px;font-weight:600}
+.exp-table{border-collapse:collapse;font-size:12.5px;text-align:left;min-width:min(560px,100%)}
+.exp-table th{font-weight:500;color:var(--muted);font-size:11px;background:var(--panel);white-space:nowrap}
+.exp-table td,.exp-table th{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.exp-table tbody th{background:none;color:var(--text);font-size:12.5px;font-weight:600}
+#experiments-table{width:100%}
+#experiments-table td:first-child button{border:0;background:none;padding:0;color:var(--accent);font-size:13px;font-weight:600;text-align:left}
+.exp-summary td:nth-child(n+2):not(:last-child){text-align:right;font-variant-numeric:tabular-nums}
+.exp-summary tr.marginal td{background:var(--panel);color:var(--muted)}
+.exp-grid-wrap{overflow-x:auto;max-width:100%}
+.exp-grid td{text-align:center;padding:5px 6px}
+.exp-grid th{text-align:center}
+.exp-grid tbody th,.exp-grid thead th:first-child{text-align:left}
+#experiments-workspace .slot{display:inline-block;min-width:28px;padding:2px 6px;font-size:13px;line-height:1.5}
+.slot.empty{color:var(--muted)}
+#experiments-workspace .slot.completed{color:#37734d}
+#experiments-workspace .slot.failed{color:#c14338}
+#experiments-workspace .slot.stopped{color:#a46b14}
+.exp-toggle{display:flex;gap:8px;margin:18px 0 12px}
+.exp-note{font-size:12px;color:var(--muted);margin:6px 0}
+.exp-warning{font-size:13px;color:#a46b14;margin:6px 0}
+.exp-estimate{font-size:14px;font-weight:600;margin:6px 0 10px}
+.exp-command{display:block;font-size:11.5px;color:var(--muted);margin-top:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.exp-rounds{margin:6px 0;padding-left:0;list-style:none;font-size:12.5px;columns:2 220px}
+.exp-diff{width:100%;max-width:880px;table-layout:fixed}.exp-diff th:first-child{width:30%}.exp-diff th:nth-child(2){width:90px}.exp-diff td{overflow-wrap:anywhere}
+.diff-kind{font-size:10px;padding:1px 6px;border:1px solid var(--line);border-radius:3px}
+.diff-kind.added{color:#37734d}
+.diff-kind.removed{color:#c14338}
+.diff-kind.changed{color:var(--accent)}
+.exp-shares{display:flex;flex-direction:column;gap:4px;min-width:240px}
+.exp-share{position:relative;padding:1px 8px;background:linear-gradient(to right,var(--selected) var(--share),transparent var(--share));border-radius:3px;font-size:12px}
+.exp-problems{list-style:none;padding:0;margin:0;max-width:760px}
+.problem.warning{border-left-color:#a46b14}
+@media(prefers-color-scheme:dark){#experiments-workspace .slot.completed,.diff-kind.added{color:#9bc99b}#experiments-workspace .slot.failed,.diff-kind.removed{color:#f29a91}#experiments-workspace .slot.stopped,.exp-warning{color:#d9b06d}}
+@media(max-width:580px){#experiment-detail{padding-left:18px;padding-right:18px}.exp-intro,#experiments-notice{margin-left:18px;margin-right:18px}#experiments-empty{margin:18px}}
+@media(max-width:580px){.topbar{height:auto;min-height:48px;flex-wrap:wrap;row-gap:4px;padding-top:6px;padding-bottom:6px}.topbar nav{order:3;width:100%;display:flex;overflow-x:auto}.topbar-end{margin-left:auto}}
+#experiments-workspace .slot.costly{outline:2px solid #c98a1b;outline-offset:1px;border-radius:4px}
+#experiments-workspace .slot.costly::after{content:"$";font-size:10px;vertical-align:super;color:#a46b14;margin-left:1px}
+.exp-costly ul{margin:4px 0 8px 18px;padding:0;font-size:13px}
+.exp-link{background:none;border:0;padding:0;font:inherit;color:inherit;text-decoration:underline;cursor:pointer}
+@media(prefers-color-scheme:dark){#experiments-workspace .slot.costly{outline-color:#d9b06d}#experiments-workspace .slot.costly::after{color:#d9b06d}}
+#experiments-workspace .slot.running{color:#2f6db5;animation:exp-pulse 1.2s ease-in-out infinite}
+@keyframes exp-pulse{50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){#experiments-workspace .slot.running{animation:none}}
+.exp-actions{margin-left:auto;display:inline-flex;gap:6px}
+.exp-job{font-size:13px;margin:6px 0}
+.exp-job code{margin-left:6px;font-size:12px;opacity:.75}
+.exp-running{color:#2f6db5}
+.exp-lines{max-height:260px;overflow:auto;font-size:12px;line-height:1.45;padding:8px 10px;background:rgba(127,127,127,.08);border-radius:6px;white-space:pre}
+@media(prefers-color-scheme:dark){#experiments-workspace .slot.running,.exp-running{color:#8db8ea}}
+#experiments-workspace button.primary{color:var(--paper)}
+#experiments-workspace button.primary:hover{color:var(--paper);opacity:.9}
+.exp-confirm{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:6px;padding:10px 14px;margin:10px 0;font-size:13px}
+.exp-confirm h3{font-size:15px;margin:2px 0 6px}
+.exp-confirm ul{margin:4px 0 8px 18px;padding:0}
+.exp-confirm-buttons{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 6px}
+.exp-blockers li{margin:3px 0}

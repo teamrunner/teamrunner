@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextlib import nullcontext
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
@@ -156,6 +157,23 @@ class Study:
         return changed, same
 
 
+def left_out(exp: Experiment, study: Study, filled: dict) -> dict[str, int]:
+    """Why the slots without a counting run are empty: failed, stopped, or not run yet."""
+    why = {}
+    for folder, record in study.real:
+        if not study.belongs(record) or (folder, record) in filled.values():
+            continue
+        if record["experiment"].get("replaced_by"):
+            continue
+        label = "failed" if record.get("status") == "failed" else (
+            f"stopped by {'the ceiling' if record.get('stopped_by') == 'ceiling' else 'the user'}")
+        why[label] = why.get(label, 0) + 1
+    missing = exp.runs - len(filled)
+    if missing - sum(why.values()) > 0:
+        why["not run yet"] = missing - sum(why.values())
+    return why
+
+
 def counted(exp: Experiment, records) -> dict[tuple[str, int], tuple[Path, dict]]:
     """The real runs that fill a slot of the study as it now stands."""
     return Study(exp, records, None).slots()[0]
@@ -198,12 +216,25 @@ def block(exp: Experiment, cond: Condition, slot: Slot, *, continued_from: str |
             "body": exp.body}
 
 
+REFUSED_FIX = "change or remove the setting under `params:` in the evaluator's file"
+
+
 # --- the whole experiment -------------------------------------------------------------------
 
 class Runner:
     def __init__(self, exp: Experiment, out, *, rehearse: bool, max_cost: float | None,
                  prices: Prices, change: str | None = None, evaluating: str = "both", model_factory=None,
-                 listers=None, model_data=None, cancel: threading.Event | None = None, waits=None):
+                 listers=None, model_data=None, cancel: threading.Event | None = None, waits=None,
+                 on_slot=None, copy_lock=None, params_check=None):
+        # The browser page's seams: `on_slot(slot, folder, result)` hears each run start (result
+        # None) and end; `copy_lock` is held while a condition's files are copied, so the page
+        # never saves a file halfway through a copy.
+        self.on_slot, self.copy_lock = on_slot, copy_lock
+        # The evaluators' settings, asked of LiteLLM offline as `run` asks of every member's;
+        # a test's stand-in model is not asked unless the test gives a check.
+        if params_check is None and model_factory is None and listers is None:
+            from .checks import litellm_params as params_check
+        self.params_check = params_check
         self.exp, self.out, self.rehearse, self.change = exp, out, rehearse, change
         self.evaluating = evaluating  # both | only (--evaluate) | none (--no-evaluate)
         self.evaluators = [m for m in exp.measures if isinstance(m, Evaluator)]
@@ -224,7 +255,10 @@ class Runner:
         cond = self.by_name[slot.condition]
         old_folder, old = self.redo.get((slot.condition, slot.replicate), (None, None))
         folder = _folder_for(self.exp, slot, datetime.now())
-        team = resolve(cond, folder / "resolved")
+        with self.copy_lock or nullcontext():
+            team = resolve(cond, folder / "resolved")
+        if self.on_slot:
+            self.on_slot(slot, folder, None)
         options = Options(task_file=self.exp.task, quiet=True, rehearse=self.rehearse, seed=slot.seed,
                           run_folder=folder,
                           experiment=block(self.exp, cond, slot, study_change=self.study_change,
@@ -249,6 +283,8 @@ class Runner:
         with self.lock:
             self.results.append(result)
         self.line(result)
+        if self.on_slot:
+            self.on_slot(slot, folder, result)
         return result
 
     def line(self, result: dict) -> None:
@@ -267,9 +303,9 @@ class Runner:
         with self.lock:
             self.out.say(text)
 
-    def run(self) -> int:
-        exp, out, say = self.exp, self.out, self.out.say
-        self.width = max(len(c.name) for c in exp.conditions)
+    def _prepare(self):
+        """What is already in runs/, what is spent, and the slots this session would run."""
+        exp = self.exp
         records = experiment_records(exp)
         real = [r for _, r in records if not r.get("rehearsal")]
         spent = sum(_paid(r) for r in real) + spent_on([(f, r) for f, r in records if not r.get("rehearsal")],
@@ -279,11 +315,105 @@ class Runner:
         done = {} if self.rehearse else real_done
         self.redo = {} if self.rehearse else real_redo
         self.study_change = None if self.rehearse else study.change
-        limit = self.limit
         todo = [s for s in plan_runs(exp) if (s.condition, s.replicate) not in done]
         # what a real run would still have to do, for the estimate a rehearsal ends with
         self.real_todo = [s for s in plan_runs(exp) if (s.condition, s.replicate) not in real_done]
         self.real_spent = spent
+        return records, spent, study, done, todo
+
+    def quote(self) -> dict:
+        """What this session would do and cost, before anything is spent: the browser page's
+        confirmation (D151). The same figures `run` prints before it starts."""
+        records, spent, study, done, todo = self._prepare()
+        q = {"spent_usd": spent, "limit_usd": self.limit, "limit_from": self.limit_from,
+             "done": len(done), "todo": len(todo),
+             "redo": sum(1 for s in todo if (s.condition, s.replicate) in self.redo),
+             "estimate_usd": None, "most_usd": None, "evaluations": 0, "changed": None,
+             "free": self._free(), "blockers": []}
+        if study.changed and study.change is None:
+            changed, same = study.what_changed()
+            q["changed"] = {"changed": changed, "same": same}
+            return q
+        q["blockers"] += [{"kind": "settings", "message": line, "fix": REFUSED_FIX}
+                          for line in self._refused_settings()]
+        if self.evaluating == "only":
+            filled = study.slots()[0]
+            runs = sorted(filled.values(), key=lambda fr: (fr[1]["experiment"].get("round") or 0, fr[0].name))
+            jobs, _ = pending(runs, self.evaluators, True)
+            q["evaluations"] = len(jobs)
+            walks = self._walk()
+            one = [estimate_one(j.evaluator, walks[j.record["experiment"]["condition"]].tokens_out, self.prices)
+                   for j in jobs]
+            q["estimate_usd"] = q["most_usd"] = None if any(c is None for c in one) else spent + sum(one)
+        else:
+            q["estimate_usd"] = self._estimate(todo, spent) if todo else spent
+            q["most_usd"] = self._most(todo, spent) if todo else spent
+        if self.limit is not None:
+            q["blockers"] += [{"kind": "unpriced", "message": line}
+                              for line in self._unpriceable(evaluators_only=self.evaluating == "only")]
+        elif not q["free"]:
+            q["blockers"].append({"kind": "no_ceiling", "message": "experiment.md has no max_cost_usd, and "
+                                  "some model it uses has a price: a run from the page needs a budget line"})
+        if self.limit is not None and q["estimate_usd"] is not None and q["estimate_usd"] > self.limit:
+            q["blockers"].append({"kind": "over", "message": f"the estimate ({_money(q['estimate_usd'])}) is over "
+                                  f"the ceiling ({_money(self.limit)})"})
+        return q
+
+    def _uses(self, evaluators_only: bool = False) -> list[tuple[str, str, dict]]:
+        uses = []  # (who, model, params)
+        if not evaluators_only:
+            for cond in self.exp.conditions:
+                for m in _team(cond.report).members.values():
+                    if m.kind != "toolkeeper":
+                        uses += [(m.name, c.model.value, {k: s.value for k, s in c.params.items()})
+                                 for c in m.choices]
+        if self.evaluating != "none":
+            uses += [(e.name, e.model, e.params) for e in self.evaluators]
+        return uses
+
+    def _refused_settings(self) -> list[str]:
+        """Each evaluator whose `params:` its model refuses before any request is sent
+        (temperature 0 on a model that takes only 1, say), in the model's words."""
+        if self.params_check is None or self.evaluating == "none":
+            return []
+        found = []
+        for ev in self.evaluators:
+            reason = self.params_check(ev.model, dict(ev.params or {}))
+            if reason:
+                found.append(f"{ev.path.name} on {ev.model}: {reason.rstrip('.')}")
+        return found
+
+    def _free(self) -> bool:
+        """Every model this session could call has a list price of zero (a local model, say):
+        no budget line is needed for it (D151 (5))."""
+        for _, model, _ in self._uses():
+            price = model_price(model, self.prices)
+            if price["input_per_million"] != 0 or price.get("output_per_million") != 0:
+                return False
+        return True
+
+    def _most(self, slots: list[Slot], spent: float) -> float | None:
+        """At most: every reply running to its longest, as `--plan`'s "at most"."""
+        worst = per_run(self.exp, self.prices, reply_tokens=None)
+        total = spent
+        for s in slots:
+            e = worst.get(s.condition)
+            if e is None or e.per_run_usd is None:
+                return None
+            total += e.per_run_usd
+            if self.evaluating != "none":
+                for ev in self.evaluators:
+                    one = estimate_one(ev, e.tokens_out, self.prices)
+                    if one is None:
+                        return None
+                    total += one * ev.evaluations
+        return total
+
+    def run(self) -> int:
+        exp, out, say = self.exp, self.out, self.out.say
+        self.width = max(len(c.name) for c in exp.conditions)
+        records, spent, study, done, todo = self._prepare()
+        limit = self.limit
 
         title = exp.name or exp.folder.name
         mode = " · rehearsal: no model is called, nothing is spent, nothing counts" if self.rehearse else ""
@@ -303,6 +433,13 @@ class Runner:
         if self.redo:
             say(out.paint.dim(f"{len(self.redo)} of them redo a run that failed or was cut off, "
                               "reusing its turns"))
+        refused = [] if self.rehearse else self._refused_settings()
+        if refused:  # before any member is called: the judging would fail after the spending
+            say(out.paint.red("✗ an evaluator's settings are refused by its model, so nothing was run:"))
+            for line in refused:
+                say(f"  {line}")
+            say(f"  {REFUSED_FIX}")
+            return 1
         if self.evaluating == "only":
             return self._after(Ceiling(None if self.rehearse else limit, spent), 0)
         if not todo:
@@ -321,7 +458,7 @@ class Runner:
             said = exp.limits.get("max_cost_usd")
             say(out.paint.dim(f"max {_money(limit)} from --max-cost"
                               + (f", in place of {_money(said)} in experiment.md" if said is not None else "")))
-        if not self.rehearse and say_estimate(out, self._estimate(todo, spent), limit, spent):
+        if not self.rehearse and say_estimate(out, self._estimate(todo, spent), limit, spent, limit_from=self.limit_from):
             say(out.paint.red(f"  ✗ over the ceiling, so nothing was run. {RAISE}"))
             return 1
         if limit is not None and not self.rehearse:  # what the ceiling sets aside for them
@@ -337,7 +474,8 @@ class Runner:
             if rest and not self._stopping(ceiling):
                 again = None if self.rehearse else self._estimate(rest, ceiling.spent, real_costs=True)
                 over = again is not None and say_estimate(
-                    out, again, limit, lead=f"After round {todo[0].round}, from real costs: estimated cost")
+                    out, again, limit, lead=f"After round {todo[0].round}, from real costs: estimated cost",
+                    limit_from=self.limit_from)
                 if over:
                     say(out.paint.red(f"  ✗ over the ceiling, so the other rounds were not started. {RAISE}, "
                                       "then run again to continue"))
@@ -387,19 +525,7 @@ class Runner:
         return result
 
     def _left_out(self, study: Study, filled: dict) -> dict[str, int]:
-        why = {}
-        for folder, record in study.real:
-            if not study.belongs(record) or (folder, record) in filled.values():
-                continue
-            if record["experiment"].get("replaced_by"):
-                continue
-            label = "failed" if record.get("status") == "failed" else (
-                f"stopped by {'the ceiling' if record.get('stopped_by') == 'ceiling' else 'the user'}")
-            why[label] = why.get(label, 0) + 1
-        missing = self.exp.runs - len(filled)
-        if missing - sum(why.values()) > 0:
-            why["not run yet"] = missing - sum(why.values())
-        return why
+        return left_out(self.exp, study, filled)
 
     def _evaluate(self, runs, ceiling: Ceiling) -> int:
         out, say, paint = self.out, self.out.say, self.out.paint
@@ -428,7 +554,7 @@ class Runner:
             costs = [estimate_one(j.evaluator, walks[j.record["experiment"]["condition"]].tokens_out, self.prices)
                      for j in jobs]
             est = None if any(c is None for c in costs) else ceiling.spent + sum(costs)
-            if say_estimate(out, est, ceiling.limit, ceiling.spent):
+            if say_estimate(out, est, ceiling.limit, ceiling.spent, limit_from=self.limit_from):
                 say(paint.red(f"  ✗ over the ceiling, so nothing was evaluated. {RAISE}"))
                 return 1
         names = sorted({j.evaluator.name for j in jobs})
@@ -507,7 +633,7 @@ class Runner:
         """A rehearsal ends with what the real experiment would cost, and says so
         only when that is over the ceiling."""
         est = self._estimate(self.real_todo, self.real_spent)
-        if say_estimate(self.out, est, self.limit, self.real_spent, brief=True):
+        if say_estimate(self.out, est, self.limit, self.real_spent, brief=True, limit_from=self.limit_from):
             self.out.say(self.out.paint.yellow(f"  ! over the ceiling: a real run would not start. {RAISE}"))
         if est is None:
             for line in self._unpriceable():
@@ -540,15 +666,7 @@ class Runner:
 
     def _unpriceable(self, evaluators_only: bool = False) -> list[str]:
         """Every model whose worst case cannot be priced: a hard ceiling needs them all."""
-        uses = []  # (who, model, params)
-        if not evaluators_only:
-            for cond in self.exp.conditions:
-                for m in _team(cond.report).members.values():
-                    if m.kind != "toolkeeper":
-                        uses += [(m.name, c.model.value, {k: s.value for k, s in c.params.items()})
-                                 for c in m.choices]
-        if self.evaluating != "none":
-            uses += [(e.name, e.model, e.params) for e in self.evaluators]
+        uses = self._uses(evaluators_only)
         found = []
         for name, model, params in uses:
             if model_price(model, self.prices)["input_per_million"] is None:
@@ -632,8 +750,9 @@ def run_experiment(folder: Path, out, *, rehearse: bool = False, max_cost: float
                    **seams) -> int:
     """`change`: "restart" or "keep_unchanged", what to do when the study has changed.
     `evaluating`: "both" (run, then evaluate), "only" (--evaluate) or "none" (--no-evaluate)."""
-    exp = read_experiment(folder)
-    write_ids(exp)  # D64: into the files themselves, once, so every run's copy carries them
+    with seams.get("copy_lock") or nullcontext():  # reading builds conditions/; write_ids writes
+        exp = read_experiment(folder)
+        write_ids(exp)  # D64: into the files themselves, once, so every run's copy carries them
     if not report_problems(exp, out):
         return 1
     runner = Runner(exp, out, rehearse=rehearse, max_cost=max_cost, change=change, evaluating=evaluating,

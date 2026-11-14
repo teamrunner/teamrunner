@@ -1,6 +1,8 @@
 # Deploy demoLLM on AWS Lightsail
 
 Public address: `https://demollm.teamrunner.ai/v1` (DNS is case-insensitive).
+The same server answers TeamRunner's daily version check at
+`https://version.teamrunner.ai/version.json` (D148, D149; see "The version file" below).
 Operator: Serenity Partners LLC. Author: Kumar Muthuraman.
 Public data and responsible-use notices: [LEGAL.md](../../LEGAL.md).
 
@@ -26,7 +28,10 @@ Create a DNS record wherever `teamrunner.ai` is managed:
 | Type | Name | Value |
 | --- | --- | --- |
 | A | demollm | The Lightsail static IPv4 address |
+| A | version | The same Lightsail static IPv4 address |
 
+`version` has its own record so the version check can move to another server
+later by changing DNS alone, without touching demollm or any installed copy.
 Use DNS-only mode if your DNS host offers an HTTP proxy. This deployment counts
 the IP connecting to Caddy; placing a CDN in front requires a separate trusted
 proxy configuration. Do not add an AAAA record unless IPv6 routing is configured.
@@ -52,7 +57,15 @@ Copy the contents of this directory from your computer to
 (replace the key path and IP):
 
 ```sh
-scp -i /absolute/path/to/lightsail-key.pem Dockerfile .dockerignore gateway.py compose.yaml Caddyfile gateway.env.example bootstrap-ubuntu.sh set-openrouter-key.py ubuntu@SERVER_IP:~/teamrunner-demo-gateway/
+scp -i /absolute/path/to/lightsail-key.pem Dockerfile .dockerignore gateway.py compose.yaml Caddyfile gateway.env.example bootstrap-ubuntu.sh set-openrouter-key.py version.json version-stats.py ubuntu@SERVER_IP:~/teamrunner-demo-gateway/
+```
+
+Then, on the server, make the folder the version-check log goes into, owned by the
+gateway's user (otherwise Docker creates it owned by root and nothing is logged):
+
+```sh
+cd ~/teamrunner-demo-gateway
+mkdir -p version-logs && sudo chown 10001:10001 version-logs
 ```
 
 The image build copies only `gateway.py`, never the environment file.
@@ -118,6 +131,7 @@ From your computer:
 
 ```sh
 curl --fail https://demollm.teamrunner.ai/v1/models
+curl --fail https://version.teamrunner.ai/version.json
 curl --fail https://demollm.teamrunner.ai/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"demoLLM","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":80}'
@@ -138,7 +152,8 @@ The gateway logs upstream HTTP status codes, not their bodies, prompts or keys.
 The quota database stores IP-based usage counters. Expired quota windows are
 deleted on subsequent quota checks, so this is not a fixed deletion deadline.
 Do not describe the demo as collecting no usage information. Upstream providers
-have their own data practices. Caddy access logging is off. `/healthz` reports process health, not paid upstream
+have their own data practices. Caddy access logging is off. The version check
+writes one line per check to `version-logs/version-checks.jsonl` (see "The version file"). `/healthz` reports process health, not paid upstream
 availability. Provider failures return a generic message to clients.
 
 ## 5. Run TeamRunner
@@ -195,6 +210,61 @@ databases. IP quotas are approximate user limits: shared networks share an
 allowance, IPv6 addresses are grouped by /64, and VPNs can change IP. Global
 allowances and the dedicated OpenRouter credit cap bound the total exposure.
 Request allowances are not dollar budgets; changing the model changes the cost.
+
+## The version file
+
+`version.json` in this folder is the file every installed TeamRunner reads once a
+day (D148, D149). It is in Git, and the gateway serves it read-only from disk:
+
+```json
+{"min_version": "0.0.0", "min_secure_version": "0.0.0", "message": ""}
+```
+
+- `min_version`: below it, TeamRunner prints a nudge to update and runs anyway.
+  `TEAMRUNNER_NO_VERSION_CHECK=1` hides the nudge.
+- `min_secure_version`: the oldest version still considered secure. Below it,
+  TeamRunner refuses to run. For security problems only; nothing turns it off,
+  and a copy that has seen it keeps refusing offline. It can take up to a day to
+  reach everyone.
+- `message`: one plain sentence saying why, shown with the nudge or refusal.
+  TeamRunner writes the update command itself and never runs anything from this file.
+
+To change a floor: edit `version.json` here, commit, then copy it to the server:
+
+```sh
+scp -i /absolute/path/to/lightsail-key.pem version.json ubuntu@SERVER_IP:~/teamrunner-demo-gateway/
+curl https://version.teamrunner.ai/version.json
+```
+
+The file is read on every request, so no restart is needed. Before raising a floor,
+check with `version-stats.py` which versions are still in use. A release with a
+security hole is also yanked on PyPI (D148 (12)).
+
+**What is logged.** Each check sends two headers,
+`User-Agent: TeamRunner/<version> (python <major.minor>; <platform>)` and
+`X-TeamRunner-Install: <random id>`. The gateway appends one JSON line with the UTC
+time, TeamRunner version, Python version, platform and install id. A request whose
+headers do not match that form is served but not logged. Caddy does not pass the
+caller's IP to the gateway for this host, and the IP is never logged. Copies check
+at most once a day, so the log is about one line per install per day.
+
+**Reading the numbers**, on the server:
+
+```sh
+cd ~/teamrunner-demo-gateway
+python3 version-stats.py          # per day: requests, installs, by version and platform
+python3 version-stats.py --csv    # the same as rows for a spreadsheet
+```
+
+"Installs" per day is daily active installs; the last line is all-time distinct
+installs. Keep `version-logs/` when updating, as with the quota volume.
+
+**The demo's own floor.** `MIN_VERSION_FOR_DEMO` in `gateway.env` is the oldest
+TeamRunner the demo model answers (TeamRunner sends its version with each demo
+request). `0` answers every version. Set it, for example to the current
+`min_secure_version`, and recreate the gateway to stop the demo answering older
+copies; this is the one floor that cannot be edited away on someone's machine
+(D148 (11)).
 
 ## Before announcing availability
 

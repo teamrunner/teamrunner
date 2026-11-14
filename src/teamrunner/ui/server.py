@@ -15,7 +15,7 @@ from threading import RLock
 from urllib.parse import parse_qs, quote, urlsplit
 import webbrowser
 
-from . import api, diagrams, jobs, runviews, stream
+from . import api, diagrams, experiment_jobs, experiments, jobs, runviews, stream
 from ..inputs import InputError
 from ..new import NewError, examples
 
@@ -30,6 +30,7 @@ ASSETS = {"/app.js": "text/javascript; charset=utf-8",
 ASSETS["/vendor/mermaid.js"] = "text/javascript; charset=utf-8"
 ASSETS["/diagrams.js"] = "text/javascript; charset=utf-8"
 ASSETS["/run.js"] = "text/javascript; charset=utf-8"
+ASSETS["/experiments.js"] = "text/javascript; charset=utf-8"
 ASSETS["/favicon.svg"] = "image/svg+xml"
 
 
@@ -47,10 +48,13 @@ class Server(ThreadingHTTPServer):
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.url = f"{self.origin}/?token={self.token}"
         self.jobs = jobs.Jobs(self.root, self.files_lock)
+        self.experiment_jobs = experiment_jobs.ExperimentJobs(self.root, self.files_lock)
 
     def server_close(self):
         if hasattr(self, "jobs"):
             self.jobs.close()
+        if hasattr(self, "experiment_jobs"):
+            self.experiment_jobs.close()
         super().server_close()
 
 
@@ -97,6 +101,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         request = urlsplit(self.path)
         query = parse_qs(request.query)
+        if request.path == "/api/experiment-job":  # polled while experiments run; never waits for files
+            try:
+                written = query.get("path", [None])[0]
+                self.send(200, self.server.experiment_jobs.status(written))
+            except api.OutsideRoot as error:
+                self.send(403, {"error": str(error)})
+            except (ValueError, OSError) as error:
+                self.send(400, {"error": str(error)})
+            return
         if request.path in ("/api/live-events", "/api/job"):
             try:
                 job_id = query.get("id", [None])[0]
@@ -112,7 +125,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self.send(400, {"error": "Choose a run in this server session and a valid event number."})
             return
-        if request.path not in ("/api/show", "/api/keys", "/api/explain", "/api/diagram", "/api/run-setup"):
+        # /api/experiment builds generated conditions/ folders, as --plan does.
+        if request.path not in ("/api/show", "/api/keys", "/api/explain", "/api/diagram", "/api/run-setup",
+                                "/api/experiment"):
             self.read_request()
             return
         with self.server.files_lock:
@@ -183,6 +198,10 @@ class Handler(BaseHTTPRequestHandler):
             elif request.path == "/api/run-file":
                 self.download(runviews.attachment(self.server.root, query.get("run", [""])[0],
                                                  query.get("file", [""])[0]))
+            elif request.path == "/api/experiments":
+                self.send(200, experiments.listing(self.server.root))
+            elif request.path == "/api/experiment":
+                self.send(200, experiments.detail(self.server.root, query.get("path", [""])[0]))
             elif request.path == "/api/run-setup":
                 self.send(200, self.server.jobs.setup(query.get("path", [""])[0]))
             else:
@@ -216,9 +235,16 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/stop":
                 self.send(200, self.server.jobs.stop(data["id"]))
                 return
+            if route == "/api/experiment-stop":
+                self.send(200, self.server.experiment_jobs.stop(data["path"]))
+                return
             with self.server.files_lock:
                 if route == "/api/start":
                     result = self.server.jobs.start(data)
+                elif route == "/api/experiment-start":
+                    result = self.server.experiment_jobs.start(data)
+                elif route == "/api/experiment-quote":
+                    result = self.server.experiment_jobs.quote(data)
                 elif route == "/api/save":
                     result = api.save_file(root, data["path"], data["text"], data["revision"])
                 elif route == "/api/validate":
@@ -233,8 +259,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif route == "/api/trash":
                     result = api.trash_file(root, data["path"], data["revision"])
                 elif route == "/api/trash-team":
-                    if self.server.jobs.status()["active"] is not None:
-                        raise api.Conflict("A run is in progress. Stop it or wait for it to finish "
+                    if self.server.jobs.status()["active"] is not None or self.server.experiment_jobs.busy():
+                        raise api.Conflict("A run or experiment is in progress. Stop it or wait for it to finish "
                                            "before moving a team to the trash.")
                     result = api.trash_team(root, data["path"])
                 elif route == "/api/restore-team":
@@ -251,6 +277,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, result)
         except api.OutsideRoot as error:
             self.send(403, {"error": str(error)})
+        except experiments.Stale as error:
+            self.send(409, {"error": str(error), "quote": error.quote})
+        except experiments.Refused as error:
+            self.send(400, {"error": str(error), "quote": error.quote})
         except jobs.InvalidTeam as error:
             self.send(422, {"error": str(error), "validation": error.report})
         except FileNotFoundError as error:

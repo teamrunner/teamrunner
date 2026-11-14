@@ -11,6 +11,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -37,6 +38,12 @@ class Config:
     concurrency: int = 4
     enabled: bool = True
     structured_output: str = "json_object"
+    # The version check (D148, D149): its own host name, so it can move by DNS alone.
+    version_domain: str = "version.teamrunner.ai"
+    version_file: str = "/srv/version.json"
+    version_log: str = "/logs/version-checks.jsonl"
+    # The oldest TeamRunner the demo answers; "0" answers every version (D149).
+    min_version_for_demo: str = "0"
 
     @classmethod
     def from_env(cls):
@@ -44,7 +51,13 @@ class Config:
                 model=os.environ.get("DEMO_MODEL", "qwen/qwen3.7-flash"),
                 db=os.environ.get("DEMO_QUOTA_DB", "/data/quotas.sqlite3"),
                 structured_output=os.environ.get("DEMO_STRUCTURED_OUTPUT", "json_object"),
-                enabled=os.environ.get("DEMO_ENABLED", "true").lower() == "true")
+                enabled=os.environ.get("DEMO_ENABLED", "true").lower() == "true",
+                version_domain=os.environ.get("VERSION_DOMAIN", "version.teamrunner.ai").lower(),
+                version_file=os.environ.get("VERSION_FILE", "/srv/version.json"),
+                version_log=os.environ.get("VERSION_LOG", "/logs/version-checks.jsonl"),
+                min_version_for_demo=os.environ.get("MIN_VERSION_FOR_DEMO", "0").strip())
+        if not VERSION.fullmatch(c.min_version_for_demo):
+            raise ValueError("MIN_VERSION_FOR_DEMO must be a version such as 0.0.6, or 0 for none")
         if c.structured_output not in {"json_object", "json_schema"}:
             raise ValueError("DEMO_STRUCTURED_OUTPUT must be json_object or json_schema")
         for field in ("ip_minute", "ip_day", "global_day", "global_month", "max_output",
@@ -56,6 +69,38 @@ class Config:
         if not c.key or (c.enabled and c.key == "replace-on-server"):
             raise ValueError("set OPENROUTER_API_KEY on the server before starting")
         return c
+
+
+VERSION = re.compile(r"\d+(\.\d+){0,5}")
+# What TeamRunner sends: `TeamRunner/<version> (python <major.minor>; <platform>)`.
+USER_AGENT = re.compile(r"TeamRunner/(\d+(?:\.\d+){0,5}(?:[a-z]+\d{0,4})?(?:\.dev\d{0,4})?) "
+                        r"\(python (\d{1,2}\.\d{1,3}); ([a-z][a-z0-9_-]{0,31})\)")
+INSTALL = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+
+def version_tuple(text: str) -> tuple[int, ...]:
+    found = VERSION.match(text or "")
+    parts = tuple(int(p) for p in found.group().split(".")) if found else ()
+    return parts + (0,) * (6 - len(parts))
+
+
+def too_old_for_demo(user_agent: str | None, c: Config) -> bool:
+    if not any(version_tuple(c.min_version_for_demo)):
+        return False  # no floor set
+    found = USER_AGENT.fullmatch(user_agent or "")
+    return not found or version_tuple(found.group(1)) < version_tuple(c.min_version_for_demo)
+
+
+def version_check_line(user_agent: str | None, install: str | None, now: float | None = None) -> dict | None:
+    """One log line from the two headers, or None if either is malformed. Anyone can call
+    this address, so only fields that match TeamRunner's own form are kept. Never the IP."""
+    found = USER_AGENT.fullmatch(user_agent or "")
+    install = (install or "").strip()
+    if not found or not INSTALL.fullmatch(install):
+        return None
+    when = datetime.fromtimestamp(time.time() if now is None else now, timezone.utc)
+    return {"time": when.strftime("%Y-%m-%dT%H:%M:%SZ"), "version": found.group(1),
+            "python": found.group(2), "platform": found.group(3), "install": install}
 
 
 def client_ip(peer: str, forwarded: str | None) -> str:
@@ -177,6 +222,7 @@ class Gateway(ThreadingHTTPServer):
         self.config, self.call = config, call
         self.pause = time.sleep
         self.quotas, self.slots = Quotas(config), threading.BoundedSemaphore(config.concurrency)
+        self.log_lock = threading.Lock()
         super().__init__(address, Handler)
 
     def completion(self, body: dict, ip: str) -> dict:
@@ -233,7 +279,42 @@ class Handler(BaseHTTPRequestHandler):
     def error(self, status, message, retry=None):
         self.send_json(status, {"error": {"message": message}}, retry)
 
+    def version_file(self):
+        c = self.server.config
+        try:
+            with open(c.version_file, "rb") as f:
+                raw = f.read(65536)
+            json.loads(raw)
+        except (OSError, ValueError):
+            return self.error(503, "the version file is unavailable")
+        line = version_check_line(self.headers.get("User-Agent"), self.headers.get("X-TeamRunner-Install"))
+        if line:
+            try:
+                with self.server.log_lock, open(c.version_log, "a", encoding="utf-8") as log:
+                    log.write(json.dumps(line) + "\n")
+            except OSError:
+                print("version log could not be written", flush=True)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def on_version_host(self) -> bool:
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host.startswith("["):
+            host = host.split("]")[0] + "]"
+        else:
+            host = host.split(":")[0]
+        return host == self.server.config.version_domain
+
     def do_GET(self):
+        if self.on_version_host():
+            if self.path == "/version.json":
+                return self.version_file()
+            return self.error(404, "not found")
         if self.path == "/healthz":
             return self.send_json(200, {"status": "ok", "enabled": self.server.config.enabled})
         if self.path == "/v1/models":
@@ -244,10 +325,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         c = self.server.config
-        if self.path != "/v1/chat/completions":
+        if self.path != "/v1/chat/completions" or self.on_version_host():
             return self.error(404, "not found")
         if not c.enabled:
             return self.error(503, "the demo is temporarily paused")
+        if too_old_for_demo(self.headers.get("User-Agent"), c):
+            return self.error(426, f"the demo needs TeamRunner {c.min_version_for_demo} or later; "
+                                   "update with: pip install -U teamrunner")
         if self.headers.get("Transfer-Encoding") or len(self.headers.get_all("Content-Length", [])) != 1:
             return self.error(400, "send a single Content-Length header")
         try:
