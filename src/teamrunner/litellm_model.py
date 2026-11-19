@@ -10,6 +10,7 @@ import time
 
 from .keys import PROVIDER_KEYS
 from .model import Reply, ToolCall, TransientError
+from .vocabulary import refused_settings
 
 
 def _chain(error: BaseException):
@@ -44,6 +45,7 @@ class LiteLLMModel:
         self.keys = keys
         self.settings = settings
         self.prices = prices  # prices.Prices, or None for LiteLLM's table only
+        self.extra = {}  # LiteLLM arguments set in code (the tests' offline replies); never read from a file
         self.transient = (litellm.RateLimitError, litellm.ServiceUnavailableError,
                           litellm.APIConnectionError, litellm.Timeout, litellm.InternalServerError,
                           litellm.BadGatewayError)
@@ -56,7 +58,10 @@ class LiteLLMModel:
         # A member says `ollama/<name>`; LiteLLM's `ollama/` route gave gpt-oss empty replies,
         # while its chat route calls tools and keeps to the answer form (tested 2026-11-02).
         sent = f"ollama_chat/{name}" if provider == "ollama" else model
-        kwargs = {"model": sent, "messages": messages, **params}
+        refused = refused_settings(params)
+        if refused:  # validate says this first; no path may reach LiteLLM with them
+            raise ValueError(", ".join(f"`{r}`" for r in refused) + " cannot be set from a file's `params:`")
+        kwargs = {**params, **self.extra, "model": sent, "messages": messages}
         if provider in PROVIDER_KEYS and PROVIDER_KEYS[provider] in self.keys:
             kwargs["api_key"] = self.keys[PROVIDER_KEYS[provider]]
         if provider == "ollama" and "OLLAMA_API_BASE" in self.settings:

@@ -5,10 +5,20 @@
 let runSetup = null, rerunSource = null, liveJob = null, eventSource = null;
 let liveConversation = null, liveTotals = {known:0, unknown:false, turns:0};
 let liveData = {events:[], members:[], artifacts:[], raw_files:[]}, seenEvents = new Set(), liveRender = null;
+let waitingTimer = null;
 
 function quoteArg(value) {
   const text = String(value);
   return runSetup?.windows ? "'" + text.replace(/'/g, "''") + "'" : "'" + text.replace(/'/g, "'\"'\"'") + "'";
+}
+// What one real run would cost, as an experiment's plan says it (review 2026-11-16, U9).
+function estimateLine(estimate) {
+  if (!estimate) return "";
+  if (estimate.unpriced?.length) return `No estimate: ${estimate.note}`;
+  if (estimate.typical_usd === 0 && estimate.most_usd === 0) return "This team’s models cost nothing to call (the demo, or a local model).";
+  if (typeof estimate.typical_usd !== "number") return "";
+  const most = typeof estimate.most_usd === "number" ? `; at most ≈ ${cost(estimate.most_usd)} if every reply ran to its limit, which real runs rarely approach` : "";
+  return `Estimated ≈ ${cost(estimate.typical_usd)} a run with its default inputs, at list prices${most}. Tools are extra.`;
 }
 function updateRunForm() {
   const mode = byId("input-mode").value, rehearsal = byId("run-rehearse").checked;
@@ -19,7 +29,7 @@ function updateRunForm() {
   byId("input-mode-label").hidden = Boolean(rerunSource);
   byId("rerun-inputs").hidden = !rerunSource;
   byId("start-run").textContent = rehearsal ? "Rehearse team" : "Run with models";
-  byId("run-cost-note").textContent = rehearsal ? "Free: placeholder words and random answers to test the flow. No model or tool is called." : "Live runs send inputs to configured model/tool providers, or through our gateway for the sponsored demo. Do not send sensitive data to the demo. All costs are estimates; actual charges may exceed estimates and budgets. Monitor provider billing. See About & notices.";
+  byId("run-cost-note").textContent = rehearsal ? "Free: placeholder words and random answers to test the flow. No model or tool is called." : `${estimateLine(runSetup?.estimate)} Live runs send inputs to configured model/tool providers, or through our gateway for the sponsored demo. Do not send sensitive data to the demo. All costs are estimates; actual charges may exceed estimates and budgets. Monitor provider billing. See About & notices.`;
   let shown = runSetup?.command_base || "teamrunner run";
   if (rerunSource) {
     const inputs = Object.values(runData.record.inputs || {});
@@ -82,6 +92,7 @@ byId("run-form").addEventListener("submit", async event => {
 });
 function updateLiveStatus(state) {
   liveJob = state;
+  if (!state.done) { byId("run-dot").textContent = " ●"; byId("run-dot").title = "A run is in progress"; }
   byId("live-title").textContent = `${state.rehearse ? "Rehearsal" : "Run"} · ${state.name || runSetup?.name || state.team || "."}`;
   byId("run-dot").hidden = Boolean(state.done);
   if (!byId("live-run").hidden) byId("run-bar-title").textContent = `${byId("live-title").textContent} · ${state.done ? state.state : "in progress"}`;
@@ -113,11 +124,31 @@ function renderLive() {
   const {known, unknown, turns} = liveTotals;
   byId("live-cost").textContent = `${turns} recorded turns · ${unknown ? "known cost" : "recorded cost"} ≈ ${cost(known)}${unknown ? " · some costs not reported" : ""}`;
 }
+// A model call failed and will be tried again: say so while the run waits, then let the
+// next event wipe it. The retry stays in events.jsonl but not in the conversation.
+function showWaiting(event) {
+  clearWaiting();
+  const who = String(event.instance_path || "a member").split("/").pop();
+  const reason = String(event.reason || "the model did not answer").replace(/\s+/g, " ");
+  const until = Date.now() + (Number(event.wait_ms) || 0), next = (Number(event.attempt) || 1) + 1;
+  const box = byId("live-waiting");
+  const tick = () => {
+    const left = Math.ceil((until - Date.now()) / 1000);
+    box.textContent = left > 0
+      ? `↻ ${who}: ${reason} · trying again in ${left}s (try ${next}). The run is still working.`
+      : `↻ ${who}: trying again (try ${next}); waiting for the model's reply…`;
+  };
+  tick(); box.hidden = false; waitingTimer = setInterval(tick, 1000);
+}
+function clearWaiting() {
+  if (waitingTimer !== null) clearInterval(waitingTimer);
+  waitingTimer = null; byId("live-waiting").hidden = true; byId("live-waiting").textContent = "";
+}
 function connectJob(job) {
   if (eventSource) eventSource.close();
   if (liveRender !== null) cancelAnimationFrame(liveRender);
   liveConversation = null; liveTotals = {known:0, unknown:false, turns:0};
-  liveJob = job; liveData = {events:[], members:[], artifacts:[], raw_files:[]}; seenEvents = new Set();
+  liveJob = job; liveData = {events:[], members:[], artifacts:[], raw_files:[]}; seenEvents = new Set(); clearWaiting();
   showRunPane("live"); byId("live-connection").textContent = "Connecting to the run log…";
   updateLiveStatus(job); renderLive();
   eventSource = new EventSource("/api/live-events?" + new URLSearchParams({id:job.id, token}));
@@ -125,18 +156,28 @@ function connectJob(job) {
   eventSource.addEventListener("log", event => {
     const value = JSON.parse(event.data); if (seenEvents.has(value.seq)) return;
     seenEvents.add(value.seq); liveData.events.push(value);
+    if (value.event === "retry" && value.kind === "provider") showWaiting(value); else clearWaiting();
     if (value.event === "run_started") liveData.members = Array.isArray(value.members) ? value.members : [];
     if (!liveRender) liveRender = requestAnimationFrame(renderLive);
   });
   eventSource.addEventListener("log-warning", event => { byId("live-connection").textContent = JSON.parse(event.data).message; });
   eventSource.addEventListener("done", event => {
-    updateLiveStatus(JSON.parse(event.data)); renderLive(); eventSource.close();
+    updateLiveStatus(JSON.parse(event.data)); renderLive(); eventSource.close(); clearWaiting();
     byId("live-connection").textContent = "The run finished. Its files stay in the run folder.";
     loadRuns(); refreshTree();
     // Once it is saved, the run in view becomes the saved run: the same tabs, plus its output.
-    if (liveJob.folder && !byId("live-run").hidden) openRun(liveJob.folder);
+    // Only when the Run tab is in view: elsewhere the tab says it finished, and shows it when
+    // chosen (review 2026-11-16, U3).
+    if (liveJob.folder && !byId("live-run").hidden && !byId("run-workspace").hidden) openRun(liveJob.folder);
+    else if (liveJob.folder && byId("run-workspace").hidden) finishedUnseen(liveJob.folder);
   });
-  eventSource.onerror = () => { if (!liveJob.done) byId("live-connection").textContent = "Connection interrupted; reconnecting. The run continues on your computer."; };
+  // An interrupted log is retried. If TeamRunner itself has stopped, the run stopped with it (U2).
+  eventSource.onerror = () => {
+    if (liveJob.done) return;
+    byId("live-connection").textContent = "Connection interrupted; reconnecting…";
+    api("/api/job").then(() => { if (!liveJob.done) byId("live-connection").textContent = "Connection interrupted; reconnecting. The run continues on your computer."; })
+      .catch(() => { eventSource.close(); byId("live-connection").textContent = "TeamRunner has stopped running on your computer, so this run stopped with it. What it recorded so far is kept in its run folder."; });
+  };
 }
 byId("stop-run").addEventListener("click", async () => {
   if (!liveJob) return;

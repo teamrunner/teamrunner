@@ -48,7 +48,7 @@ def current(run: Path, ev: Evaluator) -> list[dict]:
     """The run's evaluations by this version of the evaluator, one per evaluation number."""
     seen = {}
     for line in lines_of(run, ev.name):
-        if line.get("evaluator_hash") == ev.version and line.get("output") is not None:
+        if line.get("evaluator_hash") in (ev.same_as or {ev.version}) and line.get("output") is not None:
             seen.setdefault(line.get("evaluation"), line)
     return [seen[k] for k in sorted(seen, key=lambda k: (k is None, k))]
 
@@ -69,9 +69,13 @@ def pending(runs: list[tuple[Path, dict]], evaluators: list[Evaluator], again: b
     jobs, stale = [], {}
     for ev in evaluators:
         for folder, record in runs:
-            lines = lines_of(folder, ev.name)
+            versions = ev.same_as or {ev.version}
+            # Graded by another version: out of date. A grade of this version whose reply never
+            # fit is not a grade at all, and is tried again (review 2026-11-16, E5).
+            earlier = any(line.get("evaluator_hash") not in versions and line.get("output") is not None
+                          for line in lines_of(folder, ev.name))
             done = {line.get("evaluation") for line in current(folder, ev)}
-            if lines and not done and not again:
+            if earlier and not done and not again:
                 stale[ev.name] = stale.get(ev.name, 0) + 1
                 continue
             jobs += [Job(folder, record, ev, k) for k in range(1, ev.evaluations + 1) if k not in done]
@@ -148,7 +152,7 @@ def save(job: Job, line: dict) -> None:
     folder = job.run / FOLDER
     folder.mkdir(exist_ok=True)
     path = folder / f"{job.evaluator.name}.jsonl"
-    if not any(old.get("evaluator_hash") == job.evaluator.version and old.get("source")
+    if not any(old.get("evaluator_hash") in (job.evaluator.same_as or {job.evaluator.version}) and old.get("source")
                for old in lines_of(job.run, job.evaluator.name)):
         line = {**line, "source": job.evaluator.source}  # the evaluator's text, the first time this version appears
     with path.open("a", encoding="utf-8") as stream:

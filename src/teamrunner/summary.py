@@ -19,11 +19,36 @@ from .evaluate import current
 from .metrics import AnswerKey, Evaluator, OutputMeasure
 
 Z = 1.959964
-# Student's t, 97.5th percentile, by degrees of freedom; above 30, the normal value
-T = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
-     11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
-     20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048,
-     29: 2.045, 30: 2.042}
+# Student's t, 97.5th percentile, up to 10 degrees of freedom, where the approximation below is weakest
+T = {1: 12.706205, 2: 4.302653, 3: 3.182446, 4: 2.776445, 5: 2.570582, 6: 2.446912, 7: 2.364624,
+     8: 2.306004, 9: 2.262157, 10: 2.228139}
+
+
+def t975(df: int) -> float:
+    """Student's t, 97.5th percentile, for any degrees of freedom (review 2026-11-16, E9:
+    a table that stopped at 30 jumped to 1.96 above it). Hill's approximation (Comm. ACM
+    13:617, 1970, algorithm 396), within 1e-6 of the exact value above 10 degrees of freedom."""
+    if df in T:
+        return T[df]
+    n = float(df)
+    a = 1 / (n - 0.5)
+    b = 48 / (a * a)
+    c = ((20700 * a / b - 98) * a - 16) * a + 96.36
+    d = ((94.5 / (b + c) - 3) / b + 1) * math.sqrt(a * math.pi / 2) * n
+    x = d * 0.05  # two-sided tail probability
+    y = x ** (2 / n)
+    if y > 0.05 + a:
+        x = Z  # the normal quantile, then corrected
+        y = x * x
+        if n < 5:
+            c += 0.3 * (n - 4.5) * (x + 0.6)
+        c = (((0.05 * d * x - 5) * x - 7) * x - 2) * x + b + c
+        y = (((((0.4 * y + 6.3) * y + 36) * y + 94.5) / c - y - 3) / b + 1) * x
+        y = math.expm1(a * y * y)
+    else:
+        y = ((1 / (((n + 6) / (n * y) - 0.089 * d - 0.822) * (n + 2) * 3) + 0.5 / (n + 4)) * y - 1) \
+            * (n + 1) / (n + 2) + 1 / y
+    return math.sqrt(n * y)
 
 
 def mean_interval(values: list[float]) -> tuple[float, float | None, tuple[float, float] | None]:
@@ -32,7 +57,7 @@ def mean_interval(values: list[float]) -> tuple[float, float | None, tuple[float
     if n < 2:
         return mean, None, None
     sd = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
-    half = T.get(n - 1, Z) * sd / math.sqrt(n)
+    half = t975(n - 1) * sd / math.sqrt(n)
     return mean, sd, (mean - half, mean + half)
 
 
@@ -198,12 +223,10 @@ def table(exp, runs: list[tuple[Path, dict]], metrics, events_of) -> list[dict]:
         if exp.factors and len(exp.factors) >= 2 and m.kind != "choice":
             for factor, levels in exp.factors.items():
                 for level in levels:
-                    values = [float(m.values[i]) for i, lv in levels_of.items()
+                    values = [m.values[i] for i, lv in levels_of.items()
                               if lv.get(factor) == level and m.values.get(i) is not None]
-                    if values:
-                        mean, sd, ci = mean_interval(values)
-                        marginals.append({"factor": factor, "level": level, "n": len(values), "mean": mean,
-                                          "sd": sd, "ci": _clip(ci, m.bounds) if ci else None})
+                    if values:  # as a condition's row is figured: Wilson for yes/no (E7)
+                        marginals.append({"factor": factor, "level": level, **cell(m, values)})
         out.append({"label": m.label, "span": m.span, "kind": m.kind, "rows": rows,
                     "marginals": marginals, "left_out": dict(sorted(m.why.items()))})
     return out

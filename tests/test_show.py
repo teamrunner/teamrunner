@@ -30,7 +30,7 @@ def test_show_a_toolkeeper_with_its_terms_spelled_out(tmp_path):
     team = debate(tmp_path, **{"library.md": LIBRARY.replace("calls_per_turn: 2, ", "")})
     text, _ = show("library", team)
     assert '  read_page: {"calls_per_turn": 5, "timeout": 1}' in text
-    assert "calls_per_turn: 5 is the default (D86)" in text
+    assert "calls_per_turn: 5 is the default" in text
     assert '  judge: {"calls_per_turn": 3, "timeout": 1, "calls_per_run": 4}' in text
     assert "others: deny" in text
 
@@ -50,3 +50,19 @@ def test_show_lists_the_backup_models(tmp_path):
     text, _ = show(str(team / "for.md"), tmp_path)
     assert "model: openai/gpt-5" in text
     assert "# if it is not available: careful.yaml — the first one available runs; each brings its own settings" in text
+
+
+
+def test_show_finds_a_team_in_the_workspace(tmp_path, monkeypatch, capsys):
+    """C10: `show debate/judge` worked only from inside the team's parent folder."""
+    from teamrunner.cli import main
+    space = tmp_path / "space"
+    debate(space / "teams" / "debate")
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(space))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert main(["show", "debate/judge"]) == 0
+    assert capsys.readouterr().out.startswith("# judge — debate/judge.md")
+    assert main(["show", "judge"]) == 1
+    assert "write `<team>/<member>`, such as `debate/judge`" in capsys.readouterr().err

@@ -98,7 +98,8 @@ def ceiling(exp, usd, replications=None):
 def records(exp):
     out = []
     for folder in sorted((exp / "runs").iterdir()):
-        out.append((folder, json.loads((folder / "record.json").read_text())))
+        if folder.is_dir():  # runs/ also holds study.jsonl (D160)
+            out.append((folder, json.loads((folder / "record.json").read_text())))
     return out
 
 
@@ -545,3 +546,57 @@ def test_litellm_s_idle_logging_makes_no_noise_across_threads(capfd, caplog):
     said = capfd.readouterr().err + caplog.text
     assert "Task was destroyed" not in said and "different event loop" not in said
     assert "event loop changed" not in said
+
+
+
+def test_a_team_edited_during_an_experiment_stops_it(exp, tmp_path):
+    """Found in the 2026-11-16 review (E3): a condition run as written read the live folder, so an
+    edit made while the experiment ran was filed under the old study's fingerprint."""
+    edited = []
+
+    class Editing(Paid):
+        async def complete(self, *args, **kw):
+            if not edited:
+                edited.append(True)
+                bob = tmp_path / "review" / "bob.md"
+                bob.write_text(bob.read_text(encoding="utf-8") + "Be brief.\n", encoding="utf-8")
+            return await super().complete(*args, **kw)
+
+    code, out = go(exp, model=Editing())
+    assert code == 1 and "review changed while the experiment was running, so no more runs were started" in out
+    for folder, record in records(exp):  # nothing ran on the edited team under the old fingerprint
+        if record["experiment"]["condition"] == "flat" and record["status"] == "completed":
+            assert "Be brief." not in (folder / "resolved" / "bob.md").read_text(encoding="utf-8")
+    assert len(records(exp)) < 6
+
+
+def test_keep_unchanged_holds_with_nothing_new_to_run(exp, capsys):
+    """Found in the 2026-11-16 review (E4): with nothing new to run, `--keep-unchanged` was not
+    remembered, so --summary refused and --export counted no run, for good."""
+    from teamrunner.cli import main
+    go(exp, model=Paid())
+    text = (exp / "experiment.md").read_text(encoding="utf-8")
+    start = text.index("  led:")
+    (exp / "experiment.md").write_text(text[:start] + text[text.index("replications:"):], encoding="utf-8")
+    code, out = go(exp, model=Paid())
+    assert "The study has changed" in out
+    code, out = go(exp, model=Paid(), change="keep_unchanged")
+    assert code == 0 and (exp / "runs" / "study.jsonl").is_file()
+    capsys.readouterr()
+    assert main(["experiment", str(exp), "--summary"]) == 0
+    assert "3 of 3 runs completed" in capsys.readouterr().out
+    assert main(["experiment", str(exp), "--export", str(exp.parent / "out")]) == 0
+    import csv
+    rows = list(csv.DictReader((exp.parent / "out" / "runs.csv").open(encoding="utf-8")))
+    assert sum(r["counts"] == "true" for r in rows) == 3
+
+
+def test_runs_beyond_replications_do_not_count(exp, capsys):
+    """Found in the 2026-11-16 review (E6): lowering `replications:` left the extra runs counted."""
+    from teamrunner.cli import main
+    go(exp, model=Paid())
+    ceiling(exp, 10, replications=2)
+    capsys.readouterr()
+    assert main(["experiment", str(exp), "--summary"]) == 0
+    out = capsys.readouterr().out
+    assert "4 of 4 runs completed" in out and "beyond `replications: 2`" in out

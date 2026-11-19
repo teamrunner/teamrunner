@@ -149,6 +149,10 @@ ParamCheck = Callable[[str, dict], "str | None"]
 def litellm_params(model: str, params: dict) -> str | None:
     """Ask LiteLLM, offline, whether a model takes these settings: it refuses
     some before any request is sent (gpt-5 takes only temperature 1 while reasoning)."""
+    from .vocabulary import refused_settings
+    refused = refused_settings(params)
+    if refused:
+        return ", ".join(f"`{r}`" for r in refused) + " cannot be set from a file's `params:`"
     if model.startswith("teamrunner/"):
         from .demo import PARAMS
         return "the demo accepts only " + ", ".join(sorted(PARAMS)) if set(params) - PARAMS else None
@@ -228,6 +232,12 @@ def run_check(team: ir.Team, keys: Keys, listers: dict[str, Lister], settings: d
                                   f"{_join(deciders)} need{'s' if len(deciders) == 1 else ''}")
     _check_params(team, check, params_check)
     _check_tools(team, keys, check)
+    _check_instructions(team, check)
+    from .prices import load_prices, model_price, unpriced_note
+    prices = load_prices()
+    unpriced = [m for m in runs_on if model_price(m, prices)["input_per_million"] is None]
+    if unpriced:
+        check.warnings.append(unpriced_note(unpriced, prices))
     return check
 
 
@@ -306,6 +316,19 @@ def _check_params(team: ir.Team, check: Check, params_check: ParamCheck | None) 
             check.problems.append(Problem(
                 model, who, f"{_join(who)}'s settings: {refused}",
                 "change or remove the setting in the member's params (or its model profile)"))
+
+
+def _check_instructions(team: ir.Team, check: Check) -> None:
+    """A model would take the + Member starter, or nothing, as the member's instructions.
+    Only a real run refuses it; a rehearsal calls no model, so a team's flow can be
+    rehearsed before its members are written."""
+    from .vocabulary import MEMBER_STARTER
+    for m in team.members.values():
+        if m.kind == "llm" and m.body.strip() in ("", MEMBER_STARTER):
+            check.problems.append(Problem(
+                m.path.name, [m.name], f"{m.name} has no instructions yet",
+                f"write what {m.name} does below the `---` line in {m.path.name}, "
+                "or rehearse to try the flow first"))
 
 
 def rehearsal_check(team: ir.Team) -> Check:

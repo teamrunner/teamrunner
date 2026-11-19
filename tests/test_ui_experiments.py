@@ -154,7 +154,7 @@ def test_experiment_routes_need_the_token_and_stay_inside_the_folder(workspace, 
         status, headers, body = get(server, "/experiments.js?token=" + server.token)
         assert status == 200 and headers["Content-Type"].startswith("text/javascript") and b"openExperiment" in body
         status, _, page = get(server, "/?token=" + server.token)
-        assert b'id="experiments-view"' in page and b"/experiments.js?token=" in page
+        assert b'id="experiments-mode"' in page and b"/experiments.js?token=" in page
 
 
 def test_validate_in_an_experiment_checks_it_as_plan_does(workspace):

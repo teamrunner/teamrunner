@@ -76,8 +76,8 @@ def test_an_option_and_a_count_on_one_arrow():
 
 
 @pytest.mark.parametrize("text, message", [
-    ("a -> [b, c]\n", "members working at the same time (`[a, b]`) arrives in TeamRunner 0.3"),
-    ("talk(deal is agreed, *12)\ntalk = a -> b\n", "a loop that leaves on a condition arrives in TeamRunner 0.3"),
+    ("a -> [b, c]\n", "members working at the same time (`[a, b]`) comes in a later version of TeamRunner"),
+    ("talk(deal is agreed, *12)\ntalk = a -> b\n", "a loop that leaves on a condition comes in a later version of TeamRunner"),
     ("a -> -> b\n", "a step is missing between two arrows"),
     ("a(3) -> b\n", "`(3)` should be a count, such as `(*3)`"),
     ("a -> b\nc -> d\n", "the lines of the main flow do not join up: one starts at `a`, another at `c`"),
@@ -307,3 +307,40 @@ def test_reference_check_ir():
     reader, meta = main.decisions[0], main.decisions[1]
     assert reader.field == "paper" and reader.routes == {"full": 1, "not_full": STOP}
     assert meta.routes == {"more": 1, "done": 2} and (meta.bound.count, meta.bound.target) == (10, 2)
+
+
+def test_a_decision_cannot_jump_to_a_toolkeeper_s_step(tmp_path):
+    """Found in the 2026-11-16 review (C1): this validated, then stopped mid-run with
+    "web's step came, but no member asked it", after paid turns."""
+    flow = "judge:ask -> web -> judge:read -> fact_checker -> for\n{arrow}fact_checker --pass,*3--> done\n"
+    report = load_team(checked(tmp_path, flow.format(arrow="fact_checker --fail--> web\n"),
+                               **{"web.md": WEB}))[1]
+    wrong = [p for p in report.problems.errors if "jumps to the toolkeeper `web`" in p.message]
+    assert len(wrong) == 1, errors(report)
+    assert wrong[0].fix == "point it at `judge:ask`, who asks `web`: `fact_checker --fail--> judge:ask`"
+    # What was meant: go back to the member who asks, and the flow goes through `web` again.
+    report = load_team(checked(tmp_path, flow.format(arrow="fact_checker --fail--> judge:ask\n"),
+                               **{"web.md": WEB}))[1]
+    assert report.ok, errors(report)
+
+
+def test_a_continuation_one_dash_short_is_an_error(tmp_path):
+    """Found in the 2026-11-16 review (C3): `--pass-> c` became a plain arrow, and `--pass` vanished."""
+    report = load_team(checked(tmp_path, "for -> fact_checker\n--pass-> against -> judge\n"))[1]
+    [p] = report.problems.errors
+    assert p.message == "`--pass` comes before this line's first arrow, and is not an arrow"
+    assert p.fix == "did you mean `--pass-->`?"
+
+
+def test_a_repeated_turn_cannot_ask_a_toolkeeper(tmp_path):
+    """Found in the 2026-11-16 review (C7): in `judge:research(*2) -> web` only the second
+    request reached `web`; the first was dropped while the judge thought it was sent."""
+    report = load_team(checked(tmp_path, "for -> against -> judge:research(*2) -> web -> judge:verdict -> fact_checker\n",
+                               **{"web.md": WEB}))[1]
+    wrong = [p for p in report.problems.errors if "repeats just before the toolkeeper" in p.message]
+    assert len(wrong) == 1, errors(report)
+    assert wrong[0].message.startswith("`judge:research(*2)` repeats just before the toolkeeper `web`")
+    assert "judge_research(*2) -> …` with `judge_research = judge:research -> web`" in wrong[0].fix
+    fixed = ("for -> against -> judge_research(*2) -> judge:verdict -> fact_checker\n"
+             "judge_research = judge:research -> web\n")
+    assert load_team(checked(tmp_path, fixed, **{"web.md": WEB}))[1].ok

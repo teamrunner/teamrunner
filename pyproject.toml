@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "teamrunner"
-version = "0.0.6"
+version = "0.0.7"
 description = "The experimentation platform for agent organizations — run multi-agent orchestrations and factorial experiments entirely from text files."
 readme = "README.md"
 license = "GPL-3.0-or-later AND MIT-0"
@@ -34,7 +34,7 @@ dependencies = [
     "ruamel.yaml>=0.18",
     "jsonschema>=4.21",
     "litellm>=1.106.6,<2",
-    "pypdf>=4",
+    "pypdf>=6.21",  # read_page reads PDFs from anywhere: no older version with known hangs
     "httpx>=0.27",
     "deno>=2.9.8",
     "mcp>=2.3,<3",
@@ -63,4 +63,4 @@ packages = ["src/teamrunner"]
 "LICENSE" = "teamrunner/ui/static/license.txt"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "deploy/demo-gateway/tests"]

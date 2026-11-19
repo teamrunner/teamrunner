@@ -182,6 +182,28 @@ def test_whole_members_added_and_removed_and_fields_nested(tmp_path):
     assert e.ok, messages(e)  # round-robin of whoever is in the folder: alice and carol
 
 
+@pytest.mark.parametrize("written, value", [
+    ("openai/gpt-5\n", "openai/gpt-5"),
+    ("openai/gpt-5\r\n", "openai/gpt-5"),
+    ("openai/gpt-5", "openai/gpt-5"),
+])
+def test_a_setting_from_a_file_drops_the_file_s_last_line_break(tmp_path, written, value):
+    """`model: "openai/gpt-5-mini\\n"` was written into the member (docs probe, 2026-11-19)."""
+    from teamrunner.loader import split_frontmatter
+    from teamrunner.schema_check import plain
+    from teamrunner.experiment import _yaml
+    front = SIMPLE.replace("bob.model: anthropic/claude-sonnet-4-5", "bob.model: file:variants/m.txt\n"
+                           "      alice.description: file:variants/d.txt")
+    exp = experiment(tmp_path, front, {**VARIANTS, "variants/m.txt": written,
+                                       "variants/d.txt": "two lines\nand a blank one\n\n"})
+    (exp / "variants" / "m.txt").write_bytes(written.encode())  # keep \r\n as written
+    e, by = built(exp)
+    data = lambda name: plain(_yaml.load(split_frontmatter((by["led"].folder / name).read_text())[0]))
+    assert data("bob.md")["model"] == value
+    assert data("alice.md")["description"] == "two lines\nand a blank one\n"  # one line break only
+    assert e.ok, messages(e)
+
+
 @pytest.mark.parametrize("change, said", [
     ("emmma.prompt: file:variants/alice.md", "there is no member `emmma`"),
     ("alic.prompt: file:variants/alice.md", "did you mean `alice`"),
@@ -251,7 +273,7 @@ def test_whiteboard_changes_and_subteams_need_0_3(tmp_path):
                            "      whiteboard.said.bob.read_by: everyone\n")
     e, _ = built(experiment(tmp_path, front, VARIANTS))
     assert not e.ok and not e.problems.errors
-    assert any("changes the whiteboard" in w and "0.3" in w for _, _, w in e.later)
+    assert any("changes the whiteboard" in w and "comes in a later version of TeamRunner" in w for _, _, w in e.later)
 
     write(tmp_path / "review", {"side/team.yaml": "name: side\n", "side/pro.md": "---\n---\nPro.\n"})
     front = SIMPLE.replace("      chair: file:variants/chair.md\n", "      side/pro.model: openai/gpt-5\n")
@@ -366,7 +388,7 @@ def test_the_plan_says_plainly_what_needs_0_3(tmp_path):
     front = SIMPLE.replace("      chair: file:variants/chair.md\n", "      whiteboard.said.bob.read_by: everyone\n")
     code, text = show(experiment(tmp_path, front, VARIANTS))
     assert code == 1
-    assert "needs TeamRunner 0.3, so it cannot run yet" in text and "experiment.md:" in text
+    assert "needs what comes in a later version of TeamRunner, so it cannot run yet" in text and "experiment.md:" in text
 
 
 # --- a model profile as a change (D93, D138 (3)) -------------------------------------------
@@ -449,3 +471,105 @@ def test_a_bare_name_outside_a_workspace_is_an_error(tmp_path):
     exp = experiment(tmp_path, SIMPLE.replace("../review", "review"), VARIANTS)
     found = read_experiment(exp)
     assert "is not in a workspace's `experiments/` folder" in "\n".join(p.message for p in found.problems.errors)
+
+
+# --- a change stays inside the team it changes ------------------------------------------
+
+@pytest.mark.parametrize("change", [
+    "../../../victim/NOTES: file:variants/alice.md",
+    "../../../victim/chair: remove",
+    "../../../victim/alice.model: openai/gpt-5",
+    "../../../victim/models/careful: file:variants/alice.md",
+    "sub/../../../../victim/NOTES: file:variants/alice.md",
+    "{victim}/NOTES: file:variants/alice.md",
+    "{victim}/chair: remove",
+])
+def test_a_change_never_reaches_outside_the_team(tmp_path, change):
+    victim = write(tmp_path / "victim", {**TEAM, "NOTES.md": "mine\n",
+                                         "models/careful.yaml": "name: openai/gpt-5\n"})
+    before = {p.relative_to(victim).as_posix(): p.read_bytes() for p in victim.rglob("*") if p.is_file()}
+    front = SIMPLE.replace("      chair: file:variants/chair.md\n",
+                           "      " + change.replace("{victim}", victim.as_posix()) + "\n")
+    e, _ = built(experiment(tmp_path, front, VARIANTS))
+    assert "names something outside the team" in messages(e)
+    assert {p.relative_to(victim).as_posix(): p.read_bytes() for p in victim.rglob("*") if p.is_file()} == before
+    assert not (tmp_path / "exp" / CONDITIONS_DIR / "led").exists()
+
+
+def test_a_change_does_not_follow_a_link_out_of_the_team(tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text("mine\n", encoding="utf-8")
+    exp = experiment(tmp_path, SIMPLE.replace("      chair: file:variants/chair.md\n",
+                                              "      notes: file:variants/alice.md\n"), VARIANTS)
+    try:
+        (tmp_path / "review" / "notes.md").symlink_to(outside)
+    except OSError:
+        pytest.skip("this system does not let the test make a link")
+    build(read_experiment(exp))
+    assert outside.read_text(encoding="utf-8") == "mine\n"
+
+
+@pytest.mark.parametrize("front, said", [
+    ("conditions:\n  Short: ../review\n  short: ../review\n",
+     "the conditions `Short` (line 4) and `short` differ only in capitals"),
+    ("conditions:\n  con: ../review\n  ok: ../review\n", "`con` cannot be a condition's name: Windows"),
+    ("conditions:\n  LPT1: ../review\n  ok: ../review\n", "`LPT1` cannot be a condition's name: Windows"),
+    ("base: ../review\nfactors:\n  speed:\n    - label: fast\n      change: {}\n"
+     "    - label: Fast\n      change: {bob.model: openai/gpt-5}\n",
+     "`speed` has two levels, `fast` and `Fast`, that differ only in capitals"),
+    ("base: ../review\nfactors:\n  speed:\n    - label: nul\n      change: {}\n"
+     "    - label: slow\n      change: {bob.model: openai/gpt-5}\n", "`nul` cannot be a condition's name"),
+])
+def test_condition_folders_are_distinct_on_every_system(tmp_path, front, said):
+    """Found in the 2026-11-16 review (E1): `Short` and `short` shared one folder on macOS."""
+    e, by = built(experiment(tmp_path, f"name: x\n{front}replications: 2\nseed: 1\n"))
+    assert said in messages(e)
+    assert not (tmp_path / "exp" / CONDITIONS_DIR).exists() or len(list((tmp_path / "exp" / CONDITIONS_DIR).iterdir())) <= 1
+
+
+def test_a_key_in_the_experiment_s_own_files_is_refused(tmp_path):
+    """D29 (review 2026-11-16): experiment.md's body goes into every run's record."""
+    key = "sk-proj-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
+    e, _ = built(experiment(tmp_path, SIMPLE, VARIANTS, body=f"## Question\nMy key: {key}\n"))
+    assert any("API key" in p.message for p in e.problems.errors), messages(e)
+
+
+
+def test_t_multiplier_has_no_jump_at_30():
+    """Found in the 2026-11-16 review (E9): above 30 degrees of freedom 1.96 was used."""
+    from teamrunner.summary import t975
+    exact = {1: 12.706205, 4: 2.776445, 10: 2.228139, 11: 2.200985, 20: 2.085963, 30: 2.042272,
+             31: 2.039513, 32: 2.036933, 50: 2.008559, 100: 1.983972, 1000: 1.962339}
+    for df, value in exact.items():
+        assert abs(t975(df) - value) < 1e-5, df
+
+
+def test_marginal_rows_for_yes_no_measures_stay_between_0_and_1(tmp_path):
+    """Found in the 2026-11-16 review (E7): marginal rows used a t-interval, which could reach 1.55."""
+    from types import SimpleNamespace
+    from teamrunner.metrics import OutputMeasure, Source
+    from teamrunner.summary import table
+    exp = SimpleNamespace(conditions=[SimpleNamespace(name=n) for n in ("a+x", "a+y", "b+x", "b+y")],
+                          factors={"f": ["a", "b"], "g": ["x", "y"]})
+    runs, said = [], {}
+    for i, (cond, flag) in enumerate([("a+x", True), ("a+y", True), ("b+x", False), ("b+y", True)]):
+        f, g = cond.split("+")
+        runs.append((tmp_path / str(i), {"run_id": str(i), "cost_usd": 0, "latency_ms": 0,
+                                         "experiment": {"condition": cond, "levels": {"f": f, "g": g}}}))
+        said[str(i)] = [{"event": "agent_message", "from": "judge", "output": {"ok": flag}}]
+    flag = OutputMeasure("judge.output.ok", Source("judge", "ok"), "flag")
+    [m] = [m for m in table(exp, runs, [flag], lambda folder: said[folder.name]) if m["label"] == "judge.output.ok"]
+    assert m["marginals"] and all(0 <= r["ci"][0] <= r["ci"][1] <= 1 and r.get("wilson") for r in m["marginals"])
+
+
+@pytest.mark.parametrize("label, said", [("2", None), ("false", "has a label YAML reads as yes or no")])
+def test_a_numeric_label_is_a_label(tmp_path, label, said):
+    """E10 (review 2026-11-16): `label: 2` was refused with advice to use digits."""
+    front = ("name: x\nbase: ../review\nfactors:\n  speed:\n"
+             f"    - label: {label}\n      change: {{}}\n"
+             "    - label: fast\n      change: {bob.model: openai/gpt-5}\n")
+    e, by = built(experiment(tmp_path, f"{front}replications: 2\nseed: 1\n"))
+    if said is None:
+        assert "2" in by and e.ok, messages(e)
+    else:
+        assert said in messages(e)

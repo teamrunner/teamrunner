@@ -9,7 +9,7 @@ import pytest
 
 from teamrunner.console import Console
 from teamrunner.keys import PROVIDER_KEYS, find_keys, read_env
-from teamrunner.model import TransientError
+from teamrunner.model import Reply, TransientError
 from teamrunner.run import Options, run_team
 
 from test_engine import FACT_CHECKED
@@ -28,6 +28,7 @@ def home(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     home.mkdir()
     (home / ".env").write_text("OPENAI_API_KEY=sk-test-from-key-file\n", encoding="utf-8")
+    (home / ".env").chmod(0o600)  # as TeamRunner makes it; a hand-made one is made private (D28)
     return home
 
 
@@ -238,8 +239,8 @@ def test_the_litellm_wrapper_offline():
     model = LiteLLMModel({"OPENAI_API_KEY": "sk-test"}, {})
     schema = output_schema({"winner": OutputField("winner", "choice", ("for", "against"))})
     text = '{"said": "Con.", "output": {"winner": "against"}}'
-    reply = asyncio.run(model.complete("openai/gpt-5", {"mock_response": text},
-                                       [{"role": "user", "content": "hi"}], schema))
+    model.extra = {"mock_response": text}
+    reply = asyncio.run(model.complete("openai/gpt-5", {}, [{"role": "user", "content": "hi"}], schema))
     assert reply.text == text and reply.usage["output"] > 0
 
 
@@ -348,8 +349,8 @@ def test_tool_calls_reach_the_provider_and_broken_installs_are_not_retried(monke
         "additionalProperties": False}}}]
     model = LiteLLMModel({"OPENAI_API_KEY": "sk-test"}, {})
     with pytest.raises(TransientError) as caught:  # nothing listens there: a real connection failure
-        asyncio.run(model.complete("openai/gpt-5", {"api_base": "http://127.0.0.1:9/v1"},
-                                   [{"role": "user", "content": "hi"}], None, tools))
+        model.extra = {"api_base": "http://127.0.0.1:9/v1"}
+        asyncio.run(model.complete("openai/gpt-5", {}, [{"role": "user", "content": "hi"}], None, tools))
     assert "No module named" not in str(caught.value)
 
     async def broken(**kwargs):
@@ -358,6 +359,7 @@ def test_tool_calls_reach_the_provider_and_broken_installs_are_not_retried(monke
         except ModuleNotFoundError as e:
             raise litellm.APIConnectionError("OpenAIException - No module named 'mcp'", "openai", "gpt-5") from e
     monkeypatch.setattr(litellm, "acompletion", broken)
+    model.extra = {}
     with pytest.raises(RuntimeError, match="could not make the call: ModuleNotFoundError"):
         asyncio.run(model.complete("openai/gpt-5", {}, [{"role": "user", "content": "hi"}], None, tools))
 
@@ -525,3 +527,283 @@ def test_a_free_model_fits_any_ceiling_without_a_known_longest_reply(model):
     from teamrunner.ceiling import worst_case
     from teamrunner.prices import load_prices
     assert worst_case(model, {}, [{"role": "user", "content": "hi"}], None, None, load_prices()) == 0.0
+
+
+# --- a team's own git settings run nothing ------------------------------------------------------
+
+def _repo(folder, *config):
+    import shutil
+    import subprocess
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "team.yaml").write_text("name: t\n", encoding="utf-8")
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(folder), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                        "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-q", "-m", "one")
+    for key, value in config:
+        git("config", key, value)
+    return folder
+
+
+def test_the_fingerprint_reads_git_and_says_when_files_changed(tmp_path):
+    from teamrunner.runfolder import fingerprint
+    team = _repo(tmp_path / "team")
+    first = fingerprint(team)
+    assert len(first["git_commit"]) == 40 and first["git_dirty"] is False
+    (team / "team.yaml").write_text("name: changed\n", encoding="utf-8")
+    assert fingerprint(team)["git_dirty"] is True
+
+
+def test_a_team_s_git_settings_run_no_command(tmp_path):
+    """A team sent as an archive can carry .git/config; nothing it names is run (rehearsals included)."""
+    import sys
+    from teamrunner.runfolder import fingerprint
+    proof = tmp_path / "ran"
+    hook = tmp_path / "hook.py"
+    hook.write_text(f"import pathlib, sys\npathlib.Path({str(proof)!r}).write_text('ran')\n"
+                    "sys.stdout.write(sys.stdin.read())\n", encoding="utf-8")
+    command = f'"{Path(sys.executable).as_posix()}" "{hook.as_posix()}"'
+
+    monitored = _repo(tmp_path / "monitored", ("core.fsmonitor", command))
+    assert len(fingerprint(monitored)["git_commit"]) == 40
+
+    filtered = _repo(tmp_path / "filtered", ("filter.x.clean", command), ("filter.x.process", command))
+    (filtered / ".gitattributes").write_text("* filter=x\n", encoding="utf-8")
+    (filtered / "team.yaml").write_text("name: changed, so git compares it\n", encoding="utf-8")
+    found = fingerprint(filtered)
+    assert len(found["git_commit"]) == 40 and "git_dirty" not in found  # not asked, not guessed
+
+    included = _repo(tmp_path / "included", ("include.path", "../elsewhere"))
+    assert "git_dirty" not in fingerprint(included)
+    assert not proof.exists()
+
+
+class Echoing(FakeModel):
+    """A provider whose errors repeat the key, as some do in a URL or a header dump."""
+
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+
+    async def complete(self, *args):
+        raise self.error("401 for https://api.example/v1?key=sk-test-from-key-file: "
+                         "Authorization: Bearer sk-test-from-key-file")
+
+
+@pytest.mark.parametrize("error", [TransientError, ValueError])
+def test_a_key_in_a_provider_s_error_never_reaches_the_run_folder(tmp_path, error):
+    """Found in the 2026-11-16 review (S8): a model's error went into events.jsonl,
+    record.json and output.md as it was."""
+    outcome, _, printed = go(debate(tmp_path / "debate", **TEAM), model=Echoing(error))
+    assert outcome.status == "failed"
+    written = [(outcome.folder / name).read_text(encoding="utf-8")
+               for name in ("events.jsonl", "record.json", "output.md")]
+    for text in [*written, printed, outcome.reason]:
+        assert "sk-test-from-key-file" not in text
+    assert all("[key hidden]" in text for text in written)
+
+
+def test_hide_reaches_every_string_and_leaves_short_values_alone():
+    from teamrunner.keys import hide
+    secret = "sk-abcdefgh12345"
+    event = {"a": f"x {secret} y", "b": [{"c": secret}, 3, None], "d": ("t", secret)}
+    assert hide(event, [secret, "", "ab"]) == {"a": "x [key hidden] y", "b": [{"c": "[key hidden]"}, 3, None],
+                                               "d": ["t", "[key hidden]"]}
+    assert hide("ab is a word", ["ab"]) == "ab is a word"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes are POSIX")
+def test_the_key_file_is_private_from_the_start_and_keeps_one_value_per_key(tmp_path, monkeypatch):
+    """Found in the 2026-11-16 review (S10): the file was written, then made private; and saving
+    a key again left the old value in the file."""
+    from teamrunner.keys import read_env, save_key
+    made = []
+    real_open = os.open
+
+    def watching(path, flags, mode=0o777, *args, **kw):
+        made.append(mode)
+        return real_open(path, flags, mode, *args, **kw)
+
+    monkeypatch.setattr(os, "open", watching)
+    keyfile = tmp_path / "home2" / ".env"
+    save_key(keyfile, "OPENAI_API_KEY", "sk-old-value-1234")
+    save_key(keyfile, "BRAVE_API_KEY", "brave-value-5678")
+    save_key(keyfile, "OPENAI_API_KEY", "sk-new-value-1234")
+    assert made and all(mode == 0o600 for mode in made)
+    assert keyfile.stat().st_mode & 0o777 == 0o600
+    text = keyfile.read_text(encoding="utf-8")
+    assert "sk-old-value-1234" not in text and text.count("OPENAI_API_KEY") == 1
+    assert read_env(keyfile) == {"BRAVE_API_KEY": "brave-value-5678", "OPENAI_API_KEY": "sk-new-value-1234"}
+
+
+def test_a_team_s_name_reaches_the_run_folder_as_a_plain_word(tmp_path):
+    """Found in the 2026-11-16 review (S10): only `/` was replaced, so on Windows `..\\x`
+    could land outside runs/, and `:` `*` `?` stopped the run with a traceback."""
+    from datetime import datetime
+    from teamrunner.runfolder import RunFolder, folder_word
+    assert folder_word("..\\..\\x") == "x" and folder_word("a: b*?/c") == "a_b_c" and folder_word("???") == "team"
+    assert len(folder_word("x" * 300)) == 60
+    run = RunFolder.create(tmp_path, "..\\..\\escape: now?", now=datetime(2026, 11, 16, 12, 0, 0))
+    run.close()
+    assert run.path.parent == tmp_path / "runs" and run.path.name == "2026-11-16_120000_escape_now"
+
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes are POSIX")
+def test_a_key_file_made_by_hand_is_made_private(tmp_path, home):
+    """Found in the 2026-11-16 review (D28): a key file made by hand stayed readable by everyone."""
+    from teamrunner.keys import find_keys
+    (home / ".env").chmod(0o644)
+    keys = find_keys(["OPENAI_API_KEY"], None, None)
+    assert (home / ".env").stat().st_mode & 0o777 == 0o600
+    assert any("it is now yours alone" in n for n in keys.notes)
+    assert not any("yours alone" in n for n in find_keys(["OPENAI_API_KEY"], None, None).notes)  # once
+
+
+
+def test_a_provider_failure_does_not_make_the_cost_unknown(tmp_path):
+    """Found in the 2026-11-16 review (C4): one retried provider failure made the run's cost `$?`."""
+    outcome, _, _ = go(debate(tmp_path / "a", **TEAM), VERDICT, model=Flaky(1, VERDICT))
+    run, events, _ = read_run(outcome.folder)
+    assert outcome.status == "completed" and any(e["event"] == "retry" for e in events)
+    assert run["cost_usd"] is not None and run["cost_usd"] == run["cost_known_usd"]
+    assert run["provider_failures"] == 1
+
+
+def test_an_unexpected_error_is_one_plain_line(tmp_path, monkeypatch, capsys, home):
+    """C5's last resort: a fault TeamRunner did not foresee prints one line, never a traceback,
+    and keeps the details, with any key hidden, for a bug report."""
+    from teamrunner import cli
+
+    def broken(args):
+        raise RuntimeError("something odd with sk-test-from-key-file in it")
+
+    monkeypatch.setattr(cli, "cmd_validate", broken)
+    team = debate(tmp_path / "debate", **TEAM)
+    assert cli.main(["validate", str(team)]) == 3
+    err = capsys.readouterr().err
+    assert "TeamRunner hit a problem it did not expect: something odd with [key hidden]" in err
+    assert "Traceback" not in err and "sk-test-from-key-file" not in err
+    kept = (home / "last-error.txt").read_text(encoding="utf-8")
+    assert "Traceback" in kept and "sk-test-from-key-file" not in kept
+
+
+def test_runs_lists_a_run_whose_record_has_no_turn_count(tmp_path, capsys):
+    """C10: `"turns": null` in a record made `teamrunner runs` crash."""
+    from teamrunner.cli import main
+    team = debate(tmp_path / "debate", **TEAM)
+    outcome, _, _ = go(team, VERDICT)
+    record = outcome.folder / "record.json"
+    data = json.loads(record.read_text(encoding="utf-8"))
+    data["turns"] = None
+    record.write_text(json.dumps(data), encoding="utf-8")
+    assert main(["runs", str(team)]) == 0
+    assert "  ? turns" in capsys.readouterr().out
+
+
+def test_max_cost_must_be_an_ordinary_amount(capsys):
+    """C10: `--max-cost inf` switched the ceiling off."""
+    from teamrunner.cli import main
+    for given in ("inf", "nan", "Infinity"):
+        with pytest.raises(SystemExit):
+            main(["run", ".", "--max-cost", given])
+        assert "give an amount in US dollars above 0" in capsys.readouterr().err
+
+
+def test_a_run_s_ceiling_counts_its_tool_calls(tmp_path):
+    """Found in the 2026-11-16 review (C9): a single run's --max-cost did not count web searches."""
+    import asyncio as aio
+    from teamrunner import builtin_tools
+    from teamrunner.build import load_team
+    from teamrunner.builtin_tools import Answer, Context, Tool
+    from teamrunner.ceiling import Ceiling
+    from teamrunner.desk import Desk, TurnCard
+    from teamrunner.events import Log
+    web = ("---\nkind: toolkeeper\ntools:\n  web_search_brave: {}\naccess:\n  judge: standard\n---\nI search.\n")
+    team, report = load_team(debate(tmp_path / "debate", **{**TEAM, "web.md": web}))
+    assert team is not None, report
+
+    async def search(args, guardrails, ctx):
+        return Answer("results", service="brave", cost_usd=builtin_tools.BRAVE_PRICE_USD)
+
+    original = builtin_tools.TOOLS["web_search_brave"]
+    builtin_tools.TOOLS["web_search_brave"] = Tool("web_search_brave", "Searches.", original.arguments, search)
+    try:
+        ceiling = Ceiling(0.012)  # room for two searches at half a cent, not three
+        ctx = Context(tmp_path / "inputs", tmp_path / "work", {}, tmp_path, ceiling=ceiling)
+        desk, card = Desk(team, Log(), ctx, lambda m: {}), TurnCard("judge")
+        said = [aio.run(desk.ask(team.members["web"], "judge", {"query": "q"}, card, mandatory=False))[0]
+                for _ in range(3)]
+    finally:
+        builtin_tools.TOOLS["web_search_brave"] = original
+    assert said[:2] == ["results", "results"] and said[2] == "Refused: the run's cost ceiling is reached."
+    assert abs(ceiling.spent - 0.01) < 1e-9 and ceiling.reserved == 0
+    assert card.by_toolkeeper["web"].used == 2  # the refused call does not use up the allowance
+
+
+def test_an_unknown_price_says_how_to_add_it(tmp_path, capsys):
+    """A model with no list price: before the run, and under `runs` where its cost shows `$?`,
+    the person is told the cost is unknown and how to add the price to prices.yaml."""
+    from teamrunner.cli import main
+    team = debate(tmp_path / "debate", **TEAM)
+    for path in [*team.glob("*.md"), team / "team.yaml"]:
+        path.write_text(path.read_text(encoding="utf-8").replace("openai/gpt-5", "openai/gpt-zz"), encoding="utf-8")
+    fake = FakeModel(VERDICT)
+
+    async def unpriced(*args):
+        reply = await FakeModel.complete(fake, *args)
+        return Reply(reply.text, reply.model_resolved, reply.usage, None, reply.latency_ms)
+
+    fake.complete = unpriced
+    outcome, _, printed = go(team, VERDICT, model=fake, listers={"openai": lambda key, settings: {"gpt-zz"}})
+    assert outcome.status == "completed"
+    said = "openai/gpt-zz has no list price, so its cost shows as unknown ($?)"
+    assert printed.count(said) == 2 and "prices.yaml" in printed  # before the run, and at its end
+    assert "`models: {openai/gpt-zz: {input: …, output: …}}`" in printed
+    capsys.readouterr()
+    assert main(["runs", str(team)]) == 0
+    listed = capsys.readouterr().out
+    assert "$?" in listed and "! $?: " + said in listed
+
+
+def test_retry_note_is_shown_on_a_terminal_then_wiped_and_never_kept_elsewhere():
+    import io
+    from teamrunner.console import Console
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    retry = {"event": "retry", "kind": "provider", "instance_path": "debate/for", "attempt": 1,
+             "reason": "TeamRunner demo: the demo model is temporarily busy", "wait_ms": 8000}
+    screen = Terminal()
+    console = Console(stream=screen)
+    console.on_event(retry)
+    assert "for: TeamRunner demo: the demo model is temporarily busy · try 2, in 8s" in screen.getvalue()
+    assert not screen.getvalue().endswith("\n")
+    console.say("for   A short argument.")
+    shown = screen.getvalue()
+    assert shown.endswith("\r\033[Kfor   A short argument.\n")  # the note is wiped, then the turn
+
+    piped = io.StringIO()
+    Console(stream=piped).on_event(retry)
+    assert piped.getvalue() == ""
+    kept = io.StringIO()
+    Console(verbose=True, stream=kept).on_event(retry)
+    assert "trying again in 8s" in kept.getvalue() and kept.getvalue().endswith("\n")
+
+
+@pytest.mark.parametrize("body", ["Write this member’s instructions here.\n", "\n"])
+def test_unwritten_instructions_stop_a_real_run_but_not_a_rehearsal(tmp_path, body):
+    starter = '---\ndescription: ""\nmodel: openai/gpt-5\n---\n' + body
+    team = debate(tmp_path, **{**TEAM, "for.md": starter})
+    outcome, model, printed = go(team, answers=VERDICT)
+    assert outcome.exit_code == 1 and model.calls == []
+    assert "for has no instructions yet" in printed
+    rehearsal = run_team(team, Options(rehearse=True, quiet=True))
+    assert rehearsal.exit_code == 0

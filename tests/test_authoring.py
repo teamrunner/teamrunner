@@ -132,3 +132,115 @@ def test_teamrunner_skill_installs_for_both_assistants(tmp_path, monkeypatch, ca
     (project / "AGENTS.md").write_text("# The project's own notes\n", encoding="utf-8")
     assert main(["skill", "--agents-md", str(project)]) == 1
     assert (project / "AGENTS.md").read_text(encoding="utf-8") == "# The project's own notes\n"
+
+
+
+class Failing:
+    async def complete(self, model, params, messages, schema, tools=None):
+        raise RuntimeError("AuthenticationError: invalid x-api-key\nmore detail")
+
+
+def test_describe_says_plainly_when_the_model_fails(tmp_path):
+    """Found in the 2026-11-16 review (C8): any model failure was a traceback."""
+    from teamrunner.new import NewError
+    with pytest.raises(NewError, match=r"^the model could not write the team: AuthenticationError: "
+                                       r"invalid x-api-key; nothing was made$"):
+        describe(tmp_path / "debate", "for argues, a judge decides", "openai/gpt-5", Failing())
+    assert not (tmp_path / "debate").exists()
+
+
+# --- D162: the description from a file, kept in team.yaml, and from the page --------
+
+def test_describe_keeps_the_description_at_the_top_of_team_yaml(tmp_path):
+    result = describe(tmp_path / "debate", "  for argues,\n\na judge decides\n", "openai/gpt-5", Writer(answer(TEAM)))
+    assert result.ok
+    text = (tmp_path / "debate" / "team.yaml").read_text(encoding="utf-8")
+    assert text.startswith("# Described as (the description this team was written from):\n# for argues,\n#\n# a judge decides\n\nid: ")
+    from teamrunner.validate import validate
+    assert validate(tmp_path / "debate").ok  # still a valid team.yaml
+
+
+def test_a_failed_description_is_kept_and_its_problems_name_the_right_lines(tmp_path):
+    broken = {**TEAM, "team.yaml": "name: debate\ndefault_inputs:\n  topic: \"Zoos\"\nnot_a_field: 1\n"}
+    result = describe(tmp_path / "debate", "one\ntwo", "openai/gpt-5", Writer(*[answer(broken)] * 3))
+    assert not result.ok
+    text = (tmp_path / "debate" / "team.yaml").read_text(encoding="utf-8").splitlines()
+    assert text[0].startswith("# Described as")
+    lines = [p.line for p in result.report.problems if p.file.name == "team.yaml" and p.line]
+    assert lines and all("not_a_field" in text[n - 1] for n in lines)
+
+
+def test_descriptions_are_limited_to_50_kb(tmp_path):
+    from teamrunner.describe import MAX_DESCRIPTION, read_description
+    with pytest.raises(NewError, match="longer than 50 KB"):
+        describe(tmp_path / "debate", "x" * (MAX_DESCRIPTION + 1), "openai/gpt-5", Writer())
+    with pytest.raises(NewError, match="empty"):
+        describe(tmp_path / "debate", "  \n", "openai/gpt-5", Writer())
+    big = tmp_path / "big.txt"
+    big.write_text("x" * (MAX_DESCRIPTION + 1), encoding="utf-8")
+    with pytest.raises(NewError, match="longer than 50 KB"):
+        read_description(big)
+    binary = tmp_path / "brief.txt"
+    binary.write_bytes(b"\xff\xfe\x00bad")
+    with pytest.raises(NewError, match="isn't plain text"):
+        read_description(binary)
+    good = tmp_path / "brief.md"
+    good.write_text("  A debate.\n", encoding="utf-8")
+    assert read_description(good) == "A debate."
+
+
+def test_describe_file_on_the_command_line(tmp_path, monkeypatch, capsys):
+    from teamrunner.cli import main
+    monkeypatch.chdir(tmp_path)
+    brief = tmp_path / "brief.txt"
+    brief.write_text("A debate.", encoding="utf-8")
+    assert main(["new", "a", "--describe", "x", "--describe-file", str(brief)]) == 1
+    assert "either --describe or --describe-file" in capsys.readouterr().err
+    assert main(["new", "b", "--describe-file", str(brief), "--from", "round_robin"]) == 1
+    assert "either --from or --describe-file" in capsys.readouterr().err
+    assert main(["new", "c", "--describe-file", str(tmp_path / "missing.txt")]) == 1
+    assert "is not a file" in capsys.readouterr().err
+    for name in "abc":
+        assert not (tmp_path / name).exists()
+
+
+def test_the_page_describes_a_team(tmp_path, monkeypatch):
+    import time
+    from teamrunner.ui import api
+    from teamrunner.ui.describing import Describing
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    writer = Writer(answer(TEAM))
+    page = Describing(tmp_path, model_factory=lambda keys, settings: writer)
+    assert "openai/gpt-6-luna" in page.models()["models"]
+    with pytest.raises(ValueError, match="Choose one of the models"):
+        page.start({"path": "debate", "description": "x", "model": "openai/gpt-5"})
+    with pytest.raises(NewError, match="empty"):
+        page.start({"path": "debate", "description": " ", "model": "openai/gpt-6-luna"})
+    started = page.start({"path": "debate", "description": "for argues, a judge decides", "model": "openai/gpt-6-luna"})
+    assert started["state"] == "writing" and started["path"] == "debate"
+    page.thread.join(10)
+    done = page.status()
+    assert done["state"] == "done" and done["file"] == "debate/team.yaml" and done["round"] == 1
+    assert done["cost"] == 0.01 and done["notes"] == "one judge" and "judge" in done["explain"]
+    assert (tmp_path / "debate" / "team.yaml").read_text(encoding="utf-8").startswith("# Described as")
+    with pytest.raises(api.Conflict, match="already exists"):
+        page.start({"path": "debate", "description": "x", "model": "openai/gpt-6-luna"})
+    (tmp_path / "runs").mkdir()
+    with pytest.raises(api.OutsideRoot):
+        page.start({"path": "runs/x", "description": "x", "model": "openai/gpt-6-luna"})
+
+
+def test_the_page_says_plainly_when_the_model_fails_and_never_shows_the_key(tmp_path, monkeypatch):
+    from teamrunner.ui.describing import Describing
+
+    class Leaky:
+        async def complete(self, model, params, messages, schema, tools=None):
+            raise RuntimeError("AuthenticationError: bad key sk-secret-123")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-123")
+    page = Describing(tmp_path, model_factory=lambda keys, settings: Leaky())
+    page.start({"path": "debate", "description": "x", "model": "openai/gpt-6-luna"})
+    page.thread.join(10)
+    failed = page.status()
+    assert failed["state"] == "failed" and not failed["kept"] and "sk-secret-123" not in failed["error"]
+    assert failed["error"].startswith("the model could not write the team: AuthenticationError")
+    assert not (tmp_path / "debate").exists()

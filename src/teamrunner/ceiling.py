@@ -33,6 +33,7 @@ def max_reply(model: str, params: dict) -> int | None:
         return given
     try:
         import litellm
+        litellm.suppress_debug_info = True  # not its "Provider List" line for a model it does not know
         info = litellm.get_model_info(model)
         return info.get("max_output_tokens") or info.get("max_tokens")
     except Exception:
@@ -41,6 +42,7 @@ def max_reply(model: str, params: dict) -> int | None:
 
 def prompt_tokens(model: str, messages: list[dict], schema: dict | None, tools: list[dict] | None) -> int:
     import litellm
+    litellm.suppress_debug_info = True
     try:
         n = litellm.token_counter(model=model, messages=messages, tools=tools)
     except Exception:  # an unknown tokenizer: about four characters to a token

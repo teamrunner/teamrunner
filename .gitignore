@@ -2,6 +2,10 @@
 .env
 .env.*
 gateway.env
+stats.env
+stats-login.env
+deploy/demo-gateway/stats-data/
+deploy/demo-gateway/version-logs/
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal

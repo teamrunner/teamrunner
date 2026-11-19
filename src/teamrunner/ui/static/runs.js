@@ -12,17 +12,28 @@ const node = (tag, text, className) => {
 const pretty = value => typeof value === "string" ? value : JSON.stringify(value, null, 2);
 const cost = value => typeof value === "number" ? `$${value.toFixed(value < 1 ? 4 : 2)}` : "not recorded";
 const runsNotice = text => { byId("runs-notice").textContent = text; };
+// The team a run folder belongs to: the folder above its runs/ (review 2026-11-16, U7).
+const runTeam = path => { const parts = path.split("/"), at = parts.lastIndexOf("runs"); return at >= 0 ? parts.slice(0, at).join("/") : ""; };
 const runNotice = text => { byId("run-notice").textContent = text; };
 
-// Four tabs: Files (the team), Run (one run, live or saved), Run history (every saved
-// run) and Experiments, whose runs open in Run (D141).
-const VIEWS = {files: ["files-workspace", "files-view"], run: ["run-workspace", "run-view"], runs: ["runs-workspace", "runs-view"],
-  experiments: ["experiments-workspace", "experiments-view"]};
+// Two modes, Teams and Experiments, each with its own tabs (app.js setMode): Teams has
+// Files, Run and Run history; Experiments has Overview, Files and Run. One Run tab serves both.
+const VIEWS = {files: "files-workspace", flow: "flow-workspace", run: "run-workspace", runs: "runs-workspace",
+  experiments: "experiments-workspace"};
+// The lit tab: Files, Flow diagram or Runs for a team; Files, Plan, Runs or Summary for an
+// experiment. A run, live or saved, is read inside Runs.
+function subTab(name) {
+  if (name === "files") return "files-view";
+  if (name === "flow") return "flow-view";
+  if (name === "run" || name === "runs") return "runs-view";
+  const tab = byId("experiment-detail").hidden ? "plan" : byId("experiment-detail").dataset.tab || "plan";
+  return `${tab}-view`;
+}
 function showView(name) {
-  for (const [view, [workspace, tab]] of Object.entries(VIEWS)) {
-    byId(workspace).hidden = view !== name; byId(tab).setAttribute("aria-pressed", String(view === name));
-  }
-  document.title = `${info?.name || "TeamRunner"} · ${{files: "Files", run: "Run", runs: "Run history", experiments: "Experiments"}[name]}`;
+  for (const [view, workspace] of Object.entries(VIEWS)) byId(workspace).hidden = view !== name;
+  const lit = subTab(name);
+  for (const id of ["files-view", "flow-view", "plan-view", "runs-view", "summary-view"]) byId(id).setAttribute("aria-pressed", String(id === lit));
+  document.title = `${info?.name || "TeamRunner"} · ${byId(lit).textContent}`;
 }
 function fileView() { showView("files"); editor.refresh(); }
 // What the Run tab shows: the run in progress, or the saved run opened last.
@@ -31,13 +42,21 @@ function showRunPane(which) {
   byId("run-empty").hidden = which !== "empty";
   byId("show-live").hidden = which === "live" || !liveJob || liveJob.done;
 }
+let unseenRun = null;  // a run that finished while another tab was in view (U3)
+function finishedUnseen(folder) {
+  unseenRun = folder; byId("run-dot").hidden = false; byId("run-dot").textContent = " ✓";
+  byId("run-dot").title = "A run finished; choose Run to see it";
+}
 function runView() {
   showView("run");
+  if (unseenRun) { const folder = unseenRun; unseenRun = null; byId("run-dot").hidden = true; openRun(folder); return; }
   if (byId("live-run").hidden && byId("run-detail").hidden) showRunPane(liveJob && !liveJob.done ? "live" : runData ? "saved" : "empty");
 }
 async function runsView(sourceOverride = null) {
+  setMode("teams");
+  byId("runs-title").textContent = (sourceOverride ?? teamContext()) ? `Runs · ${(sourceOverride ?? teamContext()).split("/").filter(p => p !== "team.yaml" && !p.includes(".")).pop() || info?.name}` : "Runs";
   const source = sourceOverride ?? teamContext();
-  if (source !== runSource) { byId("runs-team").value = ""; byId("runs-status").value = ""; byId("runs-search").value = ""; }
+  if (source !== runSource) { byId("runs-team").value = ""; byId("runs-status").value = ""; byId("runs-search").value = ""; clearCompared(); }
   runSource = source;
   showView("runs");
   byId("run-comparison").hidden = true;
@@ -78,7 +97,7 @@ async function loadRuns(append = false) {
     byId("runs-table").hidden = !runRows.length;
     updateRunColumns();
     runsNotice(result.warnings.join("\n"));
-    byId("runs-command").textContent = `teamrunner runs ${JSON.stringify(info ? join(info.folder, context) : context || ".")}`;
+    byId("runs-command").textContent = `teamrunner runs ${JSON.stringify(info ? join(info.folder, runSource) : runSource || ".")}`;
   } catch (error) {
     if (request === runRequest) { runsNotice(error.message); byId("runs-rows").replaceChildren(); byId("runs-count").textContent = ""; byId("more-runs").hidden = true; }
   } finally { if (request === runRequest) byId("refresh-runs").disabled = false; }
@@ -118,15 +137,20 @@ function speaker(event, data = runData) {
   const member = data.members.find(m => (event.instance_path && m.instance_path === event.instance_path) || m.name === event.from);
   return event.from || member?.name || event.instance_path?.split("/").pop() || "member";
 }
+const PAGE = 200;  // events drawn at a time for a saved run; the rest on request (U8)
 function renderConversation(data = runData, container = byId("run-conversation"), live = false, state = null) {
   if (!state) {
     container.replaceChildren();
-    state = {count:0, messages:0, bySequence:new Map(), empty:null};
+    state = {count:0, messages:0, bySequence:new Map(), empty:null, more:null};
   }
-  const fresh = data.events.slice(state.count), bySequence = state.bySequence;
-  for (const event of fresh) bySequence.set(event.seq, event);
+  const end = live ? data.events.length : Math.min(data.events.length, state.count + PAGE);
+  const fresh = data.events.slice(state.count, end), bySequence = state.bySequence;
+  for (const event of live ? fresh : data.events) if (event && typeof event === "object") bySequence.set(event.seq, event);
+  state.more?.remove(); state.more = null;
   let messages = state.messages;
   for (const event of fresh) {
+    // One event of an unexpected shape is shown as such; the rest of the run still opens (U8).
+    try {
     if (event.event === "agent_message") {
       messages++;
       const card = node("article", undefined, "message-card");
@@ -166,6 +190,9 @@ function renderConversation(data = runData, container = byId("run-conversation")
       if (event.allowance) tool.append(jsonDetails("Access and limits", event.allowance));
       tool.append(jsonDetails("Arguments", event.arguments ?? {}, true), jsonDetails("Result", event.result ?? "No result recorded.", true));
       tool.append(node("p", `≈ ${cost(event.cost_usd)}`, "message-meta")); container.append(tool);
+    } else if (event.event === "retry" && event.kind === "provider") {
+      // A provider outage the run waited out: shown only while it waits (run.js, showWaiting).
+      // It stays in events.jsonl and in the run's totals, not in the conversation.
     } else if (["retry", "warning", "error"].includes(event.event)) {
       const box = node("div", undefined, "event-note " + event.event);
       box.append(node("strong", `${event.event}${event.instance_path ? " · " + speaker(event, data) : ""}`));
@@ -179,13 +206,23 @@ function renderConversation(data = runData, container = byId("run-conversation")
     } else if (!["run_started"].includes(event.event)) {
       container.append(jsonDetails(event.event, event));
     }
+    } catch (error) {
+      container.append(node("p", `This ${typeof event?.event === "string" ? event.event : "event"} could not be shown; it is kept as recorded in events.jsonl.`, "event-note warning"));
+    }
   }
   if (messages) { state.empty?.remove(); state.empty = null; }
   else {
     if (!state.empty) { state.empty = node("p"); container.prepend(state.empty); }
     state.empty.textContent = live ? "Waiting for the first completed turn…" : "No member messages were recorded in this run.";
   }
-  state.count = data.events.length; state.messages = messages;
+  state.count = end; state.messages = messages;
+  if (!live && end < data.events.length) {
+    const left = data.events.length - end;
+    state.more = node("button", `Show the next ${Math.min(PAGE, left)} of ${left} more events`, "show-more");
+    state.more.type = "button";
+    state.more.addEventListener("click", () => renderConversation(data, container, false, state));
+    container.append(state.more);
+  }
   return state;
 }
 function renderRecord() {
@@ -232,12 +269,27 @@ async function openRun(path, experiment = null) {
     api("/api/run-path" + pathQuery(path)).then(data => {if (request === detailRequest) renderPath(byId("run-path"),data);}).catch(error => {if (request === detailRequest) byId("run-path").textContent=error.message;});
     byId("run-output").replaceChildren(result.output ? markdown(result.output) : node("p", "No output was recorded."));
     showRunTab("conversation"); runNotice("");
-    byId("run-command").textContent = `teamrunner runs ${JSON.stringify(context || ".")} ${JSON.stringify(path.split("/").pop())}`;
-  } catch (error) { if (request === detailRequest) runNotice(error.message); }
+    byId("run-command").textContent = `teamrunner runs ${JSON.stringify(info ? join(info.folder, runTeam(path)) : runTeam(path) || ".")} ${JSON.stringify(path.split("/").pop())}`;
+  } catch (error) {
+    // A run that cannot be read is not shown beside the last one: nothing on screen may act
+    // on a run that was not chosen (review 2026-11-16, U5).
+    if (request === detailRequest) {
+      runData = null; showRunPane("empty"); byId("run-bar-title").textContent = "No run open";
+      byId("run-command").textContent = ""; runNotice(error.message);
+    }
+  }
 }
+byId("teams-mode").addEventListener("click", () => { setMode("teams"); unseenRun ? runView() : fileView(); });
+byId("experiments-mode").addEventListener("click", () => { setMode("experiments"); experimentsView(); });
 byId("files-view").addEventListener("click", fileView);
-byId("runs-view").addEventListener("click", () => runsView());
-byId("run-view").addEventListener("click", runView);
+byId("flow-view").addEventListener("click", () => { showView("flow"); showFlow(); });
+// Runs: in Teams, the team's runs (the run in progress first, when there is one); in
+// Experiments, the experiment's grid.
+byId("runs-view").addEventListener("click", () => {
+  if (mode === "experiments") return experimentTab("runs");
+  if (liveJob && !liveJob.done) return runView();
+  runsView();
+});
 byId("refresh-runs").addEventListener("click", () => loadRuns());
 byId("refresh-run").addEventListener("click", () => openRun(runData.summary.path, byId("back-experiment").hidden ? null : experimentPath));
 byId("back-runs").addEventListener("click", () => runsView(runSource || null));
@@ -252,7 +304,8 @@ byId("open-run-folder").addEventListener("click", async () => {
 });
 document.addEventListener("teamrunner:file-open", fileView);
 document.addEventListener("teamrunner:team-select", event => {
-  if (!byId("runs-workspace").hidden) { runSource = event.detail; byId("runs-team").value = ""; byId("runs-status").value = ""; byId("run-comparison").hidden = true; byId("runs-list-panel").hidden = false; loadRuns(); }
+  if (flowShown()) showFlow();
+  if (!byId("runs-workspace").hidden) { runSource = event.detail; byId("runs-team").value = ""; byId("runs-status").value = ""; clearCompared(); byId("run-comparison").hidden = true; byId("runs-list-panel").hidden = false; loadRuns(); }
 });
 
 // Explicit controls also make wide tables usable without a trackpad gesture.

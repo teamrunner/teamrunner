@@ -53,7 +53,7 @@ RESERVED_FILES = {"chair": CHAIR_FILE, "manager": MANAGER_FILE}
 LARGE = 1 << 20  # unchanged files at least this big are hard-linked, not copied (D138 (4))
 SPEC_SUFFIXES = (".md", ".yaml", ".yml")
 NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_+-]*$")
-LATER = "0.3"  # what the examples' whiteboards and subteams need
+LATER = V.LATER  # what whiteboards and subteams need
 
 EXPERIMENT = V.Words(
     known=frozenset({"name", "conditions", "base", "factors", "task", "replications", "seed",
@@ -134,10 +134,10 @@ def read_experiment(folder: Path) -> Experiment:
         if old.is_file():
             raise NotAnExperiment(folder, f"{old} is the old form: an experiment is now `experiment.md`, "
                                   "its settings between `---` lines at the top and any notes below "
-                                  "(D138); `patch:` is now `change:`")
+                                  "; `patch:` is now `change:`")
         raise NotAnExperiment(folder)
     problems = Problems()
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     parts = split_frontmatter(text)
     if parts is None or parts[1] is None:
         problems.error(path, "the settings should be at the top, between two lines of `---`",
@@ -191,6 +191,9 @@ def read_experiment(folder: Path) -> Experiment:
         problems.error(path, "an experiment needs `conditions:`, or `base:` with `factors:`", line=1,
                        fix="name each condition and its folder under `conditions:`")
 
+    _check_folder_names(exp)
+    from .validate import _scan_secrets
+    _scan_secrets(exp.folder, problems, skip=(CONDITIONS_DIR, "runs"))  # experiment.md goes into every record
     if "task" in words:
         exp.task = _task_path(exp, data["task"], doc)
     if "metrics" in words:
@@ -216,7 +219,7 @@ def _read_replications(exp: Experiment, data, doc: Doc, words) -> None:
     single = data.get("allow_single_run") is True
     if n == 1 and not single:
         problems.error(path, "one run per condition says little about a model that answers "
-                       "differently each time (D7)", line=line, value="1",
+                       "differently each time", line=line, value="1",
                        fix="give 2 or more, or add `allow_single_run: true` to run each once anyway")
         return
     if "allow_single_run" in data and not isinstance(data["allow_single_run"], bool):
@@ -230,6 +233,35 @@ def _condition_name(exp: Experiment, name, line) -> bool:
                            "so use letters, digits, `_` and `-`", line=line, value=str(name))
         return False
     return True
+
+
+# Names Windows will not give a folder, in any capitals.
+WINDOWS_RESERVED = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(10)),
+                              *(f"lpt{i}" for i in range(10))})
+
+
+def _check_folder_names(exp: Experiment) -> None:
+    """Each condition is built into conditions/<name>/. On macOS and Windows `Short`
+    and `short` are one folder, so the second would silently run as the first; and
+    Windows makes no folder called `con` or `nul`. Refused on every system, so an
+    experiment works wherever it is opened. A refused condition is not built."""
+    first: dict[str, Condition] = {}
+    keep = []
+    for cond in exp.conditions:
+        if cond.name.casefold() in WINDOWS_RESERVED:
+            exp.problems.error(exp.path, f"`{cond.name}` cannot be a condition's name: Windows makes no "
+                               "folder of that name", line=cond.line, value=cond.name,
+                               fix="choose another name")
+            continue
+        other = first.setdefault(cond.name.casefold(), cond)
+        if other is not cond:
+            where = f" (line {other.line})" if other.line else ""
+            exp.problems.error(exp.path, f"the conditions `{other.name}`{where} and `{cond.name}` differ only "
+                               "in capitals, and on macOS and Windows they would share one folder",
+                               line=cond.line, value=cond.name, fix="give one of them another name")
+            continue
+        keep.append(cond)
+    exp.conditions = keep
 
 
 def _bare(written: str) -> bool:
@@ -370,6 +402,13 @@ def _read_factors(exp: Experiment, base_written, factors, doc: Doc) -> None:
                                    line=doc.line("factors", factor, i, key), value=str(key),
                                    fix=f"did you mean `{hint}`?" if hint else "a level has `label:` and `change:`")
             label = level.get("label", f"{factor}_{i + 1}")
+            if isinstance(label, bool):  # `label: false` is read as a yes or no, not a word (E10)
+                word = str(label).lower()
+                problems.error(exp.path, f"`{factor}`'s level {i + 1} has a label YAML reads as yes or no",
+                               line=lline, value=word, fix=f'quote it: `label: "{word}"`')
+                continue
+            if isinstance(label, int):  # `label: 2` is the label `2` (E10)
+                label = str(label)
             if not isinstance(label, str) or not NAME.match(label) or "+" in label:
                 problems.error(exp.path, f"`{label}` cannot be a level's label: it becomes part of a folder's "
                                "name, so use letters, digits, `_` and `-`", line=lline, value=str(label))
@@ -377,6 +416,12 @@ def _read_factors(exp: Experiment, base_written, factors, doc: Doc) -> None:
             if label in seen:
                 problems.error(exp.path, f"`{factor}` has two levels labelled `{label}`", line=lline, value=label,
                                fix="give each level its own label")
+                continue
+            twin = next((s for s in seen if s.casefold() == label.casefold()), None)
+            if twin is not None:
+                problems.error(exp.path, f"`{factor}` has two levels, `{twin}` and `{label}`, that differ only "
+                               "in capitals; their conditions would share one folder on macOS and Windows",
+                               line=lline, value=label, fix="give each level its own label")
                 continue
             seen.append(label)
             changes = _changes(exp, level.get("change"), doc.line("factors", factor, i, "change"),
@@ -495,7 +540,9 @@ def build(exp: Experiment) -> Experiment:
             cond.study_hash = study_hash(find_top(cond.folder), cond.inputs, exp.seed)
     from .metrics import members_of, read_metrics
     members = members_of(exp.conditions) or None
-    exp.measures = read_metrics(exp.metrics, exp.problems, members)
+    names = None if any(c.inputs is None for c in exp.conditions) else \
+        set().union(*(c.inputs for c in exp.conditions)) if exp.conditions else None
+    exp.measures = read_metrics(exp.metrics, exp.problems, members, inputs=names)
     from .metrics import read_outputs
     exp.measures += read_outputs(exp, members)
     return exp
@@ -549,7 +596,7 @@ def _sort_problems(exp: Experiment, cond: Condition) -> None:
             original = base_top / file.relative_to(top)
             if original.is_file() and file.is_file() and original.read_bytes() == file.read_bytes():
                 file = original
-        if p.level == "error" and f"TeamRunner {LATER}" in p.message:
+        if p.level == "error" and LATER in p.message:
             _later(exp, file, p.line, p.message)
         elif not any(q.file == file and q.line == p.line and q.message == p.message for q in exp.problems):
             exp.problems.append(replace(p, file=file))
@@ -668,6 +715,15 @@ def _apply(exp: Experiment, cond: Condition, team_dir: Path, key: str, value) ->
     problems = exp.problems
     folders, _, last = key.rpartition("/")
     where = team_dir / folders if folders else team_dir
+    # A change lands in this condition's own copy of the team and nowhere else.
+    parts = Path(folders).parts
+    if (Path(folders).is_absolute() or folders.startswith(("/", "\\")) or ".." in parts or "\\" in key
+            or not last or not where.resolve().is_relative_to(team_dir.resolve())):
+        problems.error(exp.path, f"`{key}` names something outside the team; a change reaches only "
+                       "the team's own files", line=line, value=key,
+                       fix="name a member, `chair`, `manager` or a model profile of the team, "
+                       "without `..` or a path from the top of the disk")
+        return
     thing, dot, rest = last.partition(".")
 
     if folders == MODELS_DIR or folders.endswith("/" + MODELS_DIR):
@@ -692,7 +748,7 @@ def _apply(exp: Experiment, cond: Condition, team_dir: Path, key: str, value) ->
 
     if thing == "whiteboard" or key.startswith("whiteboard"):
         _later(exp, exp.path, line, f"`{key}` changes the whiteboard (whiteboard.yaml), "
-               f"which arrives in TeamRunner {LATER}")
+               f"which {LATER}")
         return
     if not where.is_dir():
         hint = V.suggest(folders, [p.relative_to(team_dir).as_posix() for p in team_dir.rglob("*")
@@ -702,7 +758,7 @@ def _apply(exp: Experiment, cond: Condition, team_dir: Path, key: str, value) ->
         return
     if folders and (where / TEAM_FILE).is_file():
         _later(exp, exp.path, line, f"`{key}` changes a subteam, `{folders}`; teams inside teams "
-               f"arrive in TeamRunner {LATER}")
+               f"{LATER}")
         # still applied, so validate can say the rest
 
     if thing in RESERVED_FILES:
@@ -764,6 +820,10 @@ def _variant(exp: Experiment, line, key: str, value) -> Path | None:
 
 
 def _whole_file(exp: Experiment, line, key: str, target: Path, value, exists: bool | None) -> None:
+    if target.is_symlink():  # never write or delete through a link out of the copy
+        exp.problems.error(exp.path, f"`{key}`: {target.name} is a link, and a change does not follow links",
+                           line=line, value=key, fix="replace the link in the team with a real file")
+        return
     exists = target.is_file() if exists is None else exists
     if value == REMOVE:
         if not exists:
@@ -826,7 +886,10 @@ def _field(exp: Experiment, line, key: str, path: Path, names: list[str], value)
     if isinstance(value, str) and value.startswith(FILE):
         if source is None:
             return
-        value = source.read_text(encoding="utf-8")
+        value = source.read_text(encoding="utf-8-sig")
+        # an editor ends the file with a line break; the setting does not (one only, so a
+        # text that ends in a blank line keeps it)
+        value = value[:-2] if value.endswith("\r\n") else value[:-1] if value.endswith("\n") else value
     text = path.read_text(encoding="utf-8")
     front, body, _ = split_frontmatter(text)
     data = _yaml.load(front) or CommentedMap()

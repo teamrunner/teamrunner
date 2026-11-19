@@ -80,7 +80,7 @@ def _online_check(report, out, quiet: bool):
         if waiting:
             print("\r\033[K", end="", file=sys.stderr, flush=True)
     if not quiet:
-        Console(False, sys.stdout).check(check, keys)
+        Console(False, sys.stdout).check(check, keys, refusing="not ready to run yet")
     return check
 
 
@@ -248,23 +248,22 @@ def cmd_gather(args) -> int:
     return 0
 
 
-# Offered by `new --describe` when no --model is given, for whichever keys are set.
-DESCRIBE_MODELS = {"OPENAI_API_KEY": "openai/gpt-6-luna", "ANTHROPIC_API_KEY": "anthropic/claude-sonnet-4-5",
-                   "GEMINI_API_KEY": "gemini/gemini-2.5-pro"}
-
-
 def _describe(args, out) -> int:
-    import os
     from .build import load_team
-    from .describe import describe
+    from .describe import check_description, describe, offered_models, read_description
     from .explain import explain
-    from .keys import PROVIDER_KEYS, extra_settings, find_keys, key_file, read_env
+    from .keys import PROVIDER_KEYS, extra_settings, find_keys
     from .new import NewError
+    try:  # before any model is chosen or called (D162)
+        description = (read_description(Path(args.describe_file)) if args.describe_file
+                       else check_description(args.describe))
+    except NewError as e:
+        print(out.red(f"✗ {e}"), file=sys.stderr)
+        return 1
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     model = args.model
     if model is None:
-        stored = read_env(key_file())
-        offered = [m for k, m in DESCRIBE_MODELS.items() if k in stored or os.environ.get(k)]
+        offered = offered_models()
         if not offered:
             print(out.red("✗ no model key found; add one to ~/.teamrunner/.env, or give --model"),
                   file=sys.stderr)
@@ -287,11 +286,13 @@ def _describe(args, out) -> int:
         writer = args.model_factory(keys.values, {})
     print(out.dim(f"{model} is writing the team…"))
     try:
-        result = describe(Path(args.name), args.describe, model, writer)
+        result = describe(Path(args.name), description, model, writer)
     except NewError as e:
-        print(out.red(f"✗ {e}"), file=sys.stderr)
+        from .keys import hide
+        print(out.red(f"✗ {hide(str(e), list(keys.values.values()))}"), file=sys.stderr)
         return 1
-    cost = "cost unknown" if result.cost_usd is None else f"${result.cost_usd:.4f}"
+    cost = f"cost unknown: {model} has no list price; add it to ~/.teamrunner/prices.yaml to count it" \
+        if result.cost_usd is None else f"${result.cost_usd:.4f}"
     tries = f"{result.rounds} tr{'y' if result.rounds == 1 else 'ies'}"
     if not result.ok:
         print(out.red(f"✗ the model could not write a team that validates in {tries} ({cost})"))
@@ -312,17 +313,39 @@ def _describe(args, out) -> int:
 
 
 def cmd_new(args) -> int:
-    from .new import NewError, copy_from, create, find_source
+    from .new import NewError, copy_experiment, copy_from, create, find_experiment, find_source
     from .workspace import shown
     out = Style(sys.stdout)
+    describing = args.describe is not None or args.describe_file is not None
+    if args.describe is not None and args.describe_file is not None:
+        print(out.red("✗ give either --describe or --describe-file, not both"), file=sys.stderr)
+        return 1
+    experiment = find_experiment(args.source) if args.source and not describing else None
+    if experiment is not None:
+        place = _new_place(args.name, "experiments")
+        if place is None:
+            return 1
+        try:
+            folder, warnings, teams = copy_experiment(experiment, place)
+        except NewError as e:
+            print(out.red(f"✗ {e}"), file=sys.stderr)
+            return 1
+        for team in teams:
+            print(f"{out.green('✓')} {shown(team.resolve())} copied from {team.name}, the team the experiment runs")
+        for w in warnings:
+            print(out.yellow(f"! {w}"))
+        print(f"{out.green('✓')} {shown(folder.resolve())} copied from {args.source}; "
+              f"`teamrunner experiment {folder.name} --plan` shows what it would do")
+        return 0
     place = _new_place(args.name)
     if place is None:
         return 1
     args.name = str(place)
-    if args.describe and args.source:
-        print(out.red("✗ give either --from or --describe, not both"), file=sys.stderr)
+    if describing and args.source:
+        flag = "--describe" if args.describe is not None else "--describe-file"
+        print(out.red(f"✗ give either --from or {flag}, not both"), file=sys.stderr)
         return 1
-    if args.describe:
+    if describing:
         return _describe(args, out)
     try:
         if args.source:
@@ -355,12 +378,22 @@ def cmd_explain(args) -> int:
         print_problems(report, out)
         print(f"{_summary(report)} · " + out.red("fix these first; `explain` reads a team that validates"))
         return 1
+    if args.save and not args.diagram:  # silently ignored before (C10)
+        print(out.red("✗ `--save` keeps the `--diagram` page; add `--diagram`"), file=sys.stderr)
+        return 1
     if args.text:
         print(mermaid(team))
     elif args.diagram:
-        page = team.folder / f"{team.folder.name}_flow.html" if args.save else \
-            Path(__import__("tempfile").gettempdir()) / f"teamrunner_{team.folder.name}_flow.html"
-        page.write_text(diagram_page(team), encoding="utf-8")
+        if args.save:
+            page = team.folder / f"{team.folder.name}_flow.html"
+            page.write_text(diagram_page(team), encoding="utf-8")
+        else:  # a new name each time, made only for this user: nothing else can write it first
+            import os
+            import tempfile
+            handle, name = tempfile.mkstemp(prefix=f"teamrunner_{team.folder.name}_", suffix="_flow.html")
+            page = Path(name)
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(diagram_page(team, offline=True))
         print(f"{out.green('✓')} the flow is drawn in {page}")
         webbrowser.open(page.as_uri())
     else:
@@ -389,12 +422,48 @@ def cmd_skill(args) -> int:
     return 1 if failed else 0
 
 
+def cmd_update(args) -> int:
+    """Update TeamRunner the way it was installed (uv tool, pipx, uv pip or pip)."""
+    import subprocess
+    from .version_check import how_installed
+    out, err = Style(sys.stdout), Style(sys.stderr)
+    command, how = how_installed()
+    if command is None:
+        print(err.yellow(f"! {how}."), file=sys.stderr)
+        return 1
+    if command[0] in {"uv", "pipx"}:  # not found on PATH
+        print(err.red(f"✗ TeamRunner was installed with {how}, but `{command[0]}` is not on your PATH. "
+                      f"Run `{' '.join(command)}` where it is."), file=sys.stderr)
+        return 1
+    print(out.dim(f"Updating TeamRunner {__version__} with {how}: {' '.join(command)}"), flush=True)
+    try:
+        done = subprocess.run(command)
+    except OSError as e:
+        print(err.red(f"✗ Could not run {command[0]}: {e}"), file=sys.stderr)
+        return 1
+    if done.returncode != 0:
+        print(err.red(f"✗ The update did not finish ({how} stopped with code {done.returncode}); "
+                      "TeamRunner is unchanged."), file=sys.stderr)
+        return 1
+    try:  # the version now installed, asked of the updated copy rather than this running one
+        now = subprocess.run([sys.executable, "-c", "import teamrunner; print(teamrunner.__version__)"],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        now = ""
+    if now and now == __version__:
+        print(f"{out.green('✓')} TeamRunner is still {now}: {how} found nothing newer to install.")
+    else:
+        print(f"{out.green('✓')} TeamRunner updated{f' from {__version__} to {now}' if now else ''}.")
+    return 0
+
+
 def _usd(text: str) -> float:
     try:
         value = float(text.lstrip("$"))
     except ValueError:
         value = -1
-    if not value > 0:
+    import math
+    if not value > 0 or not math.isfinite(value):  # `inf` would switch the ceiling off (C10)
         raise argparse.ArgumentTypeError(f"{text!r}: give an amount in US dollars above 0, such as 40 or 2.50")
     return value
 
@@ -433,6 +502,10 @@ def cmd_ui(args) -> int:
     change = "`teamrunner ui <folder> --remember` chooses another"
     if args.folder is not None:
         folder = Path(args.folder).expanduser()
+        if workspace.is_name(args.folder) and not folder.is_dir():
+            # a name alone, as the other commands take it: a team, else an experiment, in the workspace
+            folder = next((workspace.find(args.folder, kind) for kind in ("teams", "experiments")
+                           if workspace.find(args.folder, kind).is_dir()), folder)
         if args.remember:
             if not folder.is_dir():
                 print(f"Could not remember {folder}: it is not a folder.", file=sys.stderr)
@@ -481,9 +554,10 @@ def _ask_workspace() -> Path | None:
     return folder
 
 
-def _new_place(name: str) -> Path | None:
-    """A team named alone goes in your teamrunner workspace's teams/; a path is used as written.
-    With no workspace yet, the first-time question is asked; with no one to ask, it is made here."""
+def _new_place(name: str, kind: str = "teams") -> Path | None:
+    """A team named alone goes in your teamrunner workspace's teams/ (an experiment in its
+    experiments/); a path is used as written. With no workspace yet, the first-time question
+    is asked; with no one to ask, it is made here."""
     from . import workspace
     if not workspace.is_name(name):
         return Path(name).expanduser()
@@ -495,9 +569,9 @@ def _new_place(name: str) -> Path | None:
         if root is None:
             return None
     else:
-        return workspace.team_place(Path("."), name)
-    (root / "teams").mkdir(parents=True, exist_ok=True)
-    return root / "teams" / name
+        return workspace.team_place(Path("."), name) if kind == "teams" else Path(name)
+    (root / kind).mkdir(parents=True, exist_ok=True)
+    return root / kind / name
 
 
 def main(argv=None) -> int:
@@ -512,7 +586,9 @@ def main(argv=None) -> int:
                                      "Provider charges and overrun liability are disclaimed to the extent permitted by law. "
                                      "Notices: https://github.com/teamrunner/teamrunner/blob/main/LEGAL.md")
     parser.add_argument("--version", action="version", version=f"teamrunner {__version__}")
-    commands = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--update", action="store_true",
+                        help="update TeamRunner the way it was installed (uv tool, pipx or pip)")
+    commands = parser.add_subparsers(dest="command")
 
     ui = commands.add_parser("ui", aliases=["gui"], help="open your teamrunner workspace in the local browser interface")
     ui.add_argument("folder", nargs="?", default=None,
@@ -522,7 +598,7 @@ def main(argv=None) -> int:
     ui.set_defaults(func=cmd_ui)
 
     v = commands.add_parser("validate", help="check a team's files, keys and models before running it")
-    v.add_argument("team", nargs="?", default=".", help="the team folder (default: this folder)")
+    v.add_argument("team", nargs="?", default=".", help="a team in your teamrunner workspace by name, or a team folder (default: this folder)")
     v.add_argument("-v", "--verbose", action="store_true",
                    help="also list each member and where its model comes from")
     v.add_argument("--offline", action="store_true",
@@ -533,7 +609,7 @@ def main(argv=None) -> int:
     v.set_defaults(func=cmd_validate)
 
     r = commands.add_parser("run", help="run a team")
-    r.add_argument("team", nargs="?", default=".", help="the team folder (default: this folder)")
+    r.add_argument("team", nargs="?", default=".", help="a team in your teamrunner workspace by name, or a team folder (default: this folder)")
     given = r.add_mutually_exclusive_group()
     given.add_argument("--message", "-m", help="text for the input `message_goes_to:` names")
     given.add_argument("--file", type=Path, help="a file for the input `message_goes_to:` names")
@@ -542,7 +618,8 @@ def main(argv=None) -> int:
     r.add_argument("--rehearse", action="store_true",
                    help="no model: placeholder words and random answers, to check the flow for free")
     r.add_argument("--max-cost", type=_usd, metavar="USD",
-                   help="a hard ceiling: no call is sent that could take the run past it")
+                   help="a ceiling on the run's estimated cost: a model call that could take the estimate "
+                        "past it is not sent. An estimate at list prices, not a cap on your bill")
     shown = r.add_mutually_exclusive_group()
     shown.add_argument("-v", "--verbose", action="store_true",
                        help="everything said in full, tokens, models, decisions and retries")
@@ -571,14 +648,18 @@ def main(argv=None) -> int:
     g.add_argument("--yes", "-y", action="store_true", help="replace them without asking")
     g.set_defaults(func=cmd_gather)
 
-    n = commands.add_parser("new", help="make a new team folder, empty or copied from another team")
-    n.add_argument("name", help="the new folder; its name is the team's name. A bare name typed in your "
-                   "teamrunner workspace goes in its teams/ folder")
+    n = commands.add_parser("new", help="make a new team folder, empty or copied from another team; "
+                            "or copy an example experiment")
+    n.add_argument("name", help="the new team's name. A name alone goes in your teamrunner workspace's "
+                   "teams/ folder, from wherever you type it; a path (./name, ~/x/name) is used as written")
     n.add_argument("--from", dest="source", metavar="TEAM",
                    help="copy a team folder, or an example by name (fact_checked, reference_check, …), "
-                        "with fresh ids")
+                        "with fresh ids; an example experiment (leader_vs_flat) goes in experiments/, "
+                        "with its team")
     n.add_argument("--describe", metavar="TEXT", help="have a model write the team from this description")
-    n.add_argument("--model", help="with --describe: the model that writes it, as provider/name")
+    n.add_argument("--describe-file", metavar="PATH",
+                   help="have a model write the team from the description in this text file")
+    n.add_argument("--model", help="with --describe or --describe-file: the model that writes it, as provider/name")
     n.set_defaults(func=cmd_new, model_factory=None)
 
     sk = commands.add_parser("skill", help="install or update the authoring skill for Claude Code and Codex",
@@ -590,7 +671,7 @@ def main(argv=None) -> int:
     sk.set_defaults(func=cmd_skill)
 
     x = commands.add_parser("explain", help="what a team will do, in plain words, or its flow as a picture")
-    x.add_argument("team", nargs="?", default=".", help="the team folder (default: this folder)")
+    x.add_argument("team", nargs="?", default=".", help="a team in your teamrunner workspace by name, or a team folder (default: this folder)")
     shape = x.add_mutually_exclusive_group()
     shape.add_argument("--diagram", action="store_true", help="draw the flow on a page and open it in the browser")
     shape.add_argument("--text", action="store_true", help="print the flow as Mermaid, to paste into GitHub or Notion")
@@ -602,13 +683,14 @@ def main(argv=None) -> int:
                             "replication, in permuted rounds; running it again skips slots already completed. "
                             "--plan builds and checks every condition and shows the order of runs and the cost "
                             "estimate, spending nothing.")
-    e.add_argument("folder", nargs="?", default=".", help="the experiment folder (default: this folder)")
+    e.add_argument("folder", nargs="?", default=".", help="an experiment in your teamrunner workspace by name, or an experiment folder (default: this folder)")
     e.add_argument("--plan", action="store_true",
                    help="show the conditions, their differences, the order of runs and the estimate; run nothing")
     e.add_argument("--rehearse", action="store_true",
                    help="every run with no model: placeholder words and random answers; kept, never counted")
     e.add_argument("--max-cost", type=_usd, metavar="USD",
-                   help="the hard ceiling for this session, in place of max_cost_usd in experiment.md")
+                   help="the ceiling on estimated cost for this session, in place of max_cost_usd in "
+                        "experiment.md. An estimate at list prices, not a cap on your bill")
     doing = e.add_mutually_exclusive_group()
     doing.add_argument("--evaluate", action="store_true",
                        help="only evaluate the runs already made, with every evaluator's current version; "
@@ -628,6 +710,12 @@ def main(argv=None) -> int:
     e.set_defaults(func=cmd_experiment)
 
     args = parser.parse_args(argv)
+    if args.update:  # before the version check, so a copy that refuses to run can still update itself
+        if args.command:
+            parser.error("--update takes no command")
+        return cmd_update(args)
+    if not args.command:
+        parser.error("the following arguments are required: command")
     from . import version_check  # before anything else is done (D148 (5))
     refused = version_check.check(quiet=getattr(args, "quiet", False))
     if refused is not None:
@@ -637,6 +725,29 @@ def main(argv=None) -> int:
     except NotFound as e:
         print(Style(sys.stderr).red(f"✗ {e}"), file=sys.stderr)
         return 2 if args.func is cmd_validate else 1  # what each command gave for a missing folder before
+    except Exception as e:  # the last resort: one plain line, never a traceback (review 2026-11-16, C5)
+        return _unexpected(e)
+
+
+def _unexpected(error: Exception) -> int:
+    """Say plainly that something unforeseen went wrong, and keep the details for a bug report
+    in ~/.teamrunner/last-error.txt, with any key hidden."""
+    import traceback
+    from .keys import hide, key_file, read_env
+    details = hide(traceback.format_exc(), list(read_env(key_file()).values()))
+    kept = key_file().parent / "last-error.txt"
+    try:
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        kept.write_text(f"teamrunner {__version__}\n{' '.join(sys.argv[1:])}\n\n{details}", encoding="utf-8")
+        where = f"; the details are in {kept}"
+    except OSError:
+        where = ""
+    message = hide(str(error).splitlines()[0] if str(error) else type(error).__name__,
+                   list(read_env(key_file()).values()))
+    print(Style(sys.stderr).red(f"✗ TeamRunner hit a problem it did not expect: {message}{where}. "
+                                "Please report it: https://github.com/teamrunner/teamrunner/issues"),
+          file=sys.stderr)
+    return 3
 
 
 if __name__ == "__main__":

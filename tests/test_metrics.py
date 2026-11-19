@@ -132,6 +132,50 @@ def test_metric_files_are_checked(tmp_path):
     assert "no condition has a member `nobody`" in text
 
 
+COMPARE = ("compare:\n  raised: {source: everyone.output.flagged_lines}\n"
+           "  reported: {source: emma.output.flagged_lines, stage: report}\n")
+
+
+def test_an_answer_key_with_source_and_compare_is_refused(tmp_path):
+    """It raised UnboundLocalError ('allowed') on `experiment --plan` (docs probe, 2026-11-19)."""
+    files = write(tmp_path, {"k.yaml": "kind: answer_key\nanswer: [10]\nparse: line_numbers\n"
+                             "source: emma.output.flagged_lines\n" + COMPARE + "reports: [suppressed]\n"})
+    problems = Problems()
+    assert read_metrics([files / "k.yaml"], problems, {"emma": {"flagged_lines"}}) == []
+    assert [p.message for p in problems.errors] == [
+        "an answer key reads the team's answer from `source:` or `compare:`, not both"]
+    assert "keep `source:`" in problems.errors[0].fix
+
+
+def test_a_stage_beside_compare_is_refused_not_ignored(tmp_path):
+    """Each part of `compare:` takes its own `stage:`; one beside it was silently dropped."""
+    files = write(tmp_path, {"k.yaml": "kind: answer_key\nanswer: [10]\nparse: line_numbers\n"
+                             + COMPARE + "stage: report\nreports: [suppressed]\n"})
+    problems = Problems()
+    assert read_metrics([files / "k.yaml"], problems, {"emma": {"flagged_lines"}}) == []
+    assert "`stage:` beside `compare:` is not used" in problems.errors[0].message
+    assert "reported: {source: emma.output.flagged_lines, stage: report}" in problems.errors[0].fix
+    problems = Problems()
+    files = write(tmp_path, {"k.yaml": "kind: answer_key\nanswer: [10]\nparse: line_numbers\n"
+                             + COMPARE + "reports: [suppressed]\n"})
+    assert read_metrics([files / "k.yaml"], problems, {"emma": {"flagged_lines"}}) and not problems.errors
+
+
+def test_an_evaluator_output_field_in_braces_needs_a_type(tmp_path):
+    """`s: {options: [a, b]}` raised KeyError: 'type' (docs probe, 2026-11-19)."""
+    files = write(tmp_path, {
+        "untyped.md": RUBRIC.replace("  reason: \"\"\n", "  reason: \"\"\n  s: {options: [a, b]}\n"),
+        "typed.md": RUBRIC.replace("  reason: \"\"\n", "  reason: \"\"\n  s: {type: choice, options: [a, b]}\n"),
+    })
+    problems = Problems()
+    assert read_metrics([files / "untyped.md"], problems, {"alice": {"verdict"}}) == []
+    assert [p.message.split(" should")[0] for p in problems.errors] == ["`output.s`"]
+    assert "needs `type:`" in problems.errors[0].fix
+    problems = Problems()
+    found = read_metrics([files / "typed.md"], problems, {"alice": {"verdict"}})
+    assert not problems.errors and found[0].output["s"].options == ("a", "b")
+
+
 # --- evaluators --------------------------------------------------------------------------------
 
 def test_runs_are_evaluated_blind_then_summarised(exp):
@@ -289,3 +333,80 @@ def test_an_evaluator_that_sees_nothing_of_the_run_is_refused(tmp_path):
     problems = Problems()
     read_metrics([files / "sighted.md"], problems, None)
     assert not problems.errors
+
+
+@pytest.mark.parametrize("name", ["../../../../escaped", "a/b", "/tmp/escaped", "..", "a\\b", ".hidden", "a b"])
+def test_a_metric_s_name_is_a_plain_word(tmp_path, name):
+    """The name becomes a file's name in each run's evaluations/, so it cannot be a path."""
+    files = write(tmp_path, {
+        "q.md": RUBRIC.replace("kind: evaluator\n", f"kind: evaluator\nname: {json.dumps(name)}\n"),
+        "k.yaml": f"kind: answer_key\nname: {json.dumps(name)}\nanswer: [1]\nsource: alice.output.verdict\nreports: [hits]\n",
+    })
+    problems = Problems()
+    found = read_metrics([files / "q.md", files / "k.yaml"], problems, {"alice": {"verdict"}})
+    assert found == []
+    assert [p.message.split(":")[0] for p in problems.errors] == [f"`{name}` cannot be a metric's name"] * 2
+
+
+def test_evaluator_params_take_model_settings_only(tmp_path):
+    files = write(tmp_path, {"q.md": RUBRIC.replace("  max_tokens: 100\n",
+                                                    "  max_tokens: 100\n  api_base: https://collector.example\n")})
+    problems = Problems()
+    assert read_metrics([files / "q.md"], problems, {"alice": {"verdict"}}) == []
+    assert "`api_base` is not a model setting" in problems.errors[0].message
+
+
+
+def test_a_grade_whose_reply_never_fit_is_tried_again(exp):
+    """Found in the 2026-11-16 review (E5): it was reported as "evaluator changed" and never retried."""
+    class Unfit(Grader):
+        async def complete(self, model, params, messages, schema, tools=None):
+            if "Grade this review" in messages[0]["content"]:
+                self.calls += 1
+                return Reply("not the form", model, {"input": 10, "output": 5}, self.cost, 1)
+            return await super().complete(model, params, messages, schema, tools)
+
+    go(exp, Unfit())
+    folders = sorted(p for p in (exp / "runs").iterdir() if p.is_dir())
+    assert all(lines(f) and all(x["output"] is None for x in lines(f)) for f in folders)
+    model = Grader()
+    code, out = go(exp, model)
+    assert "changed since" not in out and model.calls == len(folders)  # each graded now, once
+    assert all(any(x["output"] for x in lines(f)) for f in folders)
+
+
+def test_raising_evaluations_adds_grades_and_a_description_changes_nothing(exp):
+    """E10 (review 2026-11-16): the version covered `evaluations:` and `description:`, so raising
+    1 to 2 paid for every grade again."""
+    go(exp, Grader())
+    folders = sorted(p for p in (exp / "runs").iterdir() if p.is_dir())
+    rubric = (exp / "metrics" / "quality.md").read_text(encoding="utf-8")
+    (exp / "metrics" / "quality.md").write_text(
+        rubric.replace("kind: evaluator\n", "kind: evaluator\ndescription: how good\nevaluations: 2\n"),
+        encoding="utf-8")
+    model = Grader()
+    code, out = go(exp, model)
+    assert code == 0 and model.calls == len(folders)  # only the second grade of each run
+    assert all(sorted(x["evaluation"] for x in lines(f)) == [1, 2] for f in folders)
+
+
+def test_an_evaluator_input_typo_is_refused(tmp_path):
+    """E10 (review 2026-11-16): `{{inputs.cod}}` was sent to the grader as "(none)"."""
+    from teamrunner.experiment import build, read_experiment
+    write(tmp_path / "review", TEAM)
+    front = FRONT.replace("seed: 7\n", "seed: 7\nmetrics:\n  - metrics/quality\n")
+    exp = write(tmp_path / "exp", {"experiment.md": f"---\n{front}---\n",
+                                   "variants/alice.md": "alice leads the review of {{code}}.\n",
+                                   "metrics/quality.md": RUBRIC.replace("{{inputs.code}}", "{{inputs.cod}}")})
+    e = build(read_experiment(exp))
+    [p] = [p for p in e.problems.errors if "inputs.cod" in p.message]
+    assert p.message == "`{{inputs.cod}}`: no condition's team has an input `cod`"
+    assert p.fix == "did you mean `{{inputs.code}}`?"
+
+
+def test_answers_are_compared_as_numbers_and_yes_no_words():
+    """Found in the 2026-11-16 review (E8): `3.0` missed the answer `3`, and `True` missed `true`."""
+    from teamrunner.metrics import _items
+    assert _items(["3.0", "True", " x "], None) == _items([3, True, "x"], None) == frozenset({"3", "true", "x"})
+    assert _items("2.50, 1e1, FALSE", "list") == frozenset({"2.5", "10", "false"})
+    assert _items("3.0001", None) != _items("3", None) and _items("inf", None) == frozenset({"inf"})

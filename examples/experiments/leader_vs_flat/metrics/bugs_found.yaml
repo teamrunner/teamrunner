@@ -1,0 +1,14 @@
+# An answer key: no model is called, and the same run always gets the same score.
+# Members never see metrics/.
+description: Planted bugs that made it into the team's final report, and lines flagged that are not bugs
+kind: answer_key
+answer: [10, 12, 15]
+# 10: range starts at 1, so the first paid order is skipped
+# 12: ">" should be ">=" (the spec says 100 or more)
+# 15: divides by all orders, not paid orders (and fails when none are paid)
+source: emma.output.flagged_lines
+stage: report               # the answer Emma gives in her final report
+parse: line_numbers         # "10, 15" -> 10 and 15
+reports:
+  - hits                    # planted bugs in the report (0-3)
+  - false_alarms            # lines in the report that are not planted bugs

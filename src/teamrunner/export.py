@@ -5,14 +5,16 @@
 Five long-format CSV tables, joined by `run_id`, rebuilt from the run folders
 every time — nothing here is stored anywhere else:
 
-    runs.csv          one row per run
+    runs.csv          one row per run, each factor's level in `factor_<name>`
     turns.csv         one row per turn, with everything said in `content`
     outputs.csv       one row per typed output field a member gave
     metrics.csv       one row per metric × report (or evaluator field) × run
     evaluations.csv   one row per evaluation × field, the evaluator's reason included
 
 Written with Python's own `csv` module: RFC 4180 quoting, UTF-8, a header
-row, an empty cell for a missing value, `true`/`false` for yes and no. Every
+row, an empty cell for a missing value, `true`/`false` for yes and no, and
+`'` before a text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage
+return, so Excel does not run it as a formula. Every
 real run of the experiment is exported, with `counts` saying whether it
 counts in the study as it now stands; `--completed` keeps only those that
 do. Rehearsal runs are never exported: they are never results.
@@ -32,6 +34,12 @@ from .runs import read_events
 TABLES = ("runs", "turns", "outputs", "metrics", "evaluations")
 
 
+# A text cell starting with one of these is a formula to Excel, and model text can be
+# steered by a page the model read. Such a cell is written with `'` before it, which
+# Excel shows as text; R and pandas keep the `'` (README, D158). Numbers are untouched.
+FORMULA = ("=", "+", "-", "@", "\t", "\r")
+
+
 def _cell(value):
     if value is None:
         return ""
@@ -41,6 +49,8 @@ def _cell(value):
         return repr(round(value, 10))
     if isinstance(value, (list, dict)):
         return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str) and value.startswith(FORMULA):
+        return "'" + value  # Excel would run it as a formula (D158)
     return value
 
 
@@ -60,14 +70,18 @@ class Table:
         self.stream.close()
 
 
+FACTOR = "factor_"
+
+
 def export(exp, runs: list[tuple[Path, dict]], counting: set[str], dest: Path) -> dict[str, int]:
     """Write the five tables for `runs` into `dest`. `counting`: the run_ids that count.
     Returns each table's number of rows."""
     dest.mkdir(parents=True, exist_ok=True)
     factors = list(exp.factors or {})
+    # Each factor's column is `factor_<name>`, so no factor can take a built-in column's name (D157).
     tables = {
         "runs": Table(dest / "runs.csv", [
-            "run_id", "condition", *factors, "replicate", "round", "seed", "status", "stopped_by", "counts",
+            "run_id", "condition", *(FACTOR + f for f in factors), "replicate", "round", "seed", "status", "stopped_by", "counts",
             "replaced_by", "continued_from", "study_hash", "started_at", "duration_s", "turns", "cost_usd",
             "cost_reused_usd", "cost_charged_usd", "tokens_in", "tokens_out", "folder"]),
         "turns": Table(dest / "turns.csv", [
@@ -97,7 +111,7 @@ def _run(table, exp, folder, record, factors, counting) -> None:
     levels = block.get("levels") or {}
     tokens = record.get("tokens") or {}
     table.add(run_id=record.get("run_id"), condition=block.get("condition"),
-              **{f: levels.get(f) for f in factors},
+              **{FACTOR + f: levels.get(f) for f in factors},
               replicate=block.get("replicate"), round=block.get("round"), seed=(block.get("seeds") or {}).get("run"),
               status=record.get("status"), stopped_by=record.get("stopped_by"),
               counts=record.get("run_id") in counting, replaced_by=block.get("replaced_by"),

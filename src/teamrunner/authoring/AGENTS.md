@@ -104,9 +104,11 @@ Set verdict to fail only if a claim is materially false...
   dropped (`01_for.md` is `for`). There is no `name:` line.
 - `description` — one line, for people.
 - `model` — every member needs one, here or as the team's `default_model`.
-- `params` — model settings (`reasoning_effort`, `max_tokens`, `temperature`, …). Models
-  refuse some settings: GPT-5 takes only temperature 1 while it reasons, so leave
-  `temperature` out for reasoning models. `run` and `validate --online` check every
+- `params` — model settings, and only these: `temperature`, `top_p`, `top_k`,
+  `max_tokens`, `max_completion_tokens`, `seed`, `stop`, `presence_penalty`,
+  `frequency_penalty`, `reasoning_effort`, `verbosity`, `thinking`. Models refuse
+  some settings: GPT-5 takes only temperature 1 while it reasons, so leave
+  `temperature` out for reasoning models. `run` and `validate` check every
   member's settings before any turn.
 - `output` — typed answers the member gives besides its words. Only typed
   answers can steer the flow.
@@ -223,8 +225,9 @@ against_turn = against -> fact_checker
 
 ### Models
 
-- `model: provider/name` — `openai/gpt-6-luna`, `anthropic/claude-sonnet-4-5`,
-  `gemini/gemini-2.5-pro`, `ollama/llama3.2` (a local model).
+- `model: provider/name` — `openai/gpt-6-luna`, `anthropic/claude-sonnet-5-5`,
+  `gemini/gemini-2.5-pro`, `ollama/gpt-oss:20b` (a local model; smaller ones often
+  fail at typed answers and at asking toolkeepers).
 - Or a profile: `model: careful.yaml`, a file in `models/` at the top of the
   package holding a model and its settings:
 
@@ -236,7 +239,7 @@ params:
 
   A member's own `params` override the profile's, setting by setting.
 - Backups: `model:` or `default_model:` may name several, separated by
-  commas, in order of preference (`openai/gpt-6-luna, anthropic/claude-sonnet-4-5`).
+  commas, in order of preference (`openai/gpt-6-luna, anthropic/claude-sonnet-5-5`).
   The first one available runs, and the run says so. A profile's own `name:`
   names one model; to have a backup with settings, list several profiles.
 - Use the model the person asked for. If they named none, use one model for

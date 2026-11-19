@@ -133,10 +133,31 @@ def find_top(folder: Path) -> Path:
     return folder
 
 
+def read_file(path: Path, problems: Problems) -> str | None:
+    """A team file's text, or None with a problem line saying why not (review 2026-11-16,
+    C5, C6). UTF-8, with a leading byte-order mark dropped: Windows Notepad writes one,
+    and it would hide a member file's opening `---`. Line endings become `\n`, as
+    `read_text` makes them, so a file saved on Windows reads the same everywhere."""
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        problems.error(path, f"{path.name} cannot be read: {e.strerror or e}",
+                       fix="check that the file is there and that you may read it")
+        return None
+    try:
+        return data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    except UnicodeDecodeError as e:
+        problems.error(path, f"{path.name} is not UTF-8 text", line=data[:e.start].count(b"\n") + 1,
+                       fix="save it as UTF-8 (in Notepad: Save as, then Encoding: UTF-8)")
+        return None
+
+
 def read_yaml(path: Path, problems: Problems, text: str | None = None, line_offset: int = 1):
     """Parse YAML into a mapping Doc, or record why not and return None."""
     if text is None:
-        text = path.read_text(encoding="utf-8")
+        text = read_file(path, problems)
+        if text is None:
+            return None
     try:
         data = _yaml.load(text)
     except YAMLError as e:
@@ -167,7 +188,9 @@ def split_frontmatter(text: str):
 
 
 def read_member(path: Path, problems: Problems) -> Member | None:
-    text = path.read_text(encoding="utf-8")
+    text = read_file(path, problems)
+    if text is None:
+        return None
     parts = split_frontmatter(text)
     if parts is None:
         return None  # a .md without frontmatter is a note, not a member (D91)

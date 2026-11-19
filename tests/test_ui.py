@@ -52,7 +52,7 @@ def test_browser_lists_every_shipped_example_without_changing_it(example):
         shown = json.loads(body)
         shown.pop("feedback")
         assert shown == {"name": example, "folder": str(root.resolve()), "team": True,
-                                    "examples": examples()}
+                         "examples": examples(), "workspace": False, "experiments": False, "teams": []}
         status, _, body = get(server, "/api/files")
         assert status == 200
         entries = json.loads(body)["entries"]
@@ -83,6 +83,11 @@ def test_page_and_assets_require_token_and_ship_offline(tmp_path):
         assert get(server, "/api/info", headers={"Origin": "https://untrusted.example"})[0] == 403
         assert get(server, "/api/info", headers={"Host": "untrusted.example"})[0] == 403
         assert get(server, "/api/info", headers={"Sec-Fetch-Site": "cross-site"})[0] == 403
+        # The first visit comes from the file:// opener page, which browsers call cross-site.
+        opening = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+        assert get(server, "/?" + urlencode({"token": server.token}), token=False, headers=opening)[0] == 200
+        assert get(server, "/", token=False, headers=opening)[0] == 403
+        assert get(server, "/api/info", headers=opening)[0] == 403
         assert get(server, "/static/../server.py")[0] == 404
 
 
@@ -201,15 +206,25 @@ def test_the_first_plain_ui_asks_once_where_the_workspace_is(tmp_path, monkeypat
 def test_launch_prints_url_opens_browser_and_closes_on_interrupt(tmp_path, monkeypatch, capsys):
     opened = []
     monkeypatch.setattr("teamrunner.ui.server.webbrowser.open", lambda url: opened.append(url) or True)
+    seen = []
 
     def interrupt(server):
+        opener = Path(opened[0].removeprefix("file://")) if os.name != "nt" else None
+        if opener is not None:
+            seen.append((opener.read_text(encoding="utf-8"), opener.stat().st_mode & 0o777, server.url))
         raise KeyboardInterrupt
 
     monkeypatch.setattr(Server, "serve_forever", interrupt)
     assert serve(tmp_path) == 0
     output = capsys.readouterr().out
-    assert len(opened) == 1 and opened[0].startswith("http://127.0.0.1:")
-    assert opened[0] in output and "?token=" in output
+    # S10 (review 2026-11-16): the browser is opened at a private page, so the token
+    # never appears in the command that opens it; the page is gone once the server stops.
+    assert len(opened) == 1 and opened[0].startswith("file:") and "token" not in opened[0]
+    if seen:
+        page, mode, url = seen[0]
+        assert mode == 0o600 and url.replace("&", "&amp;") in page and "http-equiv=\"refresh\"" in page
+        assert not Path(opened[0].removeprefix("file://")).exists()
+    assert "http://127.0.0.1:" in output and "?token=" in output
     assert "Press Ctrl+C to stop" in output
     assert "local page stopped" in output
 
@@ -349,6 +364,74 @@ def test_new_team_in_a_workspace_goes_in_teams(tmp_path, monkeypatch):
     monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(remembered))
     with running(remembered) as server:
         assert post(server, "/api/new", {"path": "fresh"})[1]["path"] == "teams/fresh/team.yaml"
+
+
+def test_new_experiment_is_made_in_experiments_on_a_chosen_team_and_plans(tmp_path, monkeypatch):
+    from teamrunner.experiment import read_experiment
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("TEAMRUNNER_WORKSPACE", raising=False)
+    root = tmp_path / "teamrunner"
+    (root / "teams").mkdir(parents=True)
+    with running(root) as server:
+        assert post(server, "/api/new", {"path": "debate"})[0] == 200
+        info = json.loads(get(server, "/api/info")[2])
+        assert info["workspace"] and info["teams"] == ["teams/debate"] and not info["experiments"]
+        status, made = post(server, "/api/new-experiment", {"name": "first_study", "team": "teams/debate"})
+        assert status == 200 and made == {"path": "experiments/first_study/experiment.md",
+                                          "folder": "experiments/first_study"}
+        text = (root / made["path"]).read_text(encoding="utf-8")
+        assert "control: debate" in text and "from: debate" in text  # a team named alone (D144)
+        assert post(server, "/api/new-experiment", {"name": "first_study", "team": "teams/debate"})[0] == 409
+        assert post(server, "/api/new-experiment", {"name": "no good", "team": "teams/debate"})[0] == 400
+        assert post(server, "/api/new-experiment", {"name": "other", "team": "teams/missing"})[0] == 400
+        assert post(server, "/api/new-experiment", {"name": "../out", "team": "teams/debate"})[0] == 400
+    exp = read_experiment(root / "experiments/first_study")
+    assert not exp.problems.errors and [c.name for c in exp.conditions] == ["control", "variant"]
+    assert exp.runs == 10
+
+
+def test_variant_metric_and_task_make_files_whose_lines_plan(tmp_path, monkeypatch):
+    from teamrunner.experiment import build, read_experiment
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("TEAMRUNNER_WORKSPACE", raising=False)
+    root = tmp_path / "teamrunner"
+    (root / "teams").mkdir(parents=True)
+    with running(root) as server:
+        assert post(server, "/api/new", {"path": "debate", "example": "multi_agent_debate"})[0] == 200
+        assert post(server, "/api/new-experiment", {"name": "study", "team": "teams/debate"})[0] == 200
+        exp = "experiments/study"
+        found = json.loads(get(server, "/api/experiment-parts?" + urlencode({"path": exp}))[2])
+        assert found["teams"] == ["debate"] and {"file": "judge.md", "key": "judge"}.items() <= next(
+            f for f in found["files"] if f["file"] == "judge.md").items()
+        assert "judge.output.winner" in found["measurable"] and "judge.output.reasoning" not in found["measurable"]
+        assert "topic" in found["inputs"]
+        status, prompt = post(server, "/api/variant", {"experiment": exp, "name": "strict", "source": "debate/judge.md#prompt"})
+        assert status == 200 and prompt["line"] == "judge.prompt: file:variants/strict.md"
+        original = (root / "teams/debate/judge.md").read_text(encoding="utf-8")
+        assert original.endswith((root / exp / "variants/strict.md").read_text(encoding="utf-8"))  # the prompt, exactly
+        status, whole = post(server, "/api/variant", {"experiment": exp, "name": "whole", "source": "debate/judge.md"})
+        assert status == 200 and whole["line"] == "judge: file:variants/whole.md"
+        assert (root / exp / "variants/whole.md").read_text(encoding="utf-8") == original
+        assert post(server, "/api/variant", {"experiment": exp, "name": "x", "source": "debate/../../secret.md"})[0] == 400
+        assert post(server, "/api/variant", {"experiment": exp, "name": "strict", "source": "debate/judge.md"})[0] == 409
+        lines = {}
+        for kind in ("answer_key", "evaluator", "output:judge.output.winner"):
+            status, made = post(server, "/api/metric", {"experiment": exp, "name": kind.split(":")[0], "kind": kind})
+            assert status == 200, made
+            lines[kind] = made["line"].strip()
+        assert lines["output:judge.output.winner"] == "- judge.output.winner"
+        assert post(server, "/api/metric", {"experiment": exp, "name": "t", "kind": "output:judge.output.reasoning"})[0] == 400
+        status, task = post(server, "/api/task", {"experiment": exp, "name": "case"})
+        assert status == 200 and task["line"] == "task: tasks/case"
+    # Pasting every line the page showed gives an experiment that plans.
+    path = root / exp / "experiment.md"
+    text = path.read_text(encoding="utf-8").replace("    change: {}\n", "    change:\n      judge.prompt: file:variants/strict.md\n", 1)
+    text = text.replace("# metrics:\n#   - judge.output.winner\n", "metrics:\n" + "".join(f"  {l}\n" for l in lines.values()), 1)
+    text = text.replace("# task: tasks/my_task\n", "task: tasks/case\n", 1)
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(root))
+    built = build(read_experiment(root / exp))
+    assert not built.problems.errors, [p.message for p in built.problems.errors]
 
 
 def test_a_team_goes_to_the_trash_as_a_whole_folder_and_nothing_else_does(ui_team, monkeypatch):
@@ -963,3 +1046,77 @@ def test_rehearsal_can_stop_between_immediate_turns(ui_team):
     assert outcome.status == "stopped"
     record = json.loads((outcome.folder / "record.json").read_text())
     assert record["turns"] == 1 and record["cost_usd"] == 0
+
+
+def test_a_mailbox_outside_the_opened_folder_is_refused(tmp_path):
+    """Found in the 2026-11-16 review (S10): the page kept run_code's folders inside the
+    opened folder but not the mailbox read_email reads or save_draft writes into."""
+    from threading import RLock
+    from teamrunner.build import load_team
+    from teamrunner.ui import api, jobs
+    from test_validate import debate
+    outside = tmp_path / "outside"
+    (outside / "mail").mkdir(parents=True)
+    root = tmp_path / "root"
+    clerk = ("---\nkind: toolkeeper\ntools:\n  read_email: {{mailbox: {mailbox}}}\naccess:\n  judge: standard\n---\n"
+             "I hand over emails.\n")
+    for mailbox, refused in [(str(outside / "mail"), True), ("../../outside/mail", True), ("mailbox", False)]:
+        team_dir = debate(root / "debate", **{"clerk.md": clerk.format(mailbox=mailbox)})
+        (team_dir / "mailbox").mkdir(exist_ok=True)
+        team, report = load_team(team_dir)
+        assert team is not None, report
+        guard = jobs.Jobs(root.resolve(), RLock())
+        try:
+            if refused:
+                with pytest.raises(api.OutsideRoot, match="clerk's mailbox points outside the opened folder"):
+                    guard._guard_tools(team)
+            else:
+                guard._guard_tools(team)
+        finally:
+            guard.close()
+
+
+
+def test_ui_with_a_name_opens_it_from_the_workspace(tmp_path, monkeypatch):
+    """Found in the 2026-11-16 review (D5): `teamrunner ui debate` looked only in the current folder."""
+    opened = []
+    monkeypatch.setattr("teamrunner.ui.server.serve", lambda folder: opened.append(folder) or 0)
+    space = tmp_path / "space"
+    (space / "teams" / "debate").mkdir(parents=True)
+    (space / "experiments" / "study").mkdir(parents=True)
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(space))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert main(["ui", "debate"]) == 0 and opened[-1] == space / "teams" / "debate"
+    assert main(["ui", "study"]) == 0 and opened[-1] == space / "experiments" / "study"
+    (elsewhere / "local").mkdir()
+    assert main(["ui", "local"]) == 0 and opened[-1] == Path("local")  # a folder here comes first
+
+
+def test_the_open_file_is_checked_by_its_fingerprint(ui_team):
+    """Found in the 2026-11-16 review (U8): every 3 seconds the page downloaded the whole open
+    file, up to 2 MB, to see whether it changed. It now asks for the fingerprint only."""
+    with running(ui_team) as server:
+        full = json.loads(get(server, "/api/file?path=debate/team.yaml")[2])
+        status, _, body = get(server, "/api/file?path=debate/team.yaml&only=revision")
+        seen = json.loads(body)
+        assert status == 200 and seen == {"path": "debate/team.yaml", "revision": full["revision"]}
+        assert get(server, "/api/file?path=../outside&only=revision")[0] == 403
+
+
+def test_the_run_dialog_is_given_an_estimate(ui_team):
+    """Found in the 2026-11-16 review (U9): a team's real run showed no cost before it started."""
+    from teamrunner.new import copy_from
+    copy_from(EXAMPLES / "round_robin", ui_team / "priced")
+    team_file = ui_team / "priced/team.yaml"
+    team_file.write_text(team_file.read_text().replace("teamrunner/demoLLM", "openai/gpt-5"))
+    copy_from(EXAMPLES / "round_robin", ui_team / "demo_team")
+    with running(ui_team) as server:
+        estimate = json.loads(get(server, "/api/run-setup?path=priced")[2])["estimate"]
+        assert estimate["typical_usd"] > 0 and estimate["most_usd"] >= estimate["typical_usd"]
+        assert estimate["calls"] == 3 and estimate["unpriced"] == []
+        free = json.loads(get(server, "/api/run-setup?path=demo_team")[2])["estimate"]
+        assert free["typical_usd"] == 0 and free["most_usd"] == 0
+        unknown = json.loads(get(server, "/api/run-setup?path=debate")[2])["estimate"]
+        assert unknown["typical_usd"] is None and unknown["unpriced"] == ["openrouter/google/gemma-4-31b-it"]

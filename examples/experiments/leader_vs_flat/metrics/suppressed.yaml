@@ -1,0 +1,11 @@
+# The org-structure measure: planted bugs that someone on the team raised,
+# at any turn, but that did not make it into the final report.
+description: Planted bugs flagged by any member at any turn but missing from the final report
+kind: answer_key
+answer: [10, 12, 15]
+parse: line_numbers
+compare:
+  raised:   {source: everyone.output.flagged_lines}               # every member, every turn
+  reported: {source: emma.output.flagged_lines, stage: report}
+reports:
+  - suppressed              # planted bugs raised but not reported (0-3)

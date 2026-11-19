@@ -31,17 +31,18 @@ the estimate at the end, saying so only when it is over.
 from __future__ import annotations
 
 import json
+import shutil
 import os
 import threading
 from contextlib import nullcontext
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .build import _team
 from .ceiling import Ceiling, Guarded, max_reply
 from .experiment import (Condition, Experiment, Slot, _what_changed, canonical_files, copy_package,
-                         experiment_hash, plan_runs, read_experiment, write_ids)
+                         experiment_hash, plan_runs, read_experiment, study_hash, write_ids)
 from .loader import RUNS_DIR, find_top
 from .plan import RAISE, _money, ceiling_of, litellm_max_lines, per_run, report_problems, say_estimate
 from .prices import Prices, load_prices, model_price
@@ -86,6 +87,37 @@ def fills(record: dict) -> bool:
         record.get("status") == "stopped" and record.get("stopped_by") == "flow")
 
 
+STUDY_FILE = "study.jsonl"  # in the experiment's runs/: each --restart or --keep-unchanged (D160)
+
+
+def decisions(exp: Experiment) -> list[dict]:
+    """Every decision made about a changed study, oldest first: which study it was
+    made for (its experiment_hash), `restart` or `keep_unchanged`, and when."""
+    path = exp.folder / RUNS_DIR / STUDY_FILE
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
+
+
+def note_decision(exp: Experiment, study_hash: str, change: str) -> None:
+    """Write the decision down when it is made, even when no run follows, so it holds
+    for `--summary` and `--export` too (review 2026-11-16, E4). Appended, never rewritten."""
+    path = exp.folder / RUNS_DIR / STUDY_FILE
+    path.parent.mkdir(exist_ok=True)
+    line = {"experiment_hash": study_hash, "change": change,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(line) + "\n")
+
+
 class Study:
     """Which of the experiment's real runs belong to the study as it now stands."""
 
@@ -95,9 +127,11 @@ class Study:
         self.hashes = {c.name: c.study_hash for c in exp.conditions}
         self.real = [(f, r) for f, r in records if not r.get("rehearsal")]
         mine = [r for _, r in self.real if r["experiment"].get("experiment_hash") == self.hash]
+        decided = [d for d in decisions(exp) if d.get("experiment_hash") == self.hash]
         # Changed: there are runs, none of them of this study, and no decision yet.
-        self.changed = bool(self.real) and not mine
-        kept = any(r["experiment"].get("study_change") == "keep_unchanged" for r in mine)
+        self.changed = bool(self.real) and not mine and not decided
+        kept = (any(r["experiment"].get("study_change") == "keep_unchanged" for r in mine)
+                or any(d.get("change") == "keep_unchanged" for d in decided))
         self.change = change if self.changed else None
         self.by_condition = kept or self.change == "keep_unchanged"
 
@@ -105,6 +139,9 @@ class Study:
         block = record["experiment"]
         if self.hashes.get(block.get("condition")) != block.get("study_hash"):
             return False
+        replicate = block.get("replicate")
+        if isinstance(replicate, int) and self.exp.replications and replicate > self.exp.replications:
+            return False  # beyond `replications:` as it now stands; counts again if it is raised (E6)
         return self.by_condition or block.get("experiment_hash") == self.hash
 
     def slots(self) -> tuple[dict, dict]:
@@ -171,6 +208,11 @@ def left_out(exp: Experiment, study: Study, filled: dict) -> dict[str, int]:
     missing = exp.runs - len(filled)
     if missing - sum(why.values()) > 0:
         why["not run yet"] = missing - sum(why.values())
+    beyond = sum(1 for _, r in study.real if not study.belongs(r) and fills(r)
+                 and study.hashes.get(r["experiment"].get("condition")) == r["experiment"].get("study_hash")
+                 and (r["experiment"].get("replicate") or 0) > exp.replications)
+    if beyond:  # kept, and counted again if `replications:` is raised (E6)
+        why[f"beyond `replications: {exp.replications}`"] = beyond
     return why
 
 
@@ -250,6 +292,7 @@ class Runner:
         self.could_not_start = None
         self.spent_before = 0.0
         self.over_after_first = False
+        self.changed_midway = None  # the team that was edited while the experiment ran (E3)
 
     def one(self, slot: Slot, ceiling: Ceiling) -> dict:
         cond = self.by_name[slot.condition]
@@ -257,6 +300,15 @@ class Runner:
         folder = _folder_for(self.exp, slot, datetime.now())
         with self.copy_lock or nullcontext():
             team = resolve(cond, folder / "resolved")
+        # The team as it is copied for this run must be the team the study was planned on: a
+        # condition run as written reads the live folder, which may have been edited since
+        # (review 2026-11-16, E3). If it was, this run does not start, and nor do the others.
+        if cond.study_hash and study_hash(folder / "resolved", cond.inputs, self.exp.seed) != cond.study_hash:
+            shutil.rmtree(folder)
+            with self.lock:
+                self.changed_midway = self.changed_midway or find_top(cond.folder).name
+            self.cancel.set()
+            return {"slot": slot, "status": "changed", "folder": None, "record": {}, "outcome": None}
         if self.on_slot:
             self.on_slot(slot, folder, None)
         options = Options(task_file=self.exp.task, quiet=True, rehearse=self.rehearse, seed=slot.seed,
@@ -319,6 +371,7 @@ class Runner:
         # what a real run would still have to do, for the estimate a rehearsal ends with
         self.real_todo = [s for s in plan_runs(exp) if (s.condition, s.replicate) not in real_done]
         self.real_spent = spent
+        self.owed_runs = [] if self.rehearse else list(real_done.values())  # may still owe evaluations
         return records, spent, study, done, todo
 
     def quote(self) -> dict:
@@ -422,6 +475,8 @@ class Runner:
             return self._changed(study)
         if self.change and not self.rehearse and not study.changed:
             say(out.paint.dim(f"--{self.change.replace('_', '-')} does nothing: the study has not changed"))
+        if self.study_change:
+            note_decision(exp, study.hash, self.study_change)
         if self.study_change == "restart":
             say(out.paint.dim("--restart: the changed study starts from round 1; earlier runs are kept, "
                               "and do not count"))
@@ -486,6 +541,11 @@ class Runner:
             self.cancel.set()
             say(out.paint.yellow("■ Ctrl-C: stopping every run in progress…"))
         code = self._totals(ceiling, len(todo))
+        if self.changed_midway:
+            say(out.paint.red(f"✗ {self.changed_midway} changed while the experiment was running, so no more "
+                              "runs were started; the runs so far are kept. Run the experiment again to see "
+                              "what changed"))
+            return 1
         if self.cancel.is_set():
             return code
         return max(code, self._after(ceiling, code))
@@ -670,7 +730,7 @@ class Runner:
         found = []
         for name, model, params in uses:
             if model_price(model, self.prices)["input_per_million"] is None:
-                line = f"{model} has no list price; add it to {self.prices.shown} (D120)"
+                line = f"{model} has no list price; add it to {self.prices.shown}"
             elif max_reply(model, params) is None:
                 line = f"{name} on {model}: no known longest reply; give it `params: {{max_tokens: …}}`"
             else:
@@ -704,6 +764,15 @@ class Runner:
                     if one is None:
                         return None
                     evaluating += one * ev.evaluations
+            # Runs made in earlier sessions that still owe evaluations are paid for this session too
+            # (review 2026-11-16, E10): the estimate and the ceiling count them.
+            jobs, _ = pending(getattr(self, "owed_runs", []), self.evaluators, again=self.evaluating == "only")
+            for job in jobs:
+                e = walks.get(job.record["experiment"]["condition"])
+                one = estimate_one(job.evaluator, e.tokens_out if e else 0, self.prices)
+                if one is None:
+                    return None
+                evaluating += one
         return spent + sum(per[s.condition] for s in slots) + evaluating
 
     def _totals(self, ceiling: Ceiling, planned: int) -> int:

@@ -1,21 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Kumar Muthuraman
-"""The daily version check (D148, D149): client and gateway."""
+"""The daily version check (D148, D149): the client."""
 import io
 import json
 import socket
-import threading
 import time
 import urllib.error
 import urllib.request
 
-import httpx
 import pytest
 
 from teamrunner import __version__, version_check
 from teamrunner.cli import main
 from teamrunner.version_check import fetch as real_fetch
-from test_demo import answer, gateway, request, server  # noqa: F401 (server is a fixture)
 
 UUID4 = version_check._UUID4
 
@@ -97,7 +94,7 @@ def test_below_min_version_nudges_and_runs(lookup):
     state["served"] = {"min_version": "99.0", "min_secure_version": "0.0.0", "message": "New \x1b[31mfeatures"}
     code, said = run()
     assert code is None
-    assert "99.0 or later" in said and "pip install -U teamrunner" in said
+    assert "99.0 or later" in said and "teamrunner --update" in said
     assert "\x1b" not in said
 
 
@@ -165,7 +162,7 @@ def test_below_min_secure_version_refuses(lookup):
     code, said = run()
     assert code == 1
     assert "known security problem" in said and "A key could leak." in said
-    assert "pip install -U teamrunner" in said
+    assert "teamrunner --update" in said
 
 
 def test_the_off_switch_does_not_turn_off_the_refusal(lookup, monkeypatch):
@@ -200,107 +197,3 @@ def test_the_cli_refuses_before_doing_anything(lookup, tmp_path, capsys):
     assert main(["new", str(tmp_path / "t")]) == 1
     assert not (tmp_path / "t").exists()
     assert "known security problem" in capsys.readouterr().err
-
-
-# The gateway
-
-
-@pytest.fixture
-def version_server(tmp_path):
-    (tmp_path / "version.json").write_text('{"min_version": "0.0.6", "min_secure_version": "0.0.5", "message": ""}')
-    config = gateway.Config(key="test", db=str(tmp_path / "q.db"), version_domain="version.test",
-                            version_file=str(tmp_path / "version.json"),
-                            version_log=str(tmp_path / "checks.jsonl"))
-    app = gateway.Gateway(("127.0.0.1", 0), config, answer)
-    thread = threading.Thread(target=app.serve_forever, daemon=True)
-    thread.start()
-    yield app, f"http://127.0.0.1:{app.server_port}", tmp_path / "checks.jsonl"
-    app.shutdown()
-    app.server_close()
-    thread.join()
-
-
-ID = "3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e"
-UA = "TeamRunner/0.0.6 (python 3.12; darwin)"
-
-
-def get(base, path="/version.json", host="version.test", **headers):
-    return httpx.get(base + path, headers={"Host": host, **headers}, trust_env=False)
-
-
-def test_gateway_serves_the_file_and_logs_one_valid_line(version_server):
-    app, base, log = version_server
-    r = get(base, **{"User-Agent": UA, "X-TeamRunner-Install": ID, "X-Forwarded-For": "203.0.113.9"})
-    assert r.status_code == 200 and r.json()["min_secure_version"] == "0.0.5"
-    [line] = [json.loads(s) for s in log.read_text().splitlines()]
-    assert set(line) == {"time", "version", "python", "platform", "install"}
-    assert line["version"] == "0.0.6" and line["python"] == "3.12" and line["platform"] == "darwin"
-    assert line["install"] == ID and line["time"].endswith("Z")
-    assert "203.0.113" not in log.read_text() and "127.0.0.1" not in log.read_text()
-
-
-@pytest.mark.parametrize("headers", [
-    {},
-    {"User-Agent": UA},
-    {"X-TeamRunner-Install": ID},
-    {"User-Agent": "curl/8.0", "X-TeamRunner-Install": ID},
-    {"User-Agent": UA, "X-TeamRunner-Install": "not-a-uuid"},
-    {"User-Agent": UA, "X-TeamRunner-Install": ID.upper()},
-    {"User-Agent": 'TeamRunner/0.0.6 (python 3.12; darwin") {"x": 1}', "X-TeamRunner-Install": ID},
-    {"User-Agent": "TeamRunner/0.0.6 (python 3.12; " + "x" * 200 + ")", "X-TeamRunner-Install": ID},
-])
-def test_gateway_drops_malformed_headers_but_still_serves(version_server, headers):
-    app, base, log = version_server
-    assert get(base, **headers).status_code == 200
-    assert not log.exists() or log.read_text() == ""
-
-
-def test_gateway_version_host_serves_nothing_else(version_server):
-    app, base, _ = version_server
-    assert get(base, "/v1/models").status_code == 404
-    assert httpx.post(base + "/v1/chat/completions", headers={"Host": "version.test"},
-                      json={}, trust_env=False).status_code == 404
-    assert get(base, host="demollm.test").status_code == 404  # the demo host does not serve the file
-
-
-def test_the_log_line_never_holds_an_ip():
-    line = gateway.version_check_line(UA, ID, now=0)
-    assert line == {"time": "1970-01-01T00:00:00Z", "version": "0.0.6", "python": "3.12",
-                    "platform": "darwin", "install": ID}
-
-
-def test_a_real_client_request_is_logged(version_server, monkeypatch):
-    app, base, log = version_server
-    monkeypatch.setattr(version_check, "fetch", real_fetch)
-    monkeypatch.setattr(version_check, "URL", base + "/version.json")
-    real_request = urllib.request.Request
-
-    def with_host(url, headers=None, **kw):
-        return real_request(url, headers={**(headers or {}), "Host": "version.test"}, **kw)
-    monkeypatch.setattr(urllib.request, "Request", with_host)
-    monkeypatch.setattr(urllib.request, "urlopen",
-                        urllib.request.build_opener(urllib.request.ProxyHandler({})).open)
-    assert version_check.fetch() == {"min_version": "0.0.6", "min_secure_version": "0.0.5", "message": ""}
-    [line] = [json.loads(s) for s in log.read_text().splitlines()]
-    assert line["install"] == version_check.install_id() and line["version"] == __version__
-
-
-# The demo's own floor (D148 (11), D149)
-
-
-def test_demo_answers_every_version_while_its_floor_is_zero(server):
-    _, base = server
-    assert request(base).status_code == 200  # no User-Agent of TeamRunner's at all
-
-
-def test_demo_refuses_versions_below_its_floor(server):
-    app, base = server
-    app.config.min_version_for_demo = "0.0.6"
-    def ask(ua):
-        return httpx.post(base + "/chat/completions", headers={"User-Agent": ua}, trust_env=False,
-                          json={"model": "demoLLM", "messages": [{"role": "user", "content": "Hi"}]})
-    old = ask("TeamRunner/0.0.5.1 (python 3.12; darwin)")
-    assert old.status_code == 426 and "pip install -U teamrunner" in old.json()["error"]["message"]
-    assert ask("curl/8").status_code == 426
-    assert ask("TeamRunner/0.0.6 (python 3.12; linux)").status_code == 200
-    assert ask("TeamRunner/0.1 (python 3.13; win32)").status_code == 200

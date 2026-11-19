@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import urllib.request
@@ -31,7 +32,7 @@ from . import __version__
 URL = "https://version.teamrunner.ai/version.json"
 TIMEOUT = 2.0  # seconds; a slow or absent network never stalls a start by more than this (D148 (7))
 MAX_BYTES = 16_384
-UPDATE = "pip install -U teamrunner"  # written here, never taken from the file (D148 (8))
+UPDATE = "teamrunner --update"  # written here, never taken from the file (D148 (8))
 _VERSION = re.compile(r"\d+(\.\d+){0,5}")
 _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
@@ -189,3 +190,31 @@ def check(quiet: bool = False, err=None) -> int | None:
               f"(you have {__version__}).{' ' + message if message else ''}", file=err)
         print(f"  Update with: {UPDATE}   (TEAMRUNNER_NO_VERSION_CHECK=1 hides this)", file=err)
     return None
+
+
+def how_installed(prefix: str | None = None, dist=None) -> tuple[list[str] | None, str]:
+    """The command that updates this copy of TeamRunner the way it was installed, and the way
+    in words. The command is None when TeamRunner should not update itself (a source folder, or
+    an installer it does not know); the words then say what to do instead."""
+    from importlib import metadata
+    root = Path(prefix or sys.prefix)
+    try:
+        dist = dist or metadata.distribution("teamrunner")
+        installer = (dist.read_text("INSTALLER") or "").strip().lower()
+        direct = json.loads(dist.read_text("direct_url.json") or "{}")
+    except (metadata.PackageNotFoundError, ValueError, OSError):
+        installer, direct = "", {}
+    if "dir_info" in direct and str(direct.get("url", "")).startswith("file:"):  # installed from a folder
+        where = urllib.request.url2pathname(str(direct.get("url", ""))[len("file://"):]) or "a folder"
+        return None, f"TeamRunner runs from the source folder {where}; update that folder instead (git pull)"
+    if (root / "uv-receipt.toml").is_file():
+        return [shutil.which("uv") or "uv", "tool", "upgrade", "teamrunner"], "uv tool"
+    if (root / "pipx_metadata.json").is_file():
+        return [shutil.which("pipx") or "pipx", "upgrade", "teamrunner"], "pipx"
+    if installer == "uv":
+        return [shutil.which("uv") or "uv", "pip", "install", "--upgrade", "--python", sys.executable,
+                "teamrunner"], "uv pip"
+    if installer in {"pip", ""}:
+        return [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", "teamrunner"], "pip"
+    return None, (f"TeamRunner was installed by {installer}, which it cannot drive; "
+                  f"update it with {installer} instead")

@@ -31,7 +31,7 @@ from .engine import Engine, FlowError
 from .events import Log
 from .flowgraph import declared_graph
 from .inputs import InputError, copy_files, resolve
-from .keys import Ask, Keys, extra_settings, find_keys
+from .keys import Ask, Keys, extra_settings, find_keys, hide
 from .minutes import MissingInput, instructions
 from .model import CeilingReached, Model
 from .prices import load_prices, model_price, tool_price
@@ -248,8 +248,9 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         on_folder(run.path)
     copy_files(given, run.inputs_dir)
     values = {name: item.value for name, item in given.items()}
+    secrets = list(keys.values.values())
     log = Log(on_event=lambda e: (run.write_event(e), console.on_event(e) if console else None,
-                                 on_event(e) if on_event else None))
+                                 on_event(e) if on_event else None), secrets=secrets)
     started_at = datetime.now(timezone.utc)
     inputs_record = {name: {"value": item.value, "source": item.source,
                             **({"file": item.file} if item.file else {})} for name, item in given.items()}
@@ -282,11 +283,14 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
             model = model_factory(keys.values, settings)
         if wrap is not None:
             model = wrap(model)
-        elif options.max_cost is not None and not options.rehearse:  # a single run's own ceiling
+        ceiling = None
+        if wrap is None and options.max_cost is not None and not options.rehearse:  # a single run's own ceiling
             from .ceiling import Ceiling, Guarded
-            model = Guarded(model, Ceiling(options.max_cost), prices)
+            ceiling = Ceiling(options.max_cost)
+            model = Guarded(model, ceiling, prices)
+        # An experiment counts tool costs once each run is done; a single run, as each call is made (C9).
         context = Context(run.inputs_dir, run.path / "work", keys.values, team.package_top,
-                          rehearsal=options.rehearse, prices=prices, inputs=values)
+                          rehearsal=options.rehearse, prices=prices, inputs=values, ceiling=ceiling)
         context.work_dir.mkdir(exist_ok=True)
         replay = None
         if options.continue_from is not None:
@@ -326,12 +330,13 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         status, reason, stopped_by = "stopped", "Stopped with Ctrl-C; the turn in progress was abandoned.", "user"
     except Exception as e:
         status, reason = "failed", f"{type(e).__name__}: {e}"
-        for secret in keys.values.values():
-            if secret:
-                reason = reason.replace(secret, "[key hidden]")
+    reason = hide(reason, secrets)  # a provider's error may echo the key (S8)
 
     said = log.of("agent_message")
-    retries = log.of("retry")
+    # A provider failure got no reply, so nothing was charged for it, as the ceiling counts
+    # it (review 2026-11-16, C4); a reply that did not fit was paid for, and counts.
+    failures = [e for e in log.of("retry") if e.get("kind") == "provider"]
+    retries = [e for e in log.of("retry") if e.get("kind") != "provider"]
     costs = [e.get("cost_usd") for e in said + retries]  # the models'
     tools_cost = round(sum(e.get("cost_usd") or 0 for e in log.of("tool_call")), 6)  # D118
     record = {
@@ -349,6 +354,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         "reason": reason,
         "turns": len(said),
         "tool_calls": len(log.of("tool_call")),
+        "provider_failures": len(failures),  # calls tried again after the provider failed; not charged
         "latency_ms": int((time.monotonic() - started) * 1000),
         "cost_usd": None if any(c is None for c in costs) else round(sum(costs) + tools_cost, 6),
         "cost_known_usd": round(sum(c for c in costs if c is not None) + tools_cost, 6),
@@ -375,12 +381,12 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
               "latency_ms": record["latency_ms"], "cost_usd": record["cost_usd"],
               "cost_models_usd": record["cost_models_usd"], "cost_tools_usd": record["cost_tools_usd"],
               "tokens": record["tokens"]})
-    run.write_record(record)
+    run.write_record(hide(record, secrets))
     output = _output_md(team, log, status, reason)
     if options.rehearse:
         output = (f"*A rehearsal (seed {seed}): placeholder words and random answers, "
                   "to check the flow, not the content.*\n\n" + output)
-    run.write_output(output)
+    run.write_output(hide(output, secrets))
     run.close()
     if console:
         shown = record if record["cost_usd"] is not None else {**record, "cost_usd": record["cost_known_usd"]}

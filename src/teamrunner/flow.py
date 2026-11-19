@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 
 from .ir import DONE, STOP, Block, Bound, Decision, Flow, OutputField, Step
 from .problems import Problems
-from .vocabulary import suggest
+from .vocabulary import LATER, suggest
 
 WORD = r"[A-Za-z_][A-Za-z0-9_]*"
 STEP = re.compile(rf"^(?P<name>{WORD})(?::(?P<stage>{WORD}))?(?:\((?P<args>[^)]*)\))?$")
@@ -157,6 +157,12 @@ def _read_line(block: str, pieces: list[tuple[str, int]], path, problems) -> _Ch
     for n, (text, line_no) in enumerate(pieces):
         parts = [p.strip() for p in ARROW.split(text)]
         if n > 0:
+            if parts[0]:  # `--pass-> c`: one dash short, `--pass` would vanish (review 2026-11-16, C3)
+                fix = (f"did you mean `{parts[0]}-->`?" if parts[0].startswith("--")
+                       else "a line that starts with an arrow continues the line above")
+                problems.error(path, f"`{parts[0]}` comes before this line's first arrow, and is not an arrow",
+                               line=line_no, value=parts[0], fix=fix)
+                return None
             parts = parts[1:]  # a continuation starts with its arrow
         tokens += [(p, line_no) for p in parts]
 
@@ -217,7 +223,7 @@ def _parse_step(token: str, path, line_no, problems, allow_repeat: bool) -> Step
         problems.error(path, "a step is missing between two arrows", line=line_no)
         return None
     if token.startswith("["):
-        problems.error(path, "members working at the same time (`[a, b]`) arrives in TeamRunner 0.3",
+        problems.error(path, f"members working at the same time (`[a, b]`) {LATER}",
                        line=line_no, value=token, fix="write them one after another for now: `a -> b`")
         return None
     m = STEP.match(token)
@@ -230,7 +236,7 @@ def _parse_step(token: str, path, line_no, problems, allow_repeat: bool) -> Step
     if args is not None:
         count = COUNT.match(args.strip())
         if " is " in f" {args} ":
-            problems.error(path, "a loop that leaves on a condition arrives in TeamRunner 0.3",
+            problems.error(path, f"a loop that leaves on a condition {LATER}",
                            line=line_no, value=token, fix="repeat it a fixed number of times: `name(*3)`")
             return None
         if not count or int(count[1]) < 1:
@@ -514,6 +520,14 @@ def _check_toolkeeper_step(block: Block, i: int, cast: Cast, path, problems) -> 
         return
     if cast.kinds[asker.name] == "unreadable":
         return
+    if asker.repeat > 1:  # only its last turn's request would reach the toolkeeper (review 2026-11-16, C7)
+        block_name = f"{asker.name}_{asker.stage}" if asker.stage else f"{asker.name}_asks"
+        problems.error(path, f"`{asker.label}(*{asker.repeat})` repeats just before the toolkeeper "
+                       f"`{step.name}`, so only its last turn's request would reach `{step.name}`",
+                       line=step.line, value=asker.label,
+                       fix=f"repeat a block that asks each time: `{block_name}(*{asker.repeat}) -> …` "
+                       f"with `{block_name} = {asker.label} -> {step.name}`")
+        return
     if i - 1 in block.decisions:
         problems.error(path, f"`{asker.label}` decides here, so its turn cannot also end with "
                        f"a request to `{step.name}`", line=step.line,
@@ -548,6 +562,7 @@ def _check_decision(block: Block, index: int, decision: Decision, cast: Cast, pa
         problems.error(path, f"`{step.name}` is a toolkeeper, and a toolkeeper does not decide",
                        line=decision.line)
         return
+    _check_jumps_to_toolkeepers(block, step, decision, cast, path, problems)
     choices = {f.name: f for f in cast.outputs.get(step.name, {}).values() if f.type == "choice"}
     labels = set(decision.routes)
     if not choices:
@@ -590,6 +605,30 @@ def _check_decision(block: Block, index: int, decision: Decision, cast: Cast, pa
     if decision.bound is not None and _loops(index, decision.bound.target):
         problems.error(path, "the counted way out loops back too, so the loop would never end",
                        line=decision.line, fix="point the counted arrow forward, to `done` or to `stop`")
+
+
+def _check_jumps_to_toolkeepers(block: Block, step: Step, decision: Decision, cast: Cast, path,
+                                problems) -> None:
+    """A toolkeeper answers the member whose turn just asked it. A decision that jumps
+    to a toolkeeper's step lands there after the decider's turn, and the decider only
+    decided, so the toolkeeper has no question and the run stops (review 2026-11-16, C1).
+    Jumps past the written sequence are reported by `_check_toolkeeper_step`."""
+    arrows = [(f"--{option}-->", target) for option, target in decision.routes.items()]
+    if decision.bound is not None:
+        arrows.append((f"--*{decision.bound.count}-->", decision.bound.target))
+    for arrow, target in arrows:
+        if not isinstance(target, int) or target >= block.sequence_length:
+            continue
+        keeper = block.steps[target]
+        if keeper.kind != "member" or cast.kinds.get(keeper.name) != "toolkeeper":
+            continue
+        asker = block.steps[target - 1] if target > 0 else None
+        fix = (f"point it at `{asker.label}`, who asks `{keeper.name}`: `{step.label} {arrow} {asker.label}`"
+               if asker is not None and asker.kind == "member" else
+               f"point it at the member who asks `{keeper.name}`")
+        problems.error(path, f"`{step.label} {arrow} {keeper.name}` jumps to the toolkeeper `{keeper.name}`, "
+                       f"but a toolkeeper answers only the member whose turn just asked it, and "
+                       f"`{step.label}` only decides", line=decision.line, value=keeper.name, fix=fix)
 
 
 def _check_recursion(flow: Flow, path, problems) -> None:

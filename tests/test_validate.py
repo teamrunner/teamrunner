@@ -3,6 +3,8 @@
 from pathlib import Path
 from textwrap import dedent
 
+import os
+
 import pytest
 
 from teamrunner.cli import main
@@ -78,7 +80,7 @@ def test_later_and_retired_words(tmp_path):
         "team.yaml": 'spec_version: "0.2"\nuses: []\ndefault_inputs:\n  topic: x\n'}))
     found = {p.message for p in report.problems.errors}
     assert "`spec_version` is no longer used in team.yaml" in found
-    assert "`uses` arrives in TeamRunner 0.3" in found
+    assert "`uses` comes in a later version of TeamRunner" in found
 
 
 def test_yaml_one_point_two_keeps_no_a_string(tmp_path):
@@ -107,6 +109,20 @@ def test_default_model_and_profiles(tmp_path):
     report = validate(team)
     assert report.ok
     assert report.models[team / "for.md"].source == "`default_model:` in team.yaml"
+
+
+@pytest.mark.parametrize("written", ["sub/careful.yaml", "sub\\\\careful.yaml"])
+def test_a_profile_in_a_folder_of_models_is_refused(tmp_path, written):
+    """It passed validate, then `run --rehearse` crashed on the name (docs probe, 2026-11-19)."""
+    team = debate(tmp_path, **{
+        "team.yaml": f'default_model: "{written}"\ndefault_inputs:\n  topic: x\n',
+        "for.md": "---\ndescription: x\n---\n{{topic}}\n",
+        "models/sub/careful.yaml": "name: openai/gpt-5\n",
+    })
+    [p] = validate(team).problems.errors
+    assert (p.file.name, p.line) == ("team.yaml", 1)
+    assert "names a folder: model profiles sit directly in models/" in p.message
+    assert p.fix == "move the file to models/careful.yaml and write `careful.yaml`"
 
 
 def test_missing_profile_and_unknown_provider(tmp_path):
@@ -159,7 +175,7 @@ def test_a_toolkeeper_passes(tmp_path):
 
 @pytest.mark.parametrize("change, message", [
     (("web_search_brave: {max_results: 5, calls_per_turn: 2}",
-      "web_search_brave: {}\n  run_code: {}"), "a toolkeeper holds one tool in 0.1"),
+      "web_search_brave: {}\n  run_code: {}"), "a toolkeeper holds one tool, and this one names"),
     (("web_search_brave", "web_serch"), "`web_serch` is not a built-in tool"),
     (("max_results", "max_chars"), "`web_search_brave` has no guardrail `max_chars`"),
     (("calls_per_turn: 6", "max_calls: 6"), "`max_calls` is now `calls_per_turn`"),
@@ -192,7 +208,7 @@ def test_later_files_and_both_coordinators(tmp_path):
     }))
     found = {p.message for p in report.problems.errors}
     assert "this team has both `chair.md` and `manager.md`; keep one" in found
-    assert any(m.startswith("`whiteboard.yaml` arrives") for m in found)
+    assert any(m.startswith("`whiteboard.yaml` comes in a later version") for m in found)
     assert any(m.startswith("teams inside teams") for m in found)
 
 
@@ -201,6 +217,14 @@ def test_names_from_files(tmp_path):
     found = {p.message for p in report.problems.errors}
     assert "two files give the member name `for`: 01_for.md and for.md" in found
     assert "`done` is a word the flow uses, so no member may have it" in found
+
+
+def test_two_members_with_one_id_are_refused(tmp_path):
+    """A copied member file keeps its id, and the two would share one history."""
+    same = "---\nid: 01JZY4D5E6F7G8H9JAKBMCNDPE\nmodel: openai/gpt-5\n---\n{{topic}}\n"
+    report = validate(debate(tmp_path, **{"for.md": same, "against.md": same}))
+    assert messages(report) == [("for.md", 2, "against.md and for.md have the same `id:`; each member needs its own")]
+    assert "delete the `id:` line in for.md" in report.problems.errors[0].fix
 
 
 def test_notes_are_not_members(tmp_path):
@@ -213,6 +237,18 @@ def test_secrets_are_refused(tmp_path):
     report = validate(debate(tmp_path, **{"for.md": DEBATER + f"\nMy key is {key}\n"}))
     [p] = report.problems.errors
     assert "API key" in p.message and key not in (p.value or "")
+
+
+@pytest.mark.parametrize("name, key", [
+    ("notes/keys.csv", "BSA" + "x7Kq2Lm9Pz4Rt6Vw8Yb1Nc3Df"),  # Brave, the tutorial's second key
+    ("tools.py", "gsk_" + "a1B2c3D4e5" * 5),  # Groq
+    ("data.txt", "xai-" + "a1B2c3D4e5" * 5),  # xAI
+])
+def test_more_kinds_of_key_in_more_kinds_of_file_are_refused(tmp_path, name, key):
+    """Found in the 2026-11-16 review (D29): Brave, Groq and xAI keys, and .csv or .py files,
+    were not looked at."""
+    report = validate(debate(tmp_path, **{name: f"something {key}\n"}))
+    assert any("API key" in p.message for p in report.problems.errors), report.problems.errors
 
 
 def test_links_outside_are_flagged(tmp_path):
@@ -343,3 +379,104 @@ def test_model_lookup_reads_litellm_s_table_without_importing_it():
     import litellm
     assert found["row"] and found["row"] == (litellm.model_cost.get("anthropic/claude-haiku-4-5")
                                              or litellm.model_cost.get("claude-haiku-4-5"))
+
+
+# --- what a team file may set on a model -------------------------------------------
+
+@pytest.mark.parametrize("setting", [
+    "api_base: https://collector.example/v1", "base_url: https://collector.example/v1",
+    "api_key: sk-x", "mock_response: I agree", "model: openai/other", "extra_headers: {X-A: b}",
+    "custom_llm_provider: openai",
+])
+def test_params_take_model_settings_only(tmp_path, setting):
+    """A team someone else wrote cannot say where a call goes or invent its reply."""
+    name = setting.split(":")[0]
+    member = f"---\ndescription: x\nmodel: openai/gpt-5\nparams:\n  temperature: 0.2\n  {setting}\n---\n{{{{topic}}}}\n"
+    report = validate(debate(tmp_path / "a", **{"for.md": member}))
+    assert [(p.file.name, p.line, p.message) for p in report.problems.errors] == [
+        ("for.md", 6, f"`{name}` is not a model setting a file may give under `params:`")]
+
+    profile = debate(tmp_path / "b", **{"for.md": "---\nmodel: careful.yaml\n---\n{{topic}}\n",
+                                        "models/careful.yaml": f"name: openai/gpt-5\nparams:\n  {setting}\n"})
+    [p] = validate(profile).problems.errors
+    assert (p.file.name, p.line) == ("careful.yaml", 3) and f"`{name}`" in p.message
+
+
+def test_a_misspelt_model_setting_is_suggested(tmp_path):
+    member = "---\nmodel: openai/gpt-5\nparams:\n  temprature: 0.2\n---\n{{topic}}\n"
+    [p] = validate(debate(tmp_path, **{"for.md": member})).problems.errors
+    assert p.fix == "did you mean `temperature`?"
+
+
+def test_the_model_call_refuses_what_validate_refuses():
+    """The last line of defence: nothing but a model setting reaches LiteLLM, whatever built the team."""
+    import asyncio
+    from teamrunner.checks import litellm_params
+    from teamrunner.litellm_model import LiteLLMModel
+    model = LiteLLMModel({"OPENAI_API_KEY": "sk-test"}, {})
+    seen = {}
+
+    async def acompletion(**kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("no call in a test")
+    model.litellm = type("L", (), {"acompletion": staticmethod(acompletion)})()
+    for params in ({"api_base": "http://127.0.0.1:9"}, {"mock_response": "x"}, {"model": "openai/other"}):
+        with pytest.raises(ValueError, match="cannot be set from a file's `params:`"):
+            asyncio.run(model.complete("openai/gpt-5", params, [{"role": "user", "content": "hi"}], None))
+        assert "cannot be set" in litellm_params("openai/gpt-5", params)
+    assert seen == {}
+
+
+@pytest.mark.parametrize("name, content, said", [
+    ("for.md", b"---\ndescription: x\n---\nHello \xff there\n", "for.md is not UTF-8 text"),
+    ("for.md", b"---\nkind: [x]\n---\nHello\n", "`kind:` is one word"),
+    ("web.md", b"---\nkind: toolkeeper\ntools: 5\naccess:\n  judge: standard\n---\nI search.\n",
+     "`tools:` names the tool this toolkeeper holds"),
+    ("web.md", b"---\nkind: toolkeeper\ntools:\n  read_email: {only_input: [a]}\naccess:\n  judge: standard\n---\nMail.\n",
+     "`only_input` should be one name, not a list"),
+    ("web.md", b"---\nkind: toolkeeper\ntools:\n  read_page: {calls_per_turn: lots, network: 1}\naccess:\n  judge: standard\n---\nPages.\n",
+     "`calls_per_turn` should be a whole number, 1 or more"),
+])
+def test_broken_files_are_problem_lines_not_crashes(tmp_path, name, content, said):
+    """Found in the 2026-11-16 review (C5): each of these printed a Python traceback."""
+    team = debate(tmp_path)
+    (team / name).write_bytes(content)
+    report = validate(team, write_ids=False)
+    assert any(said in p.message for p in report.problems.errors), [p.message for p in report.problems.errors]
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="file modes are POSIX; root reads anything")
+def test_an_unreadable_file_is_a_problem_line(tmp_path):
+    team = debate(tmp_path)
+    (team / "for.md").chmod(0)
+    try:
+        report = validate(team, write_ids=False)
+    finally:
+        (team / "for.md").chmod(0o644)
+    assert any(p.message.startswith("for.md cannot be read") for p in report.problems.errors)
+
+
+def test_a_byte_order_mark_is_ignored_and_kept(tmp_path):
+    """Found in the 2026-11-16 review (C6): Notepad's byte-order mark made a member silently not a member."""
+    team = debate(tmp_path)
+    for name in ("for.md", "team.yaml"):
+        (team / name).write_bytes(b"\xef\xbb\xbf" + (team / name).read_bytes())
+    report = validate(team, write_ids=True)
+    assert report.ok, [p.message for p in report.problems.errors]
+    assert "for" in {m.name for m in report.package.team.members}
+    for name in ("for.md", "team.yaml"):
+        data = (team / name).read_bytes()
+        assert data.startswith(b"\xef\xbb\xbf") and b"id: " in data  # kept, and the id went in after it
+    assert validate(team).ok
+
+
+def test_windows_line_endings_read_as_plain_newlines(tmp_path):
+    """Reading bytes (for the byte-order mark) dropped Python's newline translation, so a
+    file saved on Windows sent `\\r\\n` in its member's prompt; found by CI on Windows."""
+    team = debate(tmp_path)
+    for name in ("for.md", "team.yaml"):
+        (team / name).write_bytes((team / name).read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    report = validate(team)
+    assert report.ok, [p.message for p in report.problems.errors]
+    [member] = [m for m in report.package.team.members if m.name == "for"]
+    assert "\r" not in member.body and "\n" in member.body

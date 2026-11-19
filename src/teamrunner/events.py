@@ -13,11 +13,14 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from .ids import new_ulid
+from .keys import hide
 
 
 class Log:
-    def __init__(self, run_id: str | None = None, on_event: Callable[[dict], None] | None = None):
+    def __init__(self, run_id: str | None = None, on_event: Callable[[dict], None] | None = None,
+                 secrets=()):
         self.run_id = run_id or new_ulid()
+        self.secrets = list(secrets)  # every event is written with these hidden (S8)
         self.events: list[dict] = []
         self.on_event = on_event
 
@@ -27,7 +30,7 @@ class Log:
             "seq": seq,
             "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "run_id": self.run_id,
-            **event,
+            **(hide(event, self.secrets) if self.secrets else event),
         }
         self.events.append(line)
         if self.on_event:

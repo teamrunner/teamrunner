@@ -39,6 +39,33 @@ LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 Ask = Callable[[str, list[str]], str]  # a question and its answers -> the answer chosen
 
 
+HIDDEN = "[key hidden]"
+
+
+def hide(value, secrets):
+    """`value` with every key in `secrets` replaced by `[key hidden]`, inside strings,
+    lists and dicts at any depth: what a provider's error echoes never reaches a run
+    folder people share (review 2026-11-16, S8). Values under 8 characters are not
+    keys and are left alone, so a stray short value cannot blank ordinary words."""
+    secrets = [s for s in secrets if s and len(s) >= 8]
+    if not secrets:
+        return value
+    return _hide(value, sorted(set(secrets), key=len, reverse=True))
+
+
+def _hide(value, secrets):
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret in value:
+                value = value.replace(secret, HIDDEN)
+        return value
+    if isinstance(value, dict):
+        return {k: _hide(v, secrets) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_hide(v, secrets) for v in value]
+    return value
+
+
 def key_file() -> Path:
     home = os.environ.get("TEAMRUNNER_HOME")
     return (Path(home) if home else Path.home() / ".teamrunner") / ".env"
@@ -60,13 +87,38 @@ def read_env(path: Path) -> dict[str, str]:
     return values
 
 
+def _make_private(path: Path) -> bool:
+    """A key file made by hand is often readable by everyone on the computer; make it
+    the owner's alone (review 2026-11-16, D28). True if it had to be changed. Not on
+    Windows, where the profile folder's permissions do this."""
+    if os.name == "nt" or not path.is_file():
+        return False
+    try:
+        if path.stat().st_mode & 0o077:
+            path.chmod(0o600)
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def save_key(path: Path, name: str, value: str) -> None:
-    """Add a key to the key file, readable only by its owner (D99)."""
+    """Put a key in the key file, readable only by its owner (D99). A key already
+    there under that name is replaced, so the old value does not stay in the file;
+    the file is never readable by others, not even for a moment (review 2026-11-16, S10)."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    path.write_text(existing + f"{name}={value}\n", encoding="utf-8")
+    kept = [line for line in existing.splitlines(keepends=True)
+            if not ((m := LINE.match(line)) and m[1] == name)]
+    if kept and not kept[-1].endswith("\n"):
+        kept[-1] += "\n"
+    text = "".join(kept) + f"{name}={value}\n"
+    temporary = path.with_name(path.name + ".new")
+    temporary.unlink(missing_ok=True)
+    handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+        stream.write(text)
+    os.replace(temporary, path)
     path.chmod(0o600)
 
 
@@ -101,10 +153,13 @@ def find_keys(names: list[str], top: Path | None, ask: Ask | None, env: dict | N
     env = os.environ if env is None else env
     keyfile = keyfile or key_file()
     stored = read_env(keyfile)
+    keys_made_private = _make_private(keyfile)
     in_package = {p: read_env(p) for p in package_envs(top)} if top else {}  # None: no package yet
     keys = Keys()
     shown = f"~/{keyfile.relative_to(Path.home()).as_posix()}" if keyfile.is_relative_to(Path.home()) else str(keyfile)
 
+    if keys_made_private:
+        keys.notes.append(f"{shown} could be read by other people on this computer; it is now yours alone")
     for name in names:
         held = [p for p, values in in_package.items() if name in values]
         if name in stored:

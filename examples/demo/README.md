@@ -2,8 +2,8 @@
 
 This example uses `teamrunner/demoLLM`, a free, limited service sponsored by
 TeamRunner. No account or API key is needed. Prompts and earlier speeches are
-sent to TeamRunner's server and its model provider (currently OpenRouter and
-Alibaba). Do not include private information. The model may change; each turn
+sent to TeamRunner's server and its model provider (currently Anthropic, whose
+Claude Haiku 5.5 answers). Do not include private information. The model may change; each turn
 records the model that answered. This service is for trying small examples.
 
 ```sh

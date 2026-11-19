@@ -114,6 +114,16 @@ def model_price(model: str, prices: Prices) -> dict:
             "source": f"LiteLLM {litellm_version()}'s price table"}
 
 
+def unpriced_note(models: list[str], prices: Prices) -> str:
+    """What to say when a model has no list price: its cost is unknown, and how the person
+    adds the price themselves. One wording everywhere it is said."""
+    names = ", ".join(models)
+    return (f"{names} {'has' if len(models) == 1 else 'have'} no list price, so its cost shows as unknown "
+            f"($?); what the provider charges is still recorded when it says. To count it, add the price to "
+            f"{prices.shown}, in US dollars per million tokens: "
+            f"`models: {{{models[0]}: {{input: …, output: …}}}}`")
+
+
 def tool_price(tool: str, built_in: float, prices: Prices) -> dict:
     if tool in prices.tools:
         return {"per_call": prices.tools[tool], "source": prices.shown}

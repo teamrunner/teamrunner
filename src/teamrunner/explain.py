@@ -21,7 +21,11 @@ from .engine import Engine, Result
 from .ir import DONE, STOP
 from .runs import all_runs, runs_folder
 
-MERMAID = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"
+# The same Mermaid the browser page bundles (ui/static/vendor/mermaid.js), so a saved
+# page that loads it from the CDN gets exactly that file or nothing (review 2026-11-16, S10).
+MERMAID = "https://cdn.jsdelivr.net/npm/mermaid@12.3.0/dist/mermaid.min.js"
+MERMAID_INTEGRITY = "sha384-HHW54r639fK42Ip0coGF3mz8oSiGn0eEoWNTLs75X7H63pLSDBa0Tqs0RwGmLlXE"
+BUNDLED_MERMAID = Path(__file__).parent / "ui" / "static" / "vendor" / "mermaid.js"
 
 
 def _join(names) -> str:
@@ -164,9 +168,9 @@ def explain(team: ir.Team) -> str:
     for spec in team.inputs.values():
         users = [m.name for m in workers if spec.name in m.inputs]
         default = " ".join(str(spec.default).split()) if spec.has_default else None
-        shown = (default if len(default) <= 60 else default[:59] + "…") if default else None
-        out.append(f"  {spec.name} — used by {_join(users)}; "
-                   + (f"default: \"{shown}\"" if shown else "no default: every run must give it")
+        shown = (default if len(default) <= 60 else default[:59] + "…") if default is not None else None
+        out.append(f"  {spec.name} — used by {_join(users)}; "  # `""` is a default too (C10)
+                   + (f"default: \"{shown}\"" if shown is not None else "no default: every run must give it")
                    + (" · --message fills it" if team.message_goes_to == spec.name else ""))
 
     out += ["", "Who sees what",
@@ -261,9 +265,13 @@ def mermaid(team: ir.Team) -> str:
     return "\n".join(lines)
 
 
-def diagram_page(team: ir.Team) -> str:
-    """A page that draws the flow (D96). Mermaid's script loads from a CDN, so
-    the page needs the internet when it is opened; it can be saved as SVG from there."""
+def diagram_page(team: ir.Team, offline: bool = False) -> str:
+    """A page that draws the flow (D96); it can be saved as SVG from there. `offline`:
+    Mermaid comes from the copy installed with TeamRunner, for a page opened on this
+    computer only; otherwise from the CDN, checked against MERMAID_INTEGRITY, so a
+    saved page still works on another computer with the internet."""
+    script = (f'<script src="{BUNDLED_MERMAID.resolve().as_uri()}"></script>' if offline else
+              f'<script src="{MERMAID}" integrity="{MERMAID_INTEGRITY}" crossorigin="anonymous"></script>')
     text = html.escape(mermaid(team))
     title = html.escape(team.name)
     words = html.escape(explain(team))
@@ -279,7 +287,7 @@ def diagram_page(team: ir.Team) -> str:
 <span>⬡ a toolkeeper step</span><span>⬭ done or stop</span></p>
 <pre class="mermaid">{text}</pre>
 <h2>In words</h2><pre class="words">{words}</pre>
-<script src="{MERMAID}"></script>
+{script}
 <script>mermaid.initialize({{ startOnLoad: true, flowchart: {{ htmlLabels: false }} }});</script>
 </body></html>
 """

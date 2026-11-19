@@ -13,6 +13,8 @@ from .version_check import user_agent
 
 DEFAULT_API_BASE = "https://demollm.teamrunner.ai/v1"
 PARAMS = frozenset({"temperature", "top_p", "max_tokens", "seed"})
+# The gateway's allowance codes that no retry can wait out (gateway.py, ALLOWANCES).
+SPENT_FOR_TODAY = frozenset({"allowance_day", "allowance_all_day", "allowance_month"})
 
 
 def api_base(settings: dict) -> str:
@@ -38,7 +40,8 @@ async def complete(model, params, messages, schema, tools, settings) -> Reply:
             "name": "turn", "schema": schema, "strict": True}}
     started = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=75, follow_redirects=False) as client:
+        # Longer than the gateway's slowest answer (Caddy gives up at 50 seconds).
+        async with httpx.AsyncClient(timeout=55, follow_redirects=False) as client:
             # The gateway may refuse versions too old for the demo (D148 (11), D149).
             response = await client.post(api_base(settings) + "/chat/completions", json=body,
                                          headers={"User-Agent": user_agent()})
@@ -47,15 +50,20 @@ async def complete(model, params, messages, schema, tools, settings) -> Reply:
     if response.status_code != 200:
         # Display only the gateway's deliberately public error, never an upstream response.
         try:
-            reason = response.json()["error"]["message"]
-        except (ValueError, KeyError, TypeError):
-            reason = "the demo server could not complete this request"
-        error = TransientError if response.status_code in {429, 502, 503, 504} else RuntimeError
+            error_body = response.json()["error"]
+            reason, code = error_body["message"], error_body.get("code")
+        except (ValueError, KeyError, TypeError, AttributeError):
+            reason, code = "the demo server could not complete this request", None
+        # A daily or monthly allowance does not come back within the retry waits: stop at once.
+        retry = response.status_code in {429, 502, 503, 504} and code not in SPENT_FOR_TODAY
+        error = TransientError if retry else RuntimeError
         raise error(f"TeamRunner demo: {str(reason)[:300]}")
     data = response.json()
     usage = data.get("usage") or {}
+    # The gateway names its provider; one without the field is the OpenRouter gateway.
+    provider = str(data.get("provider") or "openrouter")
     return Reply(text=data["choices"][0]["message"]["content"],
-                 model_resolved="openrouter/" + data["model"].removeprefix("openrouter/"),
+                 model_resolved=provider + "/" + data["model"].removeprefix(provider + "/"),
                  usage={"input": usage.get("prompt_tokens", 0), "output": usage.get("completion_tokens", 0)},
                  cost_usd=0.0, cost_charged_usd=0.0,
                  cost_source="TeamRunner-sponsored demo (free to you)",

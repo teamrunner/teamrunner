@@ -8,7 +8,7 @@
 // and Stop run teamrunner experiment in the server (D150). A real run or an evaluation
 // starts only on the confirmation the page showed, with its cost (D151).
 
-let experimentPath = "", experimentData = null, experimentRequest = 0, slotsShown = "real";
+let experimentPath = "", experimentData = null, experimentRequest = 0, refreshRequest = 0, slotsShown = "real";
 // Experiments running in this server session (D150: several at once, each only once), by path,
 // and the open experiment's job with its lines. Polled while anything runs.
 let experimentJobs = {}, experimentLive = null, experimentPoll = null, experimentSeen = "", experimentQuote = null;
@@ -26,6 +26,7 @@ function tableOf(head, className = "exp-table") {
 function section(title, ...children) { const box = node("section", undefined, "exp-section"); box.append(node("h3", title), ...children); return box; }
 
 async function experimentsView() {
+  setMode("experiments");
   showView("experiments");
   if (experimentPath && experimentData) return;
   await loadExperiments();
@@ -56,6 +57,7 @@ async function loadExperiments() {
 
 async function openExperiment(path) {
   const request = ++experimentRequest;
+  setMode("experiments");
   showView("experiments"); expNotice("Reading the experiment…");
   try {
     const data = await api("/api/experiment" + pathQuery(path));
@@ -70,10 +72,12 @@ async function openExperiment(path) {
 
 // Re-read the open experiment without leaving the tab the person is on.
 async function refreshExperiment() {
-  const path = experimentPath, request = ++experimentRequest;
+  // Its own counter: a refresh that lands after another experiment was chosen is dropped, and
+  // never cancels that opening (review 2026-11-16, U4).
+  const path = experimentPath, request = ++refreshRequest, opened = experimentRequest;
   try {
     const data = await api("/api/experiment" + pathQuery(path));
-    if (request !== experimentRequest || path !== experimentPath) return;
+    if (request !== refreshRequest || opened !== experimentRequest || path !== experimentPath) return;
     experimentData = data;
     if (!byId("experiment-detail").hidden) renderExperiment();
   } catch (error) { /* the next poll tries again */ }
@@ -131,6 +135,8 @@ function renderConfirm(q, why = "") {
   experimentQuote = q;
   const box = byId("experiment-confirm"), evaluating = q.evaluating === "only";
   box.replaceChildren(); box.hidden = false; showJobControls();
+  // Keyboard and screen-reader users are taken to what now asks for an answer (U10).
+  box.tabIndex = -1; requestAnimationFrame(() => box.focus());
   if (why) box.append(node("p", why, "exp-warning"));
   const buttons = node("div", undefined, "exp-confirm-buttons");
   const cancel = node("button", "Cancel"); cancel.type = "button"; cancel.addEventListener("click", closeConfirm);
@@ -214,23 +220,26 @@ async function stopExperiment() {
 
 async function pollExperiments() {
   clearTimeout(experimentPoll); experimentPoll = null;
+  let next = null;  // whatever happens below, the next round is scheduled (U4)
   try {
     experimentJobs = (await api("/api/experiment-job")).jobs;
     const active = Object.values(experimentJobs).some(job => !job.done);
     byId("experiments-dot").hidden = !active;
     if (experimentPath && experimentJobs[experimentPath]) {
       const job = await api("/api/experiment-job" + pathQuery(experimentPath));
-      if (job.path !== experimentPath) return;
-      const seen = `${job.path} ${job.finished} ${job.done} ${job.running.length}`;
-      experimentLive = job;
-      if (seen !== experimentSeen) { experimentSeen = seen; await refreshExperiment(); }
-      else if (!byId("experiment-detail").hidden) { showJobControls(); updateLiveLines(); }
+      if (job.path === experimentPath) {  // another experiment chosen meanwhile: the next round reads it
+        const seen = `${job.path} ${job.finished} ${job.done} ${job.running.length}`;
+        experimentLive = job;
+        if (seen !== experimentSeen) { experimentSeen = seen; await refreshExperiment(); }
+        else if (!byId("experiment-detail").hidden) { showJobControls(); updateLiveLines(); }
+      }
     } else if (!experimentPath && !byId("experiments-workspace").hidden) {
       const seen = JSON.stringify(Object.entries(experimentJobs).map(([path, job]) => [path, job.done, job.finished]));
       if (seen !== experimentSeen) { experimentSeen = seen; await loadExperiments(); }  // the list's counts and running marks
     }
-    if (active) experimentPoll = setTimeout(pollExperiments, 1000);
-  } catch (error) { experimentPoll = setTimeout(pollExperiments, 3000); }
+    if (active) next = 1000;
+  } catch (error) { next = serverGone ? null : 3000; }
+  finally { if (next !== null && experimentPoll === null) experimentPoll = setTimeout(pollExperiments, next); }
 }
 
 function updateLiveLines() {
@@ -265,6 +274,7 @@ function renderExperiment() {
 
 function showExperimentTab(name) {
   byId("experiment-detail").dataset.tab = name;
+  if (!byId("experiments-workspace").hidden) showView("experiments");
   for (const tab of ["plan", "runs", "summary"]) byId(`exp-${tab}-tab`).setAttribute("aria-pressed", String(tab === name));
   const body = byId("experiment-body");
   body.replaceChildren(...({plan: renderPlan, runs: renderSlots, summary: renderSummary}[name])(experimentData));
@@ -451,7 +461,22 @@ function renderSummary(data) {
   return parts;
 }
 
-byId("experiments-view").addEventListener("click", experimentsView);
+// Plan, Runs and Summary in the tab row: the chosen experiment's, or the list to choose from.
+async function experimentTab(name) {
+  setMode("experiments");
+  const chosen = chosenExperiment();
+  if (!chosen) { byId("experiment-detail").dataset.tab = name; await loadExperiments(); showView("experiments"); return; }
+  byId("experiment-detail").dataset.tab = name;
+  if (chosen !== experimentPath || !experimentData) await openExperiment(chosen);
+  showView("experiments");
+  if (experimentPath === chosen && experimentData) {
+    byId("experiments-list-panel").hidden = true; byId("experiment-detail").hidden = false; showExperimentTab(name);
+  }
+}
+for (const name of ["plan", "summary"]) byId(`${name}-view`).addEventListener("click", () => experimentTab(name));
+document.addEventListener("teamrunner:experiment-select", event => {
+  if (!byId("experiments-workspace").hidden) experimentTab(byId("experiment-detail").dataset.tab || "plan");
+});
 byId("refresh-experiments").addEventListener("click", () => experimentPath ? openExperiment(experimentPath) : loadExperiments());
 byId("all-experiments").addEventListener("click", () => { delete byId("experiment-detail").dataset.tab; loadExperiments(); });
 byId("edit-experiment").addEventListener("click", () => { if (experimentData) { fileView(); openFile(experimentData.file); } });

@@ -18,7 +18,7 @@ from . import vocabulary as V
 from .flow import Cast, check_flow, parse_flow, round_robin
 from .ids import write_member_id, write_team_id
 from .ir import Flow, model_list, output_fields
-from .loader import (CHAIR_FILE, MODELS_DIR, TEAM_FILE, Member, Package, Team,
+from .loader import (CHAIR_FILE, MODELS_DIR, TEAM_FILE, Member, Package, Team, read_file,
                      load_package, member_name, read_yaml, split_frontmatter)
 from .problems import Problems
 from .schema_check import check_schema
@@ -31,7 +31,8 @@ WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SECRET = re.compile(
     r"\b(sk-ant-[A-Za-z0-9_-]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}"
     r"|gh[pousr]_[A-Za-z0-9]{36,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}"
-    r"|tvly-[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{30,})"
+    r"|tvly-[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{30,}|gsk_[A-Za-z0-9]{40,}|xai-[A-Za-z0-9]{40,}"
+    r"|BSA[A-Za-z0-9_-]{20,})"
 )
 
 
@@ -105,24 +106,35 @@ def _check_package(package: Package, problems: Problems) -> None:
                          "the package will break if it is copied as it is",
                          fix="run `teamrunner gather` to replace it with a real copy")
     if package.has_tools_dir:
-        problems.error(package.top / "tools", "a package's own tools come after 0.1",
-                       fix="toolkeepers in 0.1 use the built-in tools: "
+        problems.error(package.top / "tools", f"a package's own tools {V.LATER}",
+                       fix="for now toolkeepers use the built-in tools: "
                        + ", ".join(f"`{t}`" for t in TOOLS) + "; remove the tools/ folder")
     for name, doc in package.models.items():
         if check_schema(doc, "model_profile", problems,
                         V.check_words(doc, V.MODEL_PROFILE, problems, "a model profile")):
             _check_provider(doc.path, doc.data.get("name"), doc.line("name"), problems)
+        V.check_params(doc.path, doc.data.get("params"), problems, lambda key, doc=doc: doc.line("params", key))
     _scan_secrets(package.top, problems)
 
 
-def _scan_secrets(top: Path, problems: Problems) -> None:
+# Text a package or an experiment may hold, where a key could be pasted by mistake.
+SCANNED = (".md", ".yaml", ".yml", ".json", ".txt", ".csv", ".tsv", ".py", ".toml", ".ini", ".cfg")
+
+
+def _scan_secrets(top: Path, problems: Problems, skip: tuple[str, ...] = ("runs",)) -> None:
+    """Every text file in `top` but `skip`ped folders and hidden ones (a package .env is the
+    run's business, D99): a key in a file that is shared goes with it."""
     for path in sorted(top.rglob("*")):
         inside = path.relative_to(top).parts
-        if inside[0] == "runs" or any(p.startswith(".") for p in inside):
-            continue  # a package .env is the run's business (D99), not validate's
-        if not path.is_file() or path.suffix not in (".md", ".yaml", ".yml", ".json", ".txt"):
+        if inside[0] in skip or any(p.startswith(".") for p in inside):
             continue
-        for number, text in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        if not path.is_file() or path.suffix.lower() not in SCANNED:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue  # a member or setting file that cannot be read is reported where it is read
+        for number, text in enumerate(content.splitlines(), 1):
             for hit in SECRET.finditer(text):
                 key = hit.group(0)
                 problems.error(path, "this looks like an API key, and a package is meant to be shared",
@@ -157,16 +169,16 @@ def _check_team(team: Team, package: Package, report: Report) -> None:
         check_schema(team.doc, "team", problems, words)
 
     for sub in team.subteams:
-        problems.error(sub.folder / TEAM_FILE, "teams inside teams (subteams) arrive in TeamRunner 0.3",
+        problems.error(sub.folder / TEAM_FILE, f"teams inside teams (subteams) {V.LATER}",
                        fix="run this subteam on its own, or keep its members in one team for now")
     for path in team.retired_files:
         instead = "chair.md (the flow as a script)" if path.name == "pathways.yaml" else \
-            "whiteboard.yaml (in 0.3)"
+            "whiteboard.yaml, in a later version"
         problems.error(path, f"`{path.name}` is no longer used", fix=f"its job is now {instead}")
     if team.chair and team.manager:
         problems.error(team.manager, "this team has both `chair.md` and `manager.md`; keep one")
     elif team.manager:
-        problems.error(team.manager, "`manager.md` (a team run by a model's judgment) arrives in TeamRunner 0.3",
+        problems.error(team.manager, f"`manager.md` (a team run by a model's judgment) {V.LATER}",
                        fix="use `chair.md` with a script, or no file for round-robin")
     flow = None
     if team.chair:
@@ -174,8 +186,8 @@ def _check_team(team: Team, package: Package, report: Report) -> None:
     elif not team.manager:
         flow = round_robin([m.name for m in team.members if m.kind != "toolkeeper"])
     if team.whiteboard:
-        problems.error(team.whiteboard, "`whiteboard.yaml` arrives in TeamRunner 0.3; "
-                       "in 0.1 everyone reads everything said",
+        problems.error(team.whiteboard, f"`whiteboard.yaml` {V.LATER}; "
+                       "for now everyone reads everything said",
                        fix="remove it for now")
 
     _check_names(team, problems)
@@ -214,8 +226,33 @@ def _cast(team: Team) -> Cast:
     return Cast(kinds, outputs, may_ask)
 
 
+# What each guardrail's value must be; a value of another shape is an error, not a crash
+# later (review 2026-11-16, C5).
+_WHOLE = ("calls_per_turn", "calls_per_run", "max_results", "max_chars")
+_FLAGS = ("network", "keep_results", "reply_only")
+_LISTS = ("domains", "paths", "types")
+_WORDS = ("mailbox", "only_input")
+
+
+def _guardrail_value(name: str, value) -> str | None:
+    """What `value` should be, if it is not; None when it fits."""
+    if name in _WHOLE and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+        return "a whole number, 1 or more"
+    if name == "timeout" and (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0):
+        return "a number of seconds, more than 0"
+    if name in _FLAGS and not isinstance(value, bool):
+        return "`true` or `false`"
+    if name in _LISTS and not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
+        return "a list, such as `[example.org, example.com]`"
+    if name in _WORDS and not isinstance(value, str):
+        return "one name, not a list"
+    return None
+
+
 def _read_chair(path: Path, problems: Problems) -> Flow | None:
-    text = path.read_text(encoding="utf-8")
+    text = read_file(path, problems)
+    if text is None:
+        return None
     parts = split_frontmatter(text)
     if parts is None:
         return parse_flow(text, path, 1, problems)
@@ -224,13 +261,13 @@ def _read_chair(path: Path, problems: Problems) -> Flow | None:
     if doc is None:
         return None
     if doc.data.get("kind") == "rules":
-        problems.error(path, "a rules chair (`kind: rules`) arrives in TeamRunner 0.3",
+        problems.error(path, f"a rules chair (`kind: rules`) {V.LATER}",
                        line=doc.line("kind"), fix="write the flow as a script instead")
         return None
     for key in doc.data:
-        problems.error(path, f"`{key}` is not a setting `chair.md` has in 0.1",
+        problems.error(path, f"`{key}` is not a setting `chair.md` has",
                        line=doc.line(key), value=str(key),
-                       fix="in 0.1 the chair is only its script; remove the settings block")
+                       fix="the chair is only its script; remove the settings block")
     return parse_flow(body or "", path, body_line, problems)
 
 
@@ -250,6 +287,18 @@ def _check_names(team: Team, problems: Problems) -> None:
                            f"{seen[name].path.name} and {member.path.name}",
                            fix="rename one of them")
         seen.setdefault(name, member)
+    # An id keeps one member's history together; two files with one id would mix theirs.
+    ids: dict[str, Member] = {}
+    for member in team.members:
+        written = member.front.data.get("id")
+        if not isinstance(written, str):
+            continue
+        if written in ids:
+            problems.error(member.path, f"{ids[written].path.name} and {member.path.name} have the same `id:`; "
+                           "each member needs its own", line=member.front.line("id"), value=written,
+                           fix=f"delete the `id:` line in {member.path.name} (a copied file?) "
+                           "and TeamRunner will write a new one")
+        ids.setdefault(written, member)
     for sub in team.subteams:
         if sub.folder.name in seen:
             problems.error(sub.folder, f"the subteam `{sub.folder.name}` has the same name as "
@@ -270,7 +319,12 @@ def _check_model_ref(path, written: str, line, package: Package, problems: Probl
 
 def _check_one_model(path, model: str, line, package: Package, problems: Problems) -> None:
     if model.endswith(".yaml"):
-        if model not in package.models and not (package.top / MODELS_DIR / model).is_file():
+        if "/" in model or "\\" in model:  # profiles are read from models/ itself, not its folders
+            name = model.replace("\\", "/").rsplit("/", 1)[1]
+            problems.error(path, f"`{model}` names a folder: model profiles sit directly in models/, "
+                           "and its folders are not read", line=line, value=model,
+                           fix=f"move the file to {MODELS_DIR}/{name} and write `{name}`")
+        elif model not in package.models and not (package.top / MODELS_DIR / model).is_file():
             known = list(package.models)
             hint = V.suggest(model, known)
             problems.error(path, f"there is no model profile `{model}` in models/",
@@ -289,6 +343,10 @@ def _check_member(member: Member, team: Team, by_name, default_model, package, r
     words = V.check_words(doc, V.MEMBER, problems, "a member file")
 
     kind = doc.data.get("kind", "llm")
+    if "kind" in words and not isinstance(kind, str):  # `kind: [x]` (review 2026-11-16, C5)
+        problems.error(member.path, "`kind:` is one word: `llm` (the default) or `toolkeeper`",
+                       line=doc.line("kind"), value=str(kind))
+        return
     if "kind" in words:
         if kind in V.KINDS_RETIRED:
             problems.error(member.path, f"`kind: {kind}` is now `kind: {V.KINDS_RETIRED[kind]}`",
@@ -296,7 +354,7 @@ def _check_member(member: Member, team: Team, by_name, default_model, package, r
                            fix=f"write `kind: {V.KINDS_RETIRED[kind]}`")
             return
         if kind in V.KINDS_LATER:
-            problems.error(member.path, f"`kind: {kind}` arrives in TeamRunner {V.KINDS_LATER[kind]}",
+            problems.error(member.path, f"`kind: {kind}` {V.LATER}",
                            line=doc.line("kind"), value=kind)
             return
     if not check_schema(doc, "member", problems, words) and kind not in V.KINDS:
@@ -315,6 +373,8 @@ def _check_worker(member: Member, words, default_model, package, report) -> None
             problems.error(member.path, f"only a toolkeeper has `{key}:`",
                            line=doc.line(key),
                            fix="give the tool to a toolkeeper (`kind: toolkeeper`) and let this member ask it")
+    if "params" in words:
+        V.check_params(member.path, doc.data.get("params"), problems, lambda key: doc.line("params", key))
     model = doc.data.get("model") if "model" in words else None
     if isinstance(model, str):
         _check_model_ref(member.path, model, doc.line("model"), package, problems)
@@ -326,7 +386,7 @@ def _check_worker(member: Member, words, default_model, package, report) -> None
                        fix="add `model: provider/name` here, or `default_model:` to team.yaml")
     for name in _placeholders(member):
         if name.startswith("whiteboard."):
-            problems.error(member.path, f"`{{{{{name}}}}}` reads the whiteboard, which arrives in TeamRunner 0.3",
+            problems.error(member.path, f"`{{{{{name}}}}}` reads the whiteboard, which {V.LATER}",
                            line=_body_line(member, name))
         elif not WORD.match(name):
             problems.error(member.path, f"`{{{{{name}}}}}` is not an input name: "
@@ -341,13 +401,18 @@ def _check_toolkeeper(member: Member, words, by_name, problems: Problems) -> Non
             problems.error(member.path, f"a toolkeeper has no `{key}:`; it decides by its `access:` table, "
                            "with no model", line=doc.line(key), fix="remove this line")
     tools = doc.data.get("tools") if "tools" in words else None
+    if tools and not isinstance(tools, dict):  # `tools: 5` (review 2026-11-16, C5)
+        problems.error(member.path, "`tools:` names the tool this toolkeeper holds, with its terms under it",
+                       line=doc.line("tools"), value=str(tools),
+                       fix="write, for example, `tools:` and under it `  web_search_brave: {max_results: 5}`")
+        return
     if not tools:
         if "tools" not in doc.data:
             problems.error(member.path, "a toolkeeper needs `tools:`, naming the tool it holds",
                            line=1, fix="add, for example, `tools:` with `web_search_brave: {}` under it")
         return
     if len(tools) > 1:
-        problems.error(member.path, "a toolkeeper holds one tool in 0.1, and this one names "
+        problems.error(member.path, "a toolkeeper holds one tool, and this one names "
                        f"{len(tools)}: " + ", ".join(f"`{t}`" for t in tools),
                        line=doc.line("tools"),
                        fix="split this file into one toolkeeper per tool")
@@ -358,7 +423,7 @@ def _check_toolkeeper(member: Member, words, by_name, problems: Problems) -> Non
         problems.error(member.path, f"`{tool}` is not a built-in tool",
                        line=doc.line("tools", tool), value=tool,
                        fix=f"did you mean `{hint}`?" if hint else
-                       "0.1 has " + ", ".join(f"`{t}`" for t in TOOLS))
+                       "the built-in tools are " + ", ".join(f"`{t}`" for t in TOOLS))
         return
     allowed = guardrails_of(tool)
 
@@ -376,6 +441,8 @@ def _check_toolkeeper(member: Member, words, by_name, problems: Problems) -> Non
                                line=line, value=g,
                                fix=f"did you mean `{hint}`?" if hint else
                                "its guardrails are " + ", ".join(f"`{a}`" for a in sorted(allowed)))
+            elif (wrong := _guardrail_value(g, terms[g])) is not None:
+                problems.error(member.path, f"`{g}` should be {wrong}", line=line, value=str(terms[g]))
 
     check_terms(tools[tool], "tools", tool)
     access = doc.data.get("access") if "access" in words else None
@@ -450,7 +517,7 @@ def _check_inputs(team: Team, words, problems: Problems) -> None:
         places = [(("tools", n), g) for n, g in tools.items()] + \
                  [(("access", n), g) for n, g in access.items()] + [(("others",), data.get("others"))]
         for keys, terms in places:
-            if isinstance(terms, dict) and "only_input" in terms and terms["only_input"] not in used:
+            if isinstance(terms, dict) and isinstance(terms.get("only_input"), str) and terms["only_input"] not in used:
                 named = str(terms["only_input"])
                 hint = V.suggest(named, used)
                 problems.error(member.path, f"`only_input: {named}` names an input no prompt uses",

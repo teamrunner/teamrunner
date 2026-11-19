@@ -42,7 +42,7 @@ def read_task_file(path: Path) -> dict:
     if not path.is_file():
         raise InputError(f"there is no task file at {path}")
     try:
-        data = YAML(typ="rt").load(path.read_text(encoding="utf-8"))
+        data = YAML(typ="rt").load(path.read_text(encoding="utf-8-sig"))
     except YAMLError as e:
         raise InputError(f"{path} is not valid YAML: {e}") from e
     if not isinstance(data, dict) or not isinstance(data.get("inputs"), dict):

@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import ir
-from .builtin_tools import TOOLS, Answer, Context, Refused
+from .builtin_tools import LIST_PRICES, TOOLS, Answer, Context, Refused
 from .events import Log
 from .prices import tool_price
 from .rehearsal import pretend_tool
@@ -61,6 +61,10 @@ class Desk:
             "parameters": tool.arguments,
         }}
 
+    def _settle(self, held: float, actual: float) -> None:
+        if held and self.ctx.ceiling is not None:
+            self.ctx.ceiling.settle(held, actual)
+
     async def ask(self, toolkeeper: ir.Member, asker: str, arguments, card: TurnCard,
                   mandatory: bool) -> tuple[str, int]:
         """Handle one request. Returns what the asker is told, and the event's seq."""
@@ -99,15 +103,29 @@ class Desk:
         if per_run is not None:
             allow["run"] = {"used": used_run + 1, "of": per_run}
         timeout = guardrails.get("timeout", DEFAULT_TIMEOUT)
+        # A priced call is set aside from a single run's ceiling first, as a model call is
+        # (review 2026-11-16, C9): if it does not fit, it is not made.
+        held = 0.0
+        if self.ctx.ceiling is not None and not self.ctx.rehearsal and LIST_PRICES.get(toolkeeper.tool):
+            held = (tool_price(toolkeeper.tool, LIST_PRICES[toolkeeper.tool], self.ctx.prices)["per_call"]
+                    if self.ctx.prices is not None else LIST_PRICES[toolkeeper.tool])
+            if not self.ctx.ceiling.reserve(held):
+                allowance.used -= 1
+                self.run_use[(toolkeeper.name, asker)] = used_run
+                allow = {"used": allowance.used, "of": per_turn}
+                return refuse("the run's cost ceiling is reached")
         try:
             answer: Answer = await asyncio.wait_for(
                 (pretend_tool if self.ctx.rehearsal else TOOLS[toolkeeper.tool].run)(
                     arguments, guardrails, self.ctx), timeout)
         except Refused as e:
+            self._settle(held, 0.0)
             return refuse(str(e))
         except asyncio.TimeoutError:
+            self._settle(held, held)  # it may have been charged: keep what was set aside
             return refuse(f"it took longer than {timeout} seconds")
         except Exception as e:  # a tool's own failure is told to the asker, not a crash
+            self._settle(held, 0.0)
             seq = self.log.emit({**event, "access": "allowed", "allowance": allow, "result": None,
                                  "error": f"{type(e).__name__}: {e}", "timeout_s": timeout,
                                  "latency_ms": int((time.monotonic() - started) * 1000)})
@@ -116,6 +134,7 @@ class Desk:
         if answer.cost_usd and self.ctx.prices is not None:  # a billed call: priced as D120 says
             price = tool_price(toolkeeper.tool, answer.cost_usd, self.ctx.prices)
             cost, source = price["per_call"], price["source"]
+        self._settle(held, cost or 0.0)
         kept = {} if answer.logged is None else {"result_kept": False}
         seq = self.log.emit({**event, "access": "allowed", "allowance": allow,
                              "result": answer.text if answer.logged is None else answer.logged, **kept,

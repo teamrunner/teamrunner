@@ -167,3 +167,70 @@ def test_new_asks_where_the_workspace_is_the_first_time(tmp_path, capsys, monkey
     assert workspace.remembered()[0] == (tmp_path / "me/teamrunner").resolve()
     assert "~/teamrunner/teams/fresh made" in capsys.readouterr().out.replace("\\", "/")
     assert main(["new", "second"]) == 0 and len(asked) == 1  # never asked again
+
+
+def test_an_id_goes_below_a_leading_document_marker(tmp_path):
+    """Found in the 2026-11-16 review (C2): a team.yaml opening with `---` was broken by its id."""
+    source = debate(tmp_path / "debate")
+    team = source / "team.yaml"
+    team.write_text("%YAML 1.2\n---\n" + team.read_text(encoding="utf-8"), encoding="utf-8")
+    report = validate(source, write_ids=True)
+    assert report.ok, report
+    text = team.read_text(encoding="utf-8")
+    assert text.startswith("%YAML 1.2\n---\nid: ") and ID.search(text)
+    assert validate(source).ok  # it still reads, and keeps its id
+    folder, _ = copy_from(source, tmp_path / "mine")
+    copied = (folder / "team.yaml").read_text(encoding="utf-8")
+    assert copied.startswith("%YAML 1.2\n---\nid: ") and PARENT.search(copied)
+    assert validate(folder).ok
+
+
+def test_an_id_that_would_break_a_file_is_not_written(tmp_path):
+    """C2: a team.yaml written as JSON cannot take an `id:` line; it is left exactly as it was."""
+    from teamrunner.ids import IdNotWritten, write_team_id
+    team = tmp_path / "team.yaml"
+    written = b'{"name": "t", "description": "x"}'
+    team.write_bytes(written)
+    with pytest.raises(IdNotWritten, match="add `id: …` as its first setting yourself"):
+        write_team_id(team)
+    assert team.read_bytes() == written
+    source = debate(tmp_path / "debate")
+    (source / "team.yaml").write_text('{"name": "debate"}\n', encoding="utf-8")
+    report = validate(source, write_ids=True)
+    assert (source / "team.yaml").read_text(encoding="utf-8") == '{"name": "debate"}\n'
+    assert any("could not add its `id:` line" in w.message for w in report.problems.warnings)
+    with pytest.raises(NewError, match="nothing was made"):
+        copy_from(source, tmp_path / "mine")
+    assert not (tmp_path / "mine").exists()
+
+
+def test_new_from_an_example_experiment_copies_it_and_its_team(tmp_path, monkeypatch, capsys):
+    """D159: `new <name> --from leader_vs_flat` puts the experiment in the workspace's experiments/,
+    and the example team it runs in teams/, unless a team of that name is there already."""
+    from teamrunner.experiment import build, read_experiment
+    from teamrunner.new import example_experiments
+    assert example_experiments() == ["leader_vs_flat"]
+    space = tmp_path / "space"
+    space.mkdir()
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("TEAMRUNNER_WORKSPACE", str(space))
+    monkeypatch.chdir(tmp_path)
+    assert main(["new", "study", "--from", "leader_vs_flat"]) == 0
+    out = capsys.readouterr().out
+    assert "teams/orchestrators_lite copied from orchestrators_lite" in out.replace("\\", "/")
+    study = space / "experiments" / "study"
+    assert (study / "experiment.md").is_file() and (study / "metrics" / "bugs_found.yaml").is_file()
+    assert not (study / "runs").exists() and not (study / "conditions").exists()
+    team = space / "teams" / "orchestrators_lite"
+    assert PARENT.search((team / "team.yaml").read_text(encoding="utf-8"))  # a copy, with its lineage
+    e = build(read_experiment(study))
+    assert e.ok, [p.message for p in e.problems.errors]
+    assert [c.name for c in e.conditions] == ["flat", "visible_leader"]
+    assert {m.name for m in e.measures} == {"bugs_found", "suppressed"}
+
+    (team / "noah.md").write_text((team / "noah.md").read_text(encoding="utf-8") + "\nEdited.\n", encoding="utf-8")
+    assert main(["new", "again", "--from", "leader_vs_flat"]) == 0  # the team there is used, not replaced
+    assert "copied from orchestrators_lite" not in capsys.readouterr().out
+    assert (team / "noah.md").read_text(encoding="utf-8").endswith("Edited.\n")
+    assert main(["new", "study", "--from", "leader_vs_flat"]) == 1
+    assert "already exists" in capsys.readouterr().err

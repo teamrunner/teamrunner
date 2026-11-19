@@ -52,7 +52,13 @@ def test_the_flow_as_a_picture(tmp_path):
     assert '-- "pass, or the third time" -->' in text
     assert '{{"library (toolkeeper)"}}' in text  # toolkeeper steps in their own shape (D109)
     page = diagram_page(team)
-    assert '<pre class="mermaid">flowchart TD' in page and "mermaid@11.4.1" in page
+    assert '<pre class="mermaid">flowchart TD' in page and "mermaid@12.3.0" in page
+    # S10 (review 2026-11-16): the CDN copy is checked, and the page opened here needs no CDN.
+    from teamrunner.explain import BUNDLED_MERMAID, MERMAID_INTEGRITY
+    assert f'integrity="{MERMAID_INTEGRITY}" crossorigin="anonymous"' in page
+    offline = diagram_page(team, offline=True)
+    assert "cdn.jsdelivr" not in offline and BUNDLED_MERMAID.resolve().as_uri() in offline
+    assert BUNDLED_MERMAID.is_file()
 
 
 def test_validate_json(tmp_path, capsys):
@@ -65,3 +71,18 @@ def test_validate_json(tmp_path, capsys):
                      "message": "`descripton` is not a word TeamRunner knows in a member file",
                      "value": "descripton", "fix": "did you mean `description`?"}
     assert len(data["ids_added"]) == 4
+
+
+
+def test_an_empty_default_is_a_default(tmp_path):
+    """C10: `explain` said "no default" for an input whose default is `""`."""
+    from teamrunner.build import load_team
+    team, _ = load_team(debate(tmp_path, **{"team.yaml": 'name: debate\ndefault_inputs:\n  topic: ""\n'}))
+    text = explain(team)
+    assert 'topic — used by' in text and 'default: ""' in text and "no default" not in text
+
+
+def test_save_needs_diagram(tmp_path, capsys):
+    """C10: `explain --save` without `--diagram` was silently ignored."""
+    assert main(["explain", str(debate(tmp_path)), "--save"]) == 1
+    assert "`--save` keeps the `--diagram` page; add `--diagram`" in capsys.readouterr().err

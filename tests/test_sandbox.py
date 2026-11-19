@@ -152,3 +152,79 @@ def test_code_cannot_touch_the_disk_or_the_environment(tmp_path):
             "        print(name, 'refused')\n")
     ran = asyncio.run(sandbox.run(code, tmp_path / "work", [], False))
     assert ran.stdout.split() == ["write", "refused", "read", "refused", "env", "refused"], ran
+
+
+def local_server():
+    import http.server
+    import threading
+
+    class Hello(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"hello from " + self.path.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Hello)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+FETCH = "from pyodide.http import pyfetch\nr = await pyfetch('{url}')\nprint('REACHED', r.status, await r.string())"
+
+
+def test_with_network_on_the_code_reaches_the_internet_but_not_this_computer(tmp_path):
+    """Found in the 2026-11-16 review (S6): `network: true` reached a server on 127.0.0.1,
+    and Deno cannot refuse IPv6 ranges. The code now has no network of its own: TeamRunner
+    fetches for it, and refuses this computer and its local network, IPv6 included."""
+    server = local_server()
+    port = server.server_address[1]
+    try:
+        for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"127.1:{port}", "169.254.169.254",
+                     f"[::1]:{port}", "[fd00::1]", "[fe80::1]", "[fd00:ec2::254]", "192.168.1.1"):
+            out = ran(FETCH.format(url=f"http://{host}/"), tmp_path, network=True)
+            assert "REACHED" not in out and "TeamRunner refused" in out, (host, out)
+    finally:
+        server.shutdown()
+
+
+def test_the_code_has_no_network_of_its_own(tmp_path):
+    """Round the fetch() TeamRunner answers, by Deno's own sockets: refused, for any address."""
+    for host in ("127.0.0.1", "fd00::1", "example.com"):
+        code = f'import js\nawait js.Deno.connect(js.eval(\'({{hostname: "{host}", port: 80}})\'))'
+        out = ran(code, tmp_path, network=True)
+        assert "Requires net access" in out, (host, out)
+
+
+def test_the_code_s_fetch_is_made_by_teamrunner(tmp_path, monkeypatch):
+    """With the local check lifted for this test only, the code's fetch() comes back through
+    TeamRunner: the status, the body and the address it ended at."""
+    import teamrunner.builtin_tools as tools
+    monkeypatch.setattr(tools, "_public", lambda host: True)
+
+    async def allow(request):
+        return None
+
+    monkeypatch.setattr(tools, "_refuse_local", allow)
+    server = local_server()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/page?x=1"
+        out = ran(FETCH.format(url=url), tmp_path, network=True)
+        assert out.startswith("Output:\nREACHED 200 hello from /page?x=1"), out
+        out = ran(FETCH.format(url=url), tmp_path)  # network off: no fetch at all
+        assert "REACHED" not in out and "Requires net access" in out
+    finally:
+        server.shutdown()
+
+
+def test_the_local_network_list_is_one_deno_accepts():
+    """Deno takes IPv4 ranges, but IPv6 only as single bracketed addresses."""
+    from teamrunner.sandbox import LOCAL_NETWORK
+    assert "127.0.0.0/8" in LOCAL_NETWORK and "[::1]" in LOCAL_NETWORK
+    assert all("/" not in n for n in LOCAL_NETWORK if ":" in n)
+    assert all(n.startswith("[") for n in LOCAL_NETWORK if ":" in n)

@@ -10,14 +10,16 @@ import json
 from pathlib import Path
 import secrets
 import subprocess
+import os
 import sys
 from threading import RLock
 from urllib.parse import parse_qs, quote, urlsplit
 import webbrowser
 
-from . import api, diagrams, experiment_jobs, experiments, jobs, runviews, stream
+from . import api, parts, describing, diagrams, experiment_jobs, experiments, jobs, runviews, stream
 from ..inputs import InputError
 from ..new import NewError, examples
+from ..workspace import is_workspace
 
 STATIC = Path(__file__).with_name("static")
 ASSETS = {"/app.js": "text/javascript; charset=utf-8",
@@ -49,6 +51,7 @@ class Server(ThreadingHTTPServer):
         self.url = f"{self.origin}/?token={self.token}"
         self.jobs = jobs.Jobs(self.root, self.files_lock)
         self.experiment_jobs = experiment_jobs.ExperimentJobs(self.root, self.files_lock)
+        self.describing = describing.Describing(self.root)
 
     def server_close(self):
         if hasattr(self, "jobs"):
@@ -84,11 +87,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Host") != urlsplit(self.server.origin).netloc:
             self.send(403, {"error": "Open the address printed by teamrunner ui."})
             return False
+        request = urlsplit(self.path)
+        # The browser is opened at a file:// page that redirects here (opener_page), and
+        # browsers mark that first visit cross-site. A top-level visit to the page itself
+        # is let through: it still needs the token, and nothing else is.
+        opening = (not mutation and request.path == "/"
+                   and self.headers.get("Sec-Fetch-Mode") == "navigate"
+                   and self.headers.get("Sec-Fetch-Dest") == "document")
         if (self.headers.get("Origin", self.server.origin) != self.server.origin
-                or self.headers.get("Sec-Fetch-Site") == "cross-site"):
+                or (self.headers.get("Sec-Fetch-Site") == "cross-site" and not opening)):
             self.send(403, {"error": "Open the address printed by teamrunner ui."})
             return False
-        request = urlsplit(self.path)
         query = parse_qs(request.query)
         token = self.headers.get("X-TeamRunner-Token", "" if mutation else query.get("token", [""])[0])
         if not hmac.compare_digest(token.encode(), self.server.token.encode()):
@@ -168,13 +177,17 @@ class Handler(BaseHTTPRequestHandler):
             elif request.path == "/api/info":
                 self.send(200, {"name": self.server.root.name, "folder": str(self.server.root),
                                 "team": (self.server.root / "team.yaml").is_file(),
-                                "examples": examples(), "feedback": feedback()})
+                                "examples": examples(), "feedback": feedback(),
+                                "workspace": is_workspace(self.server.root),
+                                "experiments": (self.server.root / "experiments").is_dir(),
+                                "teams": api.team_names(self.server.root)})
             elif request.path == "/api/team-contents":
                 self.send(200, api.team_contents(self.server.root, query.get("path", [""])[0]))
             elif request.path == "/api/files":
                 self.send(200, api.files(self.server.root, query.get("path", [""])[0]))
             elif request.path == "/api/file":
-                self.send(200, api.read_file(self.server.root, query.get("path", [""])[0]))
+                read = api.file_revision if query.get("only", [""])[0] == "revision" else api.read_file
+                self.send(200, read(self.server.root, query.get("path", [""])[0]))
             elif request.path == "/api/show":
                 self.send(200, api.show_member(self.server.root, query.get("path", [""])[0]))
             elif request.path == "/api/keys":
@@ -198,10 +211,16 @@ class Handler(BaseHTTPRequestHandler):
             elif request.path == "/api/run-file":
                 self.download(runviews.attachment(self.server.root, query.get("run", [""])[0],
                                                  query.get("file", [""])[0]))
+            elif request.path == "/api/experiment-parts":
+                self.send(200, parts.parts(self.server.root, query.get("path", [""])[0]))
             elif request.path == "/api/experiments":
                 self.send(200, experiments.listing(self.server.root))
             elif request.path == "/api/experiment":
                 self.send(200, experiments.detail(self.server.root, query.get("path", [""])[0]))
+            elif request.path == "/api/describe-models":
+                self.send(200, self.server.describing.models())
+            elif request.path == "/api/describe-status":
+                self.send(200, self.server.describing.status())
             elif request.path == "/api/run-setup":
                 self.send(200, self.server.jobs.setup(query.get("path", [""])[0]))
             else:
@@ -267,6 +286,16 @@ class Handler(BaseHTTPRequestHandler):
                     result = diagrams.restore(root, data["path"], data["destination"])
                 elif route == "/api/new":
                     result = api.new_team(root, data["path"], data.get("example", ""))
+                elif route == "/api/new-experiment":
+                    result = api.new_experiment(root, data.get("name", ""), data.get("team", ""))
+                elif route == "/api/variant":
+                    result = parts.new_variant(root, data.get("experiment", ""), data.get("name", ""), data.get("source", ""))
+                elif route == "/api/metric":
+                    result = parts.new_metric(root, data.get("experiment", ""), data.get("name", ""), data.get("kind", ""))
+                elif route == "/api/task":
+                    result = parts.new_task(root, data.get("experiment", ""), data.get("name", ""))
+                elif route == "/api/describe":
+                    result = self.server.describing.start(data)
                 elif route == "/api/key":
                     result = api.set_key(data["name"], data["value"])
                 elif route == "/api/open-run-folder":
@@ -316,6 +345,24 @@ def feedback() -> dict:
                     f"&body={quote(chr(10) * 2 + version + chr(10) + system)}"}
 
 
+def opener_page(url: str) -> Path:
+    """A page, readable only by this user, that sends the browser on to `url`. The
+    browser is opened at this page, not at `url`: the command that opens a browser
+    can be seen by other people on the same computer, and `url` holds the page's
+    token (review 2026-11-16, S10; Jupyter does the same)."""
+    import html as markup
+    import tempfile
+    from ..keys import key_file
+    folder = key_file().parent / "ui"
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    handle, name = tempfile.mkstemp(prefix="open-", suffix=".html", dir=folder)  # made 0600
+    shown = markup.escape(url, quote=True)
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={shown}">'
+                     f'<title>TeamRunner</title><p>Opening TeamRunner… <a href="{shown}">continue</a></p>\n')
+    return Path(name)
+
+
 def serve(folder: Path) -> int:
     try:
         server = Server(folder)
@@ -324,13 +371,18 @@ def serve(folder: Path) -> int:
         return 1
     with server:
         print(f"TeamRunner · {server.root}\n{server.url}\nPress Ctrl+C to stop.", flush=True)
+        opener = None
         try:
-            if not webbrowser.open(server.url):
+            opener = opener_page(server.url)
+            if not webbrowser.open(opener.as_uri()):
                 print("Open the address above in your browser.", flush=True)
-        except webbrowser.Error:
+        except (webbrowser.Error, OSError):
             print("Open the address above in your browser.", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             print("\nTeamRunner's local page stopped.")
+        finally:
+            if opener is not None:
+                opener.unlink(missing_ok=True)
     return 0

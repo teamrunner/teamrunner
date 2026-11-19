@@ -47,6 +47,7 @@ class Context:
     package_top: Path | None = None  # where `paths` are read from
     rehearsal: bool = False  # D115: requests are checked, but no tool runs
     prices: object = None  # prices.Prices: overrides from ~/.teamrunner/prices.yaml (D120)
+    ceiling: object = None  # a single run's ceiling.Ceiling: a priced tool call is set aside from it first
     inputs: dict = field(default_factory=dict)  # this run's input values, for `only_input`
 
 

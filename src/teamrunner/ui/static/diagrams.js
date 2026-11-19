@@ -25,12 +25,18 @@ function renderPath(container,data) {
   const details=node("details"); details.append(node("summary","Arrow counts"),table); container.append(details);
 }
 const comparedRuns=new Set();
+// The button says how many runs are ticked, so a tick on another team's list is never hidden (U7).
+function showCompared() {
+  byId("compare-runs").disabled=comparedRuns.size!==2;
+  byId("compare-runs").textContent=comparedRuns.size?`Compare selected runs (${comparedRuns.size} of 2)`:"Compare selected runs";
+}
+function clearCompared() { comparedRuns.clear(); showCompared(); }
 function compareCheckbox(run) {
   const cell=node("td"),input=node("input"); input.type="checkbox"; input.setAttribute("aria-label",`Compare ${run.team}, ${run.when}`); input.checked=comparedRuns.has(run.path);
   input.addEventListener("change",()=>{
     if(input.checked&&comparedRuns.size>=2) {input.checked=false; runsNotice("Select two runs to compare. Clear a selection to choose another."); return;}
     if(input.checked) comparedRuns.add(run.path); else comparedRuns.delete(run.path);
-    byId("compare-runs").disabled=comparedRuns.size!==2;
+    showCompared();
   }); cell.append(input); return cell;
 }
 byId("compare-runs").addEventListener("click",async()=>{
@@ -38,7 +44,7 @@ byId("compare-runs").addEventListener("click",async()=>{
     const [left,right]=comparedRuns,data=await api("/api/compare?"+new URLSearchParams({left,right}));
     byId("runs-list-panel").hidden=true;
     const view=byId("run-comparison"); view.hidden=false; view.replaceChildren();
-    const back=node("button","← Run history"); back.addEventListener("click",()=>{view.hidden=true; byId("runs-list-panel").hidden=false;}); view.append(back,node("h3","Compare runs"));
+    const back=node("button","← All runs"); back.addEventListener("click",()=>{view.hidden=true; byId("runs-list-panel").hidden=false;}); view.append(back,node("h3","Compare runs"));
     const columns=node("div",undefined,"comparison-columns");
     for(const [run,path] of [[data.left,data.left_path],[data.right,data.right_path]]) {
       const column=node("section"),summary=run.summary;

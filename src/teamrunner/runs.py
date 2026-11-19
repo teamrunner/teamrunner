@@ -121,6 +121,12 @@ def load_run(folder: Path, warnings: list[str] | None = None) -> RunRecord | Non
     return RunRecord(folder, when, run)
 
 
+def _turns(run: dict) -> str:
+    """A run's turns, or `?` when its record does not say (review 2026-11-16, C10)."""
+    turns = run.get("turns")
+    return str(turns) if isinstance(turns, int) else "?"
+
+
 def all_runs(runs: Path, *, allowed: Callable[[Path], bool] | None = None,
              warnings: list[str] | None = None) -> list[RunRecord]:
     found = []
@@ -159,8 +165,14 @@ def print_list(top: Path, records: list[RunRecord], shown: list[RunRecord], out:
         if r.run.get("backup_models"):
             rehearsal += " (backup model)"
         out.say(f"{r.shown_when:<13} {r.label:<20} {r.input:<34} {r.result:<26} "
-                f"{colour(f'{status:<9}')} {r.run.get('turns', 0):>3} turns "
+                f"{colour(f'{status:<9}')} {_turns(r.run):>3} turns "
                 f"{seconds(r.run.get('latency_ms')):>7} {money(r.run.get('cost_usd')):>9}{rehearsal}")
+    unpriced = sorted({m for r in shown if r.run.get("cost_usd") is None
+                       for m, price in ((r.run.get("prices") or {}).get("models") or {}).items()
+                       if price.get("input_per_million") is None})
+    if unpriced:  # what `$?` means, and how to fix it
+        from .prices import load_prices, unpriced_note
+        out.say(p.yellow("! $?: " + unpriced_note(unpriced, load_prices())))
 
 
 def read_events(folder: Path, warnings: list[str] | None = None):

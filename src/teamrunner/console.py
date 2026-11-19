@@ -15,6 +15,7 @@ be replayed from its `events.jsonl` (D102). Names, never ids (D88).
 
 from __future__ import annotations
 
+import shutil
 import sys
 import textwrap
 
@@ -50,9 +51,32 @@ class Console:
         self.shown_outputs: dict[str, set[str]] = {}  # member -> its choice, number and flag outputs
         self.trips: list[dict] = []  # side trips of the turn in progress, shown after its line
         self.level = 0  # indentation of the last turn shown
+        # A terminal can show a passing note (a retry) and wipe it when the next line comes.
+        self.live = hasattr(self.out, "isatty") and self.out.isatty()
+        self.passing = False  # a passing note is on screen, its line not ended
 
     def say(self, text: str = "") -> None:
+        self._wipe()
         print(text, file=self.out)
+
+    def note(self, text: str) -> None:
+        """A note that holds only until the next line: on a terminal, written over the
+        current line and wiped by whatever is printed next, so the finished run's output
+        does not keep it. Elsewhere (a pipe, a file) it is not shown. Cut to the terminal's
+        width: a wrapped line could not be wiped."""
+        if not self.live:
+            return
+        self._wipe()
+        width = max(shutil.get_terminal_size((80, 24)).columns - 1, 20)
+        text = text if len(text) <= width else text[:width - 1] + "…"
+        self.out.write(self.paint.yellow(text))
+        self.out.flush()
+        self.passing = True
+
+    def _wipe(self) -> None:
+        if self.passing:
+            self.out.write("\r\033[K")
+            self.passing = False
 
     # --- the header and the check ---
 
@@ -65,7 +89,7 @@ class Console:
             parts.append(f"{item.source} input {name}: \"{shown}\"")
         self.say(" · ".join(parts))
 
-    def check(self, check, keys) -> None:
+    def check(self, check, keys, refusing: str = "the run cannot start") -> None:
         p = self.paint
         for note in keys.notes:
             self.say(p.dim(note))
@@ -81,7 +105,7 @@ class Console:
                 line += f" · {n_tools} tool{'s' if n_tools != 1 else ''}"
             self.say(p.green(line))
         else:
-            self.say(p.red("✗ the run cannot start:"))
+            self.say(p.red(f"✗ {refusing}:"))
             for prob in check.problems:
                 self.say(f"  {p.bold(prob.what):<28} {prob.wrong}")
                 self.say(f"  {'':<28} {p.dim(prob.fix)}")
@@ -186,13 +210,23 @@ class Console:
             self.say(self.paint.dim(f"    {e['decider']}: {e['option']} → {e['to']}{note}"))
 
     def _retry(self, e: dict) -> None:
-        if self.verbose:
-            who = e["instance_path"].rsplit("/", 1)[-1]
+        who = e["instance_path"].rsplit("/", 1)[-1]
+        if self.verbose:  # kept in the output, as a record of each retry
             if e["kind"] == "output":
                 self.say(self.paint.yellow(f"    ↻ {who}'s reply did not fit: {e['reason']}"))
             else:
                 self.say(self.paint.yellow(f"    ↻ {who}'s model failed ({e['reason']}); "
                                            f"trying again in {e['wait_ms'] / 1000:.0f}s"))
+            return
+        # Otherwise only while it matters: the run is waiting, not stuck (wiped by the next line).
+        if e["kind"] == "output":
+            text = f"    ↻ {who}'s reply did not fit the answer form; asking again…"
+        else:
+            reason = " ".join(str(e["reason"]).split())
+            reason = reason if len(reason) <= 70 else reason[:69] + "…"
+            text = (f"    ↻ {who}: {reason} · try {e['attempt'] + 1}, "
+                    f"in {e['wait_ms'] / 1000:.0f}s; still working…")
+        self.note(text)
 
     def _warning(self, e: dict) -> None:
         """Validate's warnings, such as links outside the package (D94), every run. The
@@ -213,6 +247,11 @@ class Console:
         self.say(" · ".join([colour(status), f"{record['turns']} turns", seconds(record["latency_ms"]), cost]))
         if record.get("reason"):
             self.say(colour(record["reason"]))
+        unpriced = [m for m, price in ((record.get("prices") or {}).get("models") or {}).items()
+                    if price.get("input_per_million") is None]
+        if record.get("cost_models_usd") is None and unpriced:
+            from .prices import load_prices, unpriced_note
+            self.say(p.yellow("! " + unpriced_note(unpriced, load_prices())))
         self.say(p.dim(str(folder)))
         self.say()
         self.say(output.rstrip())
@@ -224,7 +263,7 @@ def _ordinal(n: int) -> str:
 
 def backup_lines(backups: list[dict]) -> list[str]:
     """Members on a later choice of model, grouped when they share it (D135):
-    `↪ for and against run on anthropic/claude-sonnet-4-5, their 2nd choice — openai/gpt-6-luna: openai does not serve it`."""
+    `↪ for and against run on anthropic/claude-sonnet-5-5, their 2nd choice — openai/gpt-6-luna: openai does not serve it`."""
     groups: dict[tuple, list[str]] = {}
     for b in backups:
         skipped = tuple((s["model"], s["reason"]) for s in b["skipped"])

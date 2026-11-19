@@ -4,6 +4,7 @@
 
 import hashlib
 import os
+import re
 from pathlib import Path
 import tempfile
 import time
@@ -107,6 +108,15 @@ def editable(root: Path, written: str) -> Path:
             or path.suffix.lower() not in TEXT):
         raise OutsideRoot("Choose a text file in the package. Run records are read-only.")
     return path
+
+
+def file_revision(root: Path, written: str) -> dict:
+    """Only the file's fingerprint: what the page checks every few seconds, instead of
+    downloading the whole file to compare (review 2026-11-16, U8)."""
+    path = inside(root, written)
+    if not path.is_file():
+        raise FileNotFoundError(written)
+    return {"path": written, "revision": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
 def read_file(root: Path, written: str) -> dict:
@@ -300,12 +310,13 @@ def create_member(root: Path, written: str) -> dict:
     from ..loader import member_name
     from ..validate import WORD
     from ..vocabulary import RESERVED_NAMES
+    from .. import vocabulary as V
     name = member_name(path)
     if not WORD.fullmatch(name) or name in RESERVED_NAMES:
         raise ValueError("Use a member name with letters, digits and underscores, starting with a letter or underscore; avoid flow words such as done and stop.")
     team_folder(root, str(path.parent.relative_to(root)))
     with path.open("x", encoding="utf-8", newline="\n") as stream:
-        stream.write('---\ndescription: ""\n---\nWrite this member’s instructions here.\n')
+        stream.write(f'---\ndescription: ""\n---\n{V.MEMBER_STARTER}\n')
     return read_file(root, written)
 
 
@@ -393,16 +404,22 @@ def trash_team(root: Path, written: str) -> dict:
     return {"ok": True}
 
 
-def new_team(root: Path, written: str, example: str = "") -> dict:
-    from ..new import EXAMPLES, examples, create, copy_from
+def new_place(root: Path, written: str) -> Path:
+    """Where + Team puts a new team: a name alone goes in the workspace's teams/ (D144)."""
     from ..workspace import is_workspace
     if "/" not in written and "\\" not in written and is_workspace(root):
-        written = f"teams/{written}"  # a team named on its own goes in the workspace's teams/ (D144)
+        written = f"teams/{written}"
     path = inside(root, written)
     if in_runs(root, path):
         raise OutsideRoot("Run records are read-only.")
     if generated(root, path):
         raise OutsideRoot(BUILT)
+    return path
+
+
+def new_team(root: Path, written: str, example: str = "") -> dict:
+    from ..new import EXAMPLES, examples, create, copy_from
+    path = new_place(root, written)
     if example:
         if example not in examples():
             raise ValueError("Choose one of the shipped examples.")
@@ -410,6 +427,98 @@ def new_team(root: Path, written: str, example: str = "") -> dict:
     else:
         create(path)
     return {"path": (path / "team.yaml").relative_to(root).as_posix()}
+
+
+def team_names(root: Path) -> list[str]:
+    """The teams + Experiment offers: every folder in teams/ in a workspace, else every
+    team folder at the top of the opened folder, as the path an experiment's `from:` takes."""
+    from ..workspace import is_workspace
+    workspace = is_workspace(root)
+    folder = root / "teams" if workspace else root
+    if not folder.is_dir():
+        return []
+    found = []
+    for child in sorted(folder.iterdir(), key=lambda p: p.name.casefold()):
+        if visible(Path(child.name)) and child.is_dir() and (child / "team.yaml").is_file():
+            found.append(child.relative_to(root).as_posix())
+    return found
+
+
+EXPERIMENT_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+EXPERIMENT_TEMPLATE = """---
+# An experiment runs versions of a team side by side, many times each, and compares
+# them. This file is the whole plan. Your team is never edited: each condition is
+# built as a folder of its own under conditions/, before every run.
+name: {name}
+
+# The versions you compare. Each starts `from:` a team and says what to `change:`.
+# A condition with no change is the team as it is: the control.
+conditions:
+  control: {team}
+  variant:
+    from: {team}
+    change: {{}}
+    # Replace {{}} with what differs, one line each, for example:
+    #   change:
+    #     {member}.model: anthropic/claude-sonnet-5-5   # a member's setting
+    #     {member}.prompt: file:variants/bold.md        # a member's prompt, from variants/ here
+    #     chair: file:variants/chair_leader.md          # a whole file of the team
+    # Rename `variant` to say what it is (letters, digits, _ and -).
+
+# Runs per condition (at least 2): 2 conditions x 5 = 10 runs, a first look.
+replications: 5
+# Fixes the order of the runs and each run's seed, so the design is the same every time.
+seed: 1
+
+# What to measure; cost and time are always measured. A member's typed answer by its
+# path, such as judge.output.winner, or a file in metrics/ here (an answer key or an
+# evaluator, a model that grades each run with a rubric). Remove the # to use it.
+# metrics:
+#   - judge.output.winner
+
+# The same inputs for every condition, from tasks/ here; without it, the team's defaults.
+# task: tasks/my_task
+
+limits:
+  max_concurrent: 2     # runs at once: keep inside your provider's rate limits
+  max_cost_usd: 2.00    # the ceiling for the whole experiment's estimated spending
+---
+
+## Question
+
+What do you want to find out? One sentence: does changing X change Y?
+
+## Hypothesis
+
+What do you expect to see, and which metric would show it?
+
+## Notes
+
+Why this matters, where the idea came from, what to try next. Every run records
+this file, so write for whoever reads the results later. Validate checks the plan;
+Rehearse · free (Experiments, Overview) runs it end to end without calling a model.
+"""
+
+
+def new_experiment(root: Path, name: str, team: str) -> dict:
+    """+ Experiment: experiments/<name>/experiment.md, comparing two copies of one team
+    until the person writes what differs (D144: experiments sit beside teams, never in one)."""
+    from ..workspace import is_workspace
+    if not EXPERIMENT_NAME.match(name or ""):
+        raise ValueError("Name the experiment with letters, digits, `_` and `-`, such as advocate_model.")
+    if team not in team_names(root):
+        raise ValueError("Choose one of the teams in this folder.")
+    folder = new_place(root, f"experiments/{name}")
+    if folder.exists():
+        raise FileExistsError(f"experiments/{name} already exists. Choose another name.")
+    workspace = is_workspace(root) and team.startswith("teams/") and team.count("/") == 1
+    written = team.split("/", 1)[1] if workspace else os.path.relpath(root / team, folder).replace(os.sep, "/")
+    folder.mkdir(parents=True)
+    members = sorted(p.stem for p in (root / team).glob("*.md")
+                     if p.name.lower() not in ("chair.md", "manager.md", "readme.md"))
+    text = EXPERIMENT_TEMPLATE.format(name=name, team=written, member=members[0] if members else "member")
+    (folder / "experiment.md").write_text(text, encoding="utf-8")
+    return {"path": (folder / "experiment.md").relative_to(root).as_posix(), "folder": folder.relative_to(root).as_posix()}
 
 
 def key_status(root: Path, written: str) -> dict:

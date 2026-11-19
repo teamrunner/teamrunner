@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +30,14 @@ def record_file(folder: Path) -> Path | None:
     return None
 
 
+def folder_word(text: str) -> str:
+    """`text` as part of a folder name on any system: letters, digits, `_` and `-` only,
+    at most 60 characters. A team's `name:` is free text, and `..\\x`, `:` or `?` in it
+    must not reach the disk as written (review 2026-11-16, S10)."""
+    word = re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_")[:60]
+    return word or "team"
+
+
 class RunFolder:
     def __init__(self, path: Path):
         self.path = path
@@ -38,7 +48,7 @@ class RunFolder:
                now: datetime | None = None) -> "RunFolder":
         base = Path(runs_dir) if runs_dir else package_top / RUNS_DIR
         stamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
-        name = f"{stamp}_{entry.replace('/', '_')}"
+        name = f"{stamp}_{folder_word(entry)}"
         base.mkdir(parents=True, exist_ok=True)
         path, n = base / name, 2
         while True:  # creating the folder is the check, so runs started in the same second never share one
@@ -68,6 +78,39 @@ class RunFolder:
         self._events.close()
 
 
+# A team folder may come from someone else with its own .git/config, and git
+# runs the commands some of its settings name. These switch off every such
+# setting the two questions below could reach; `_git_dirty` covers the one
+# kind that cannot be switched off by name.
+SAFE_GIT = ("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull,
+            "-c", "core.untrackedCache=false", "-c", "status.submoduleSummary=false",
+            "-c", "safe.bareRepository=explicit", "--no-optional-locks")
+# Settings in a repository's own config that run a command when files are
+# compared (a content filter), or that bring in settings from another file.
+UNSAFE_CONFIG = ("filter.", "include.", "includeif.", "extensions.worktreeconfig")
+
+
+def _git(package_top: Path, *args: str):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    return subprocess.run([*SAFE_GIT, "-C", str(package_top), *args], env=env, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, encoding="utf-8", timeout=5)
+
+
+def _git_dirty(package_top: Path) -> bool | None:
+    """Whether the package has uncommitted changes; None when asking is not safe.
+
+    `git status` runs the content filters a repository's config names, so a
+    repository that names any is not asked. The content hash still says
+    whether two runs used the same files."""
+    config = _git(package_top, "config", "--local", "--no-includes", "--name-only", "--list")
+    if config.returncode != 0 or any(line.strip().lower().startswith(UNSAFE_CONFIG)
+                                     for line in config.stdout.splitlines()):
+        return None
+    dirty = _git(package_top, "status", "--porcelain", "--ignore-submodules=all", "--", ".")
+    return bool(dirty.stdout.strip()) if dirty.returncode == 0 else None
+
+
 def fingerprint(package_top: Path) -> dict:
     """The package as it was run (D69): its git commit if it is in a
     repository, and always a hash over its spec files."""
@@ -80,13 +123,12 @@ def fingerprint(package_top: Path) -> dict:
             digest.update("/".join(inside).encode() + b"\0" + path.read_bytes() + b"\0")
     result = {"content_hash": "sha256:" + digest.hexdigest(), "git_commit": None}
     try:
-        commit = subprocess.run(["git", "-C", str(package_top), "rev-parse", "HEAD"],
-                                capture_output=True, text=True, encoding="utf-8", timeout=5)
+        commit = _git(package_top, "rev-parse", "HEAD")
         if commit.returncode == 0:
-            dirty = subprocess.run(["git", "-C", str(package_top), "status", "--porcelain", "--", "."],
-                                   capture_output=True, text=True, encoding="utf-8", timeout=5)
             result["git_commit"] = commit.stdout.strip()
-            result["git_dirty"] = bool(dirty.stdout.strip())
+            dirty = _git_dirty(package_top)
+            if dirty is not None:
+                result["git_dirty"] = dirty
     except (OSError, subprocess.SubprocessError):
         pass
     return result

@@ -28,8 +28,17 @@ def find_member(given: str, cwd: Path) -> tuple[Path, str]:
     if path.suffix == ".md" and path.is_file():
         return path.resolve().parent, member_name(path)
     folder, name = (cwd / path).parent, path.name
+    if not (folder / TEAM_FILE).is_file() and len(path.parts) == 2:
+        from . import workspace  # `debate/judge`: the team `debate` in your workspace, as `run debate` (C10)
+        if workspace.is_name(path.parts[0]):
+            named = workspace.find(path.parts[0], "teams")
+            if (named / TEAM_FILE).is_file():
+                folder = named
     if not (folder / TEAM_FILE).is_file():
-        raise NotAMember(f"{folder.resolve()} is not a team folder")
+        hint = (f"; inside a team write the member's name, or name the team too: `{path.parts[0]}`"
+                f" is not a team in your workspace" if len(path.parts) == 2 else
+                "; write `<team>/<member>`, such as `debate/judge`, or run this inside the team's folder")
+        raise NotAMember(f"{folder.resolve()} is not a team folder{hint}")
     return folder.resolve(), name
 
 
@@ -44,7 +53,7 @@ def _line(text: str, note: str | None = None) -> str:
 
 
 def render(team: ir.Team, member: ir.Member) -> str:
-    rel = member.path.relative_to(team.package_top.parent)
+    rel = member.path.relative_to(team.package_top.parent).as_posix()
     lines = [f"# {member.name} — {rel}" + (f" ({short(member.id)})" if member.id else ""), "---"]
     if member.description:
         lines.append(f"description: {_value(member.description)}")
@@ -102,7 +111,7 @@ def _toolkeeper(member: ir.Member) -> list[str]:
     lines = ["tools:", f"  {member.tool}: {json.dumps(base)}"]
     written = _written_tools(member)
     if "calls_per_turn" not in written:
-        lines[-1] = _line(lines[-1], "calls_per_turn: 5 is the default (D86)")
+        lines[-1] = _line(lines[-1], "calls_per_turn: 5 is the default")
     lines.append("access:")
     for name, t in member.access.items():
         lines.append(f"  {name}: {terms(t) if t else 'deny'}")

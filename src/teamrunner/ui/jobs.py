@@ -49,6 +49,28 @@ class Job:
     thread: Thread | None = None
 
 
+def run_estimate(team) -> dict | None:
+    """What one real run of the team would cost with its default inputs, as an experiment's
+    plan estimates it: typical, and at most if every reply ran to its limit (review
+    2026-11-16, U9). None when it cannot be said (the team does not load, or an input has
+    no default)."""
+    if team is None:
+        return None
+    from ..estimate import REPLY_TOKENS, estimate
+    from ..inputs import InputError, resolve
+    from ..prices import load_prices, unpriced_note
+    try:
+        values = {name: item.value for name, item in resolve(team).items()}
+    except InputError:
+        return None
+    prices = load_prices()
+    typical = estimate(team, values, list(range(1, 9)), prices, REPLY_TOKENS)
+    most = estimate(team, values, [1, 2], prices, None)
+    return {"typical_usd": typical.per_run_usd, "most_usd": most.per_run_usd,
+            "unpriced": typical.unpriced, "calls": typical.calls,
+            "note": unpriced_note(typical.unpriced, prices) if typical.unpriced else None}
+
+
 class Jobs:
     def __init__(self, root, files_lock, runner=None):
         self.root, self.files_lock = root, files_lock
@@ -82,7 +104,7 @@ class Jobs:
         ran = any(r.run.get("entry") == entry_path(team) if team else r.team == folder.name for r in records)
         return {"team": folder.relative_to(self.root).as_posix(), "name": team.name if team else folder.name,
                 "default_rehearse": not ran, "command_base": command(["teamrunner", "run", folder]),
-                "windows": os.name == "nt"}
+                "windows": os.name == "nt", "estimate": run_estimate(team)}
 
     def _upload(self, staging, upload):
         if not isinstance(upload, dict):
@@ -130,22 +152,33 @@ class Jobs:
 
     def _guard_tools(self, team):
         # The CLI permits explicitly configured external folders; the browser root does not.
+        # run_code's `paths`, and the mailbox read_email reads and save_draft writes into
+        # (review 2026-11-16, S10: the mailbox was not checked).
+        from ..builtin_tools import DEFAULT_MAILBOX
         for member in team.members.values():
-            if member.kind != "toolkeeper" or member.tool != "run_code":
+            if member.kind != "toolkeeper" or member.tool not in ("run_code", "read_email", "save_draft"):
                 continue
             terms = [member.base, member.others, *member.access.values()]
             for term in terms:
-                for written in term.guardrails.get("paths", []) if term else []:
-                    path = Path(written).expanduser()
+                if not term:
+                    continue
+                if member.tool == "run_code":
+                    folders, what = term.guardrails.get("paths", []), "A run_code folder"
+                else:
+                    folders, what = [term.guardrails.get("mailbox", DEFAULT_MAILBOX)], f"{member.name}'s mailbox"
+                for written in folders:
+                    path = Path(str(written)).expanduser()
                     path = path if path.is_absolute() else team.package_top / path
                     path = path.resolve()
                     if not path.is_relative_to(self.root):
-                        raise api.OutsideRoot("A run_code folder points outside the opened folder.")
+                        raise api.OutsideRoot(f"{what} points outside the opened folder.")
+                    if not path.exists():
+                        continue
                     for directory, dirs, names in os.walk(path, followlinks=False):
                         for name in dirs + names:
                             link = Path(directory) / name
                             if link.is_symlink() and not link.resolve().is_relative_to(self.root):
-                                raise api.OutsideRoot("A run_code folder contains a link outside the opened folder.")
+                                raise api.OutsideRoot(f"{what} contains a link outside the opened folder.")
 
     def start(self, data):
         with self.lock:

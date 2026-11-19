@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,7 @@ SOURCE_REPORTS = ("hits", "misses", "false_alarms", "correct")
 COMPARE_REPORTS = ("suppressed",)
 ANSWER_KEY_WORDS = {"name", "description", "kind", "answer", "source", "stage", "parse", "compare", "reports", "id"}
 EVALUATOR_WORDS = {"name", "description", "kind", "model", "params", "output", "evaluations", "id"}
+METRIC_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 PLACEHOLDER = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 SOURCE = re.compile(r"^(\w[\w-]*)\.output\.(\w[\w-]*)$")
 EVERYONE = "everyone"
@@ -99,6 +101,7 @@ class Evaluator:
     source: str = ""
     kind: str = EVALUATOR
     placeholders: list[str] = field(default_factory=list)
+    same_as: frozenset = frozenset()  # versions whose grades count as this one's: it, and its pre-0.0.7 form
 
     def prompt(self, run: Path, record: dict, events: list[dict]) -> str:
         """The rubric with its placeholders filled from one run — and nothing else."""
@@ -196,21 +199,37 @@ def _items(value, parse: str | None) -> frozenset[str] | None:
         if parse == "line_numbers":
             out |= {str(int(n)) for n in re.findall(r"\d+", _text(v))}
         elif parse == "list":
-            out |= {part.strip() for part in _text(v).split(",") if part.strip()}
+            out |= {_same(part) for part in _text(v).split(",") if part.strip()}
         else:
-            out.add(_text(v).strip())
+            out.add(_same(_text(v)))
     return frozenset(out)
+
+
+def _same(text: str) -> str:
+    """One item as it is compared (review 2026-11-16, E8): a number as a number, so `3`,
+    `3.0` and `3.00` match; `true` and `false` in any capitals; anything else as written."""
+    text = text.strip()
+    if text.lower() in ("true", "false"):
+        return text.lower()
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if not math.isfinite(number):
+        return text
+    return str(int(number)) if number.is_integer() else repr(number)
 
 
 # --- reading metric files ----------------------------------------------------------------
 
-def read_metrics(paths: list[Path], problems, members: dict[str, set[str]] | None = None) -> list[Metric]:
+def read_metrics(paths: list[Path], problems, members: dict[str, set[str]] | None = None,
+                 inputs: set[str] | None = None) -> list[Metric]:
     """Every metric file, checked; problems go to `problems`. `members`: each member
     name the conditions have, with its typed output fields, to check `source:`."""
     from .experiment import _yaml
     out = []
     for path in paths:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
         if path.suffix == ".md":
             parts = split_frontmatter(text)
             if parts is None:
@@ -234,7 +253,7 @@ def read_metrics(paths: list[Path], problems, members: dict[str, set[str]] | Non
         if kind == ANSWER_KEY and body is None:
             metric = _answer_key(path, data, problems, members)
         elif kind == EVALUATOR and body is not None:
-            metric = _evaluator(path, data, body, problems, members)
+            metric = _evaluator(path, data, body, problems, members, inputs)
         elif kind in (ANSWER_KEY, EVALUATOR):
             want = ".yaml" if kind == ANSWER_KEY else ".md"
             problems.error(path, f"a `kind: {kind}` metric is a {want} file")
@@ -242,6 +261,11 @@ def read_metrics(paths: list[Path], problems, members: dict[str, set[str]] | Non
         else:
             problems.error(path, f"`kind:` is `{ANSWER_KEY}` or `{EVALUATOR}`"
                            + (f", not `{kind}`" if kind else ""))
+            continue
+        if metric is not None and not METRIC_NAME.match(metric.name):
+            problems.error(path, f"`{metric.name}` cannot be a metric's name: it becomes a file's name, "
+                           "so use letters, digits, `_` and `-`", value=metric.name,
+                           fix="change `name:`, or remove it to use the file's own name")
             continue
         if metric is not None:
             out.append(metric)
@@ -258,6 +282,24 @@ def _unknown(path, data, allowed, problems) -> None:
             hint = V.suggest(str(key), allowed)
             problems.error(path, f"`{key}` is not a setting of this kind of metric",
                            fix=f"did you mean `{hint}`?" if hint else "settings: " + ", ".join(sorted(allowed - {'id'})))
+
+
+def _output(path, written, problems) -> dict[str, ir.OutputField] | None:
+    """An evaluator's `output:`, checked as a member's is; None when a field does not fit
+    (`s: {options: [a, b]}` without `type:` was a crash, not a problem line)."""
+    if not isinstance(written, dict):
+        return {}
+    from .schema_check import validator
+    errors = sorted(validator("member").iter_errors({"output": written}), key=lambda e: list(map(str, e.path)))
+    for err in errors:
+        where = ".".join(str(p) for p in err.path)
+        expect = err.schema.get("x-expect") if isinstance(err.schema, dict) else None
+        untyped = isinstance(err.instance, dict) and "type" not in err.instance
+        problems.error(path, f"`{where}` should be {expect or err.message}",
+                       value=json.dumps(err.instance, ensure_ascii=False, default=str)[:60],
+                       fix="a field written in braces needs `type:`, as in `{type: choice, options: [a, b]}`"
+                       if untyped else None)
+    return None if errors else ir.output_fields(written)
 
 
 def _source(path, written, stage, problems, members, what: str) -> Source | None:
@@ -291,13 +333,21 @@ def _answer_key(path, data, problems, members) -> AnswerKey | None:
         problems.error(path, "`reports:` lists what to count")
         reports = []
     source = raised = reported = None
+    allowed = ()
     if "source" in data and "compare" in data:
-        problems.error(path, "a metric has `source:` or `compare:`, not both")
+        problems.error(path, "an answer key reads the team's answer from `source:` or `compare:`, not both",
+                       fix="keep `source:` to score one answer, or `compare:` to count what was raised "
+                       "but not reported")
     elif "source" in data:
         source = _source(path, data["source"], data.get("stage"), problems, members, "source")
         allowed = SOURCE_REPORTS
     elif isinstance(data.get("compare"), dict) and set(data["compare"]) == {"raised", "reported"}:
         allowed = COMPARE_REPORTS
+        if "stage" in data:  # it would be ignored: each part names its own stage
+            problems.error(path, "`stage:` beside `compare:` is not used: each part of `compare:` "
+                           "takes its own `stage:`", value=str(data["stage"]),
+                           fix="move it into the part it is for, as in "
+                           "`reported: {source: emma.output.flagged_lines, stage: report}`")
         for key in ("raised", "reported"):
             part = data["compare"][key]
             part = part if isinstance(part, dict) else {"source": part}
@@ -306,7 +356,6 @@ def _answer_key(path, data, problems, members) -> AnswerKey | None:
     else:
         problems.error(path, "an answer key says where the team's answer is: `source:`, or "
                        "`compare: {raised: …, reported: …}`")
-        allowed = ()
     for r in reports:
         if allowed and r not in allowed:
             problems.error(path, f"`{r}` is not something this metric can report",
@@ -318,7 +367,7 @@ def _answer_key(path, data, problems, members) -> AnswerKey | None:
                      [str(r) for r in reports], source, raised, reported, parse)
 
 
-def _evaluator(path, data, body, problems, members) -> Evaluator | None:
+def _evaluator(path, data, body, problems, members, inputs: set[str] | None = None) -> Evaluator | None:
     errors = len(problems.errors)
     _unknown(path, data, EVALUATOR_WORDS, problems)
     model = data.get("model")
@@ -328,8 +377,12 @@ def _evaluator(path, data, body, problems, members) -> Evaluator | None:
     if not isinstance(params, dict):
         problems.error(path, "`params:` holds the model's settings, such as `max_tokens: 400`")
         params = {}
-    output = ir.output_fields(data.get("output")) if isinstance(data.get("output"), dict) else {}
-    if not output:
+    from . import vocabulary as V
+    V.check_params(path, params, problems)
+    output = _output(path, data.get("output"), problems)
+    if output is None:
+        pass  # what is wrong with it is already said
+    elif not output:
         problems.error(path, "`output:` names what the evaluator answers, such as `score: 0` and `reason: \"\"`")
     n = data.get("evaluations", 1)
     if not isinstance(n, int) or isinstance(n, bool) or n < 1:
@@ -338,7 +391,16 @@ def _evaluator(path, data, body, problems, members) -> Evaluator | None:
     used = [m.group(1) for m in PLACEHOLDER.finditer(body)]
     for name in used:
         found = SOURCE.match(name)
-        if name in ("output", "transcript") or name.startswith("inputs."):
+        if name in ("output", "transcript"):
+            continue
+        if name.startswith("inputs."):  # a typo would be sent as "(none)" (review 2026-11-16, E10)
+            wanted = name[len("inputs."):]
+            if inputs is not None and wanted not in inputs:
+                from . import vocabulary as V
+                hint = V.suggest(wanted, sorted(inputs))
+                problems.error(path, f"`{{{{{name}}}}}`: no condition's team has an input `{wanted}`",
+                               value=name, fix=f"did you mean `{{{{inputs.{hint}}}}}`?" if hint else
+                               "its inputs are " + (", ".join(f"`{i}`" for i in sorted(inputs)) or "none"))
             continue
         if found and found.group(1) != EVERYONE:
             if members is not None and found.group(1) not in members:
@@ -357,11 +419,21 @@ def _evaluator(path, data, body, problems, members) -> Evaluator | None:
                        "where the run should go")
     if len(problems.errors) > errors:
         return None
-    settings = {k: v for k, v in data.items() if k != "id"}
-    canon = json.dumps({"settings": settings, "rubric": body.strip()}, sort_keys=True, ensure_ascii=False, default=str)
-    version = "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
+    # The version is what changes a grade: not the id, the description, or how many grades
+    # are wanted, so raising `evaluations:` adds grades instead of redoing them (E10).
+    settings = {k: v for k, v in data.items() if k not in ("id", "description", "evaluations")}
+    version = _version(settings, body)
+    # Grades made before 0.0.7 were filed under a version that also covered those two;
+    # the same rubric and settings still count them, so nothing is paid for twice.
+    earlier = _version({k: v for k, v in data.items() if k != "id"}, body)
     return Evaluator(str(data.get("name") or path.stem), path, model, params, output, body, n, version,
-                     path.read_text(encoding="utf-8"), placeholders=used)
+                     path.read_text(encoding="utf-8"), placeholders=used,
+                     same_as=frozenset({version, earlier}))
+
+
+def _version(settings: dict, body: str) -> str:
+    canon = json.dumps({"settings": settings, "rubric": body.strip()}, sort_keys=True, ensure_ascii=False, default=str)
+    return "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
 def members_of(conditions) -> dict[str, dict[str, ir.OutputField]]:

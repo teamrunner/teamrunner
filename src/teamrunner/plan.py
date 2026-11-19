@@ -39,7 +39,7 @@ def report_problems(exp: Experiment, out) -> bool:
     root, say = exp.folder, out.say
     title = exp.name or exp.folder.name
     if exp.later:
-        say(out.paint.red(f"✗ {title} needs TeamRunner {LATER}, so it cannot run yet:"))
+        say(out.paint.red(f"✗ {title} needs what {LATER}, so it cannot run yet:"))
         # experiment.md's own lines first, then the team's files
         for file, line, what in sorted(exp.later, key=lambda t: (t[0] != exp.path, str(t[0]), t[1] or 0)):
             where = _rel(file, root) + (f":{line}" if line else "")
@@ -231,9 +231,11 @@ def _estimate(exp: Experiment, out, prices, walks: int, ceiling: float | None, c
         say(f"  {'evaluating':<{width}}  ≈ {_money(evaluating)}   "
             + out.paint.dim(f"{n} evaluations: {', '.join(ev.name for ev in evaluators)}"))
     say(out.paint.dim(f"  from {walks} rehearsal walks of each flow, prompts as they "
-                      f"would be sent, ≈{REPLY_TOKENS} tokens a reply, list prices (D120);"))
+                      f"would be sent, ≈{REPLY_TOKENS} tokens a reply, at list prices;"))
     say(out.paint.dim("  it is made again from real costs after round 1"))
-    say(f"  at most ≈ {_money(most)} if every reply ran to its max_tokens")
+    say(f"  at most ≈ {_money(most)} if every reply ran to its max_tokens"
+        + (out.paint.dim(" — above the ceiling, but no real run comes near it: the ceiling stops "
+                         "new calls before then") if ceiling is not None and most > ceiling else ""))
     for line in litellm_max_lines(exp):
         say(f"    {line}")
     unpriced = c["unpriced"]

@@ -69,7 +69,7 @@ def test_a_prices_file_sets_a_models_price(tmp_path):
     path = tmp_path / "prices.yaml"
     path.write_text("models:\n  openai/gpt-6-luna: {input: 1.0, output: 2.0}\n", encoding="utf-8")
     model = LiteLLMModel({"OPENAI_API_KEY": "sk-test"}, {}, load_prices(path))
-    reply = asyncio.run(model.complete("openai/gpt-6-luna", {"mock_response": "ok"},
-                                       [{"role": "user", "content": "hi"}], None))
+    model.extra = {"mock_response": "ok"}
+    reply = asyncio.run(model.complete("openai/gpt-6-luna", {}, [{"role": "user", "content": "hi"}], None))
     expected = (reply.usage["input"] * 1.0 + reply.usage["output"] * 2.0) / 1e6
     assert reply.cost_usd == pytest.approx(expected) and reply.cost_source.endswith("prices.yaml")

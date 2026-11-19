@@ -75,9 +75,15 @@ can process model requests locally, but configured tools and downloads can
 still contact external services.
 
 The sponsored demo sends prompts and conversation context through the gateway
-operated by Serenity Partners LLC, then OpenRouter and its upstream model
-provider. The gateway processes requests and responses and stores IP-based
-quota counters to enforce usage limits. The supplied gateway configuration
+operated by Serenity Partners LLC to the demo's model provider: currently
+Anthropic (Claude Haiku 5.5), called directly. The provider can change (it has
+been OpenRouter and its upstream model provider); each turn records the model
+that answered. The gateway processes requests and responses and stores IP-based
+quota counters to enforce usage limits. It also keeps, for each UTC day, the
+number of demo requests and the number of distinct callers, and, for each model,
+the number of calls by how they ended (answered, rate-limited, timed out and so
+on) with their token counts, durations and cost; these daily totals contain no
+IP addresses, prompts or replies and are kept after the quota counters expire. The gateway
 does not log prompt/response bodies or API keys; this is not a promise about
 upstream provider logging, retention, or training practices. Do not submit
 private, confidential, sensitive, or regulated information to the demo.
@@ -96,6 +102,9 @@ TEAMRUNNER_NO_VERSION_CHECK=1 hides the update reminder but not the request,
 because the client must still learn whether its version may run.
 
 Apart from this check, the local client does not send usage telemetry to the publisher.
+Requests to the demo model also carry TeamRunner's version, the Python version
+and the platform in their User-Agent, so the demo can stop answering versions
+that are too old.
 That does not mean it makes no network requests: model APIs, the demo gateway,
 web tools, provider model-list checks, runtime/package downloads, diagram
 assets, and configured integrations can contact their respective services.
