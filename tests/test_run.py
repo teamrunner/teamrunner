@@ -87,8 +87,21 @@ def test_a_run_end_to_end(tmp_path):
 def test_a_message_fills_its_input(tmp_path):
     outcome, model, _ = go(debate(tmp_path, **TEAM), VERDICT, Options(message="Zoos"))
     run, _, _ = read_run(outcome.folder)
-    assert run["inputs"]["topic"] == {"value": "Zoos", "source": "given"}
+    assert run["inputs"]["topic"] == {"value": "Zoos", "source": "given", "via": "--message"}
     assert model.calls[0][3][0]["content"] == "for argues for Zoos."
+
+
+def test_the_console_says_where_an_inferred_message_went(tmp_path):
+    _, _, printed = go(debate(tmp_path, **TEAM), VERDICT, Options(message="Zoos"))
+    assert 'run · debate · given input topic: "Zoos"' in printed
+    assert "your message went to topic, the team's only input" in printed
+
+
+def test_a_named_message_goes_to_shows_no_arrow(tmp_path):
+    team = debate(tmp_path, **{**TEAM, "team.yaml": "message_goes_to: topic\n"})
+    outcome, _, _ = go(team, VERDICT, Options(message="Zoos"))
+    run, _, _ = read_run(outcome.folder)
+    assert run["inputs"]["topic"] == {"value": "Zoos", "source": "given"}
 
 
 def test_a_task_file_and_a_file(tmp_path):
@@ -106,6 +119,46 @@ def test_a_task_file_and_a_file(tmp_path):
     run = read_run(outcome.folder)[0]
     assert run["inputs"]["topic"]["value"] == str(copy)
     assert run["inputs"]["topic"]["file"]["original"] == str(paper.resolve())
+
+
+# Two inputs: the judge also reads {{style}}
+TWO = {**TEAM, "team.yaml": "message_goes_to: topic\n",
+       "judge.md": NAMED["judge.md"].replace("judge decides on {{topic}}.", "judge decides on {{topic}}, {{style}}.")}
+
+
+def test_inputs_by_name(tmp_path):
+    team = debate(tmp_path / "t", **TWO)
+    outcome, model, printed = go(team, VERDICT, Options(inputs=["topic=Zoos", "style=briefly, a=b"]))
+    run = read_run(outcome.folder)[0]
+    assert run["inputs"] == {"topic": {"value": "Zoos", "source": "given"},
+                             "style": {"value": "briefly, a=b", "source": "given"}}  # after the first `=`, as typed
+    assert any(m["content"] == "judge decides on Zoos, briefly, a=b." for c in model.calls for m in c[3])
+    assert "went to" not in printed
+
+    task = tmp_path / "task.yaml"
+    task.write_text("inputs:\n  style: with numbers\n", encoding="utf-8")
+    outcome, _, _ = go(team, VERDICT, Options(message="Zoos", task_file=task, inputs=None))
+    assert read_run(outcome.folder)[0]["inputs"]["style"]["value"] == "with numbers"
+    outcome, _, _ = go(team, VERDICT, Options(message="Zoos", inputs=["style=3"]))
+    assert read_run(outcome.folder)[0]["inputs"]["style"]["value"] == "3"  # text, not the number
+
+
+@pytest.mark.parametrize("given, says", [
+    (dict(inputs=["topic"]), "--input 'topic' should be `name=value`"),
+    (dict(inputs=["=Zoos"]), "--input '=Zoos' should be `name=value`"),
+    (dict(inputs=["motion=Zoos"]), "--input gives `motion`, but no prompt in t uses it; its inputs are `topic`, `style`"),
+    (dict(inputs=["topic=a", "topic=b", "style=c"]), "`topic` is given twice: by --input and by --input"),
+    (dict(inputs=["topic=a", "style=c"], message="Zoos"), "`topic` is given twice: by --input and by --message"),
+    (dict(inputs=["style=c"], task="style"), "`style` is given twice: by the task file and by --input"),
+])
+def test_inputs_by_name_that_stop_the_run(tmp_path, given, says):
+    team = debate(tmp_path / "t", **TWO)
+    if given.pop("task", None):
+        (tmp_path / "task.yaml").write_text("inputs:\n  style: x\n  topic: y\n", encoding="utf-8")
+        given["task_file"] = tmp_path / "task.yaml"
+    outcome, model, _ = go(team, options=Options(**given))
+    assert outcome.status == "could_not_start" and model.calls == []
+    assert says in outcome.reason, outcome.reason
 
 
 @pytest.mark.parametrize("options, says", [
@@ -184,6 +237,26 @@ def test_provider_failures_are_retried_then_fail_the_run(tmp_path):
 
     outcome, _, _ = go(debate(tmp_path / "b", **TEAM), model=Flaky(99))
     assert outcome.status == "failed" and "still failed after 4 tries" in outcome.reason
+
+
+def test_a_turn_that_does_not_finish_keeps_the_cost_of_its_calls(tmp_path):
+    """Review 2026-11-21, NC1: a turn's spend was written only with its message, so a turn that
+    paid for a call and then failed left the run's cost at zero."""
+    from teamrunner.model import Reply, ToolCall
+
+    class PaidThenDown(FakeModel):
+        async def complete(self, model, *args):
+            if self.calls:
+                raise RuntimeError("the provider is down")
+            self.calls.append("for")
+            return Reply("", model, {"input": 100, "output": 50}, 0.5, 20, [ToolCall("1", "nobody", "{}")])
+
+    outcome, _, _ = go(debate(tmp_path, **TEAM), model=PaidThenDown())
+    run, events, _ = read_run(outcome.folder)
+    assert outcome.status == "failed" and run["turns"] == 0
+    kept = [e for e in events if e["event"] == "retry"]
+    assert [(e["kind"], e["cost_usd"], e["usage"]) for e in kept] == [("unfinished", 0.5, {"input": 100, "output": 50})]
+    assert run["cost_models_usd"] == run["cost_usd"] == 0.5 and run["tokens"] == {"input": 100, "output": 50}
 
 
 def test_quiet_prints_nothing(tmp_path, capsys):
@@ -550,17 +623,56 @@ def _repo(folder, *config):
     return folder
 
 
-def test_the_fingerprint_reads_git_and_says_when_files_changed(tmp_path):
+def test_the_fingerprint_reads_the_commit_as_git_reports_it(tmp_path):
+    """The commit is read from .git as text; it must match what git itself says."""
+    import subprocess
     from teamrunner.runfolder import fingerprint
     team = _repo(tmp_path / "team")
-    first = fingerprint(team)
-    assert len(first["git_commit"]) == 40 and first["git_dirty"] is False
-    (team / "team.yaml").write_text("name: changed\n", encoding="utf-8")
-    assert fingerprint(team)["git_dirty"] is True
+
+    def git(*args, at=team):
+        return subprocess.run(["git", "-C", str(at), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                               "-c", "commit.gpgsign=false", *args], check=True, capture_output=True,
+                              text=True).stdout.strip()
+    head = git("rev-parse", "HEAD")
+    assert fingerprint(team) == {**fingerprint(team), "git_commit": head} and len(head) == 40
+    assert "git_dirty" not in fingerprint(team)  # the content hash says whether files changed
+
+    (team / "sub").mkdir()
+    assert fingerprint(team / "sub")["git_commit"] == head  # a folder inside the repository
+
+    git("pack-refs", "--all")  # the branch is now a line of packed-refs
+    assert fingerprint(team)["git_commit"] == head
+
+    git("worktree", "add", "-q", "-b", "other", str(tmp_path / "tree"))
+    (tmp_path / "tree" / "team.yaml").write_text("name: two\n", encoding="utf-8")
+    git("commit", "-q", "-am", "two", at=tmp_path / "tree")
+    assert fingerprint(tmp_path / "tree")["git_commit"] == git("rev-parse", "HEAD", at=tmp_path / "tree") != head
+
+    git("checkout", "-q", "--detach")
+    assert fingerprint(team)["git_commit"] == head
+
+
+def test_the_commit_is_read_without_git_and_only_a_commit_comes_back(tmp_path):
+    from teamrunner.runfolder import git_commit
+    commit = "ab" * 20
+    team = tmp_path / "team"
+    (team / ".git" / "refs" / "heads").mkdir(parents=True)
+    assert git_commit(tmp_path / "nowhere") is None and git_commit(team) is None  # no HEAD yet
+    (team / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    assert git_commit(team) is None  # a new repository with no commit
+    (team / ".git" / "refs" / "heads" / "main").write_text(commit + "\n", encoding="utf-8")
+    assert git_commit(team) == commit
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("a key\n", encoding="utf-8")
+    for head in ("ref: ../../secret.txt", "ref: refs/../../../secret.txt", f"ref: {secret}", "a key", ""):
+        (team / ".git" / "HEAD").write_text(head + "\n", encoding="utf-8")
+        assert git_commit(team) is None, head
 
 
 def test_a_team_s_git_settings_run_no_command(tmp_path):
-    """A team sent as an archive can carry .git/config; nothing it names is run (rehearsals included)."""
+    """A team sent as an archive can carry .git/config; nothing it names is run, because git is
+    never run (rehearsals included). Each setting below ran a program in an earlier version."""
     import sys
     from teamrunner.runfolder import fingerprint
     proof = tmp_path / "ran"
@@ -574,13 +686,25 @@ def test_a_team_s_git_settings_run_no_command(tmp_path):
 
     filtered = _repo(tmp_path / "filtered", ("filter.x.clean", command), ("filter.x.process", command))
     (filtered / ".gitattributes").write_text("* filter=x\n", encoding="utf-8")
-    (filtered / "team.yaml").write_text("name: changed, so git compares it\n", encoding="utf-8")
-    found = fingerprint(filtered)
-    assert len(found["git_commit"]) == 40 and "git_dirty" not in found  # not asked, not guessed
+    (filtered / "team.yaml").write_text("name: changed, so git would compare it\n", encoding="utf-8")
+    assert len(fingerprint(filtered)["git_commit"]) == 40
 
-    included = _repo(tmp_path / "included", ("include.path", "../elsewhere"))
-    assert "git_dirty" not in fingerprint(included)
+    # A partial clone with one object missing: `git status` fetches it with the command named here.
+    partial = _repo(tmp_path / "partial", ("extensions.partialClone", "origin"),
+                    ("remote.origin.promisor", "true"), ("remote.origin.url", "x"),
+                    ("remote.origin.uploadpack", command))
+    for found in (partial / ".git" / "objects").glob("??/*"):
+        found.unlink()
+    assert len(fingerprint(partial)["git_commit"]) == 40
     assert not proof.exists()
+
+
+def test_teamrunner_never_runs_git():
+    """No file of TeamRunner's names the git program (NS1); the commit is read as text."""
+    import teamrunner
+    for path in Path(teamrunner.__file__).parent.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert '"git"' not in text and "'git'" not in text, path
 
 
 class Echoing(FakeModel):
@@ -807,3 +931,84 @@ def test_unwritten_instructions_stop_a_real_run_but_not_a_rehearsal(tmp_path, bo
     assert "for has no instructions yet" in printed
     rehearsal = run_team(team, Options(rehearse=True, quiet=True))
     assert rehearsal.exit_code == 0
+
+
+# --- a key file saved by a Windows tool (review 2026-11-21, NC2) -------------------------------
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16"])
+def test_a_key_file_saved_by_notepad_or_powershell_is_read(tmp_path, encoding):
+    from teamrunner.keys import read_env, save_key
+    path = tmp_path / ".env"
+    path.write_text("OPENAI_API_KEY=sk-one\nANTHROPIC_API_KEY=sk-two\n", encoding=encoding)
+    assert read_env(path) == {"OPENAI_API_KEY": "sk-one", "ANTHROPIC_API_KEY": "sk-two"}
+    save_key(path, "GEMINI_API_KEY", "sk-three")  # and is plain UTF-8 once TeamRunner writes it
+    assert path.read_bytes().startswith(b"OPENAI_API_KEY=sk-one") and len(read_env(path)) == 3
+
+
+def test_a_key_file_that_is_not_text_is_named_in_one_line(tmp_path, monkeypatch, capsys):
+    from teamrunner.cli import _unexpected, main
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir(exist_ok=True)
+    (tmp_path / "home" / ".env").write_bytes(b"OPENAI_API_KEY=\xff\xfa\x00bad")
+    team = debate(tmp_path / "debate", **TEAM)
+    assert main(["run", str(team), "--rehearse", "-q", "--message", "x"]) == 1
+    said = capsys.readouterr().err
+    assert "is not plain text that TeamRunner can read; save it as UTF-8" in said and "Traceback" not in said
+    assert _unexpected(RuntimeError("boom")) == 3  # the last resort reads the same file and must not fail
+
+
+# --- review 2026-11-21: the rest of the engine list ----------------------------------------------
+
+def test_an_unquoted_date_is_the_text_that_was_written(tmp_path):
+    """NC3: YAML reads `topic: 2026-01-01` as a date, which could not be written to the record:
+    the run died as a fault of TeamRunner's own and left an empty folder."""
+    team = debate(tmp_path / "t", **{**TEAM, "team.yaml": "name: debate\ndefault_inputs:\n  topic: 2026-01-01\n"})
+    outcome, _, _ = go(team, VERDICT)
+    run, _, _ = read_run(outcome.folder)
+    assert outcome.status == "completed" and run["inputs"]["topic"]["value"] == "2026-01-01"
+    task = tmp_path / "task.yaml"
+    task.write_text("inputs:\n  topic: 2026-02-03\n", encoding="utf-8")
+    outcome, _, _ = go(team, VERDICT, Options(task_file=task))
+    assert read_run(outcome.folder)[0]["inputs"]["topic"]["value"] == "2026-02-03"
+    task.write_text("inputs:\n  topic:\n", encoding="utf-8")  # and an empty value is asked for, not sent as `null`
+    outcome, _, _ = go(team, VERDICT, Options(task_file=task))
+    assert outcome.status == "could_not_start" and "`topic:` has no value" in outcome.reason
+
+
+def test_a_single_run_checks_its_ceiling_can_be_kept_before_it_starts(tmp_path, monkeypatch):
+    """NC8: a model with no known longest reply stopped the run at that member's first turn,
+    after the members before it had been paid."""
+    from teamrunner import ceiling
+    monkeypatch.setattr(ceiling, "max_reply", lambda model, params: params.get("max_tokens"))
+    (tmp_path / "home").mkdir(exist_ok=True)
+    (tmp_path / "home" / "prices.yaml").write_text("models:\n  openai/gpt-5: {input: 1.0, output: 10.0}\n",
+                                                   encoding="utf-8")
+    team = debate(tmp_path / "t", **TEAM)
+    outcome, model, printed = go(team, VERDICT, Options(max_cost=5.0))
+    assert outcome.status == "could_not_start" and model.calls == []
+    assert "the ceiling cannot be kept" in printed and "no known longest reply" in printed
+    assert not (team / "runs").exists()
+
+
+def test_gather_changes_nothing_when_a_link_leads_nowhere(tmp_path, capsys):
+    from teamrunner.cli import main
+    team = debate(tmp_path / "t", **TEAM)
+    real = tmp_path / "notes.txt"
+    real.write_text("x", encoding="utf-8")
+    try:
+        (team / "a_notes.txt").symlink_to(real)
+        (team / "b_gone.txt").symlink_to(tmp_path / "nowhere.txt")
+    except OSError:
+        pytest.skip("this system does not let the test make a link")
+    assert main(["gather", str(team), "--yes"]) == 1
+    assert "leads to something that is not there" in capsys.readouterr().err
+    assert (team / "a_notes.txt").is_symlink()  # the good link was not half-replaced
+
+
+def test_a_workspace_folder_kept_in_the_key_file_is_not_hidden_as_a_key(tmp_path, monkeypatch):
+    from teamrunner.keys import stored_secrets
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir(exist_ok=True)
+    (tmp_path / "home" / ".env").write_text("TEAMRUNNER_WORKSPACE=/Users/me/teamrunner\nOPENAI_API_KEY=sk-real\n",
+                                            encoding="utf-8")
+    assert stored_secrets() == ["sk-real"]

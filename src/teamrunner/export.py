@@ -9,7 +9,8 @@ every time — nothing here is stored anywhere else:
     turns.csv         one row per turn, with everything said in `content`
     outputs.csv       one row per typed output field a member gave
     metrics.csv       one row per metric × report (or evaluator field) × run
-    evaluations.csv   one row per evaluation × field, the evaluator's reason included
+    evaluations.csv   one row per evaluation × field, the evaluator's reason included;
+                      an evaluation's cost is on its first row only
 
 Written with Python's own `csv` module: RFC 4180 quoting, UTF-8, a header
 row, an empty cell for a missing value, `true`/`false` for yes and no, and
@@ -154,11 +155,16 @@ def _metrics(metrics, evaluations, exp, folder, record, events) -> None:
             metrics.add(run_id=rid, metric=m.name, report="", value=m.value(events))
         elif isinstance(m, Evaluator):
             for line in lines_of(folder, m.name):  # every evaluation, every version
-                for field, value in (line.get("output") or {}).items():
+                # An evaluation's cost is on its first row only, so the column adds up to what
+                # was spent; a reply that never fit was paid for too, and has a row with no
+                # field (review 2026-11-21, NE9).
+                fields = list((line.get("output") or {}).items()) or [("", None)]
+                for n, (field, value) in enumerate(fields):
                     evaluations.add(run_id=rid, metric=m.name, evaluator_hash=line.get("evaluator_hash"),
                                     evaluation=line.get("evaluation"), field=field, value=value,
-                                    model_answered=line.get("model_answered"), cost_usd=line.get("cost_usd"),
-                                    cost_charged_usd=line.get("cost_charged_usd"))
+                                    model_answered=line.get("model_answered"),
+                                    cost_usd=line.get("cost_usd") if n == 0 else None,
+                                    cost_charged_usd=line.get("cost_charged_usd") if n == 0 else None)
             made = current(folder, m)  # the metric: the evaluator's current version only
             if not made:
                 continue

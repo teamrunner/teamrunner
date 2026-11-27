@@ -45,11 +45,16 @@ def lines_of(run: Path, metric: str) -> list[dict]:
 
 
 def current(run: Path, ev: Evaluator) -> list[dict]:
-    """The run's evaluations by this version of the evaluator, one per evaluation number."""
+    """The run's evaluations by this version of the evaluator, one per evaluation number,
+    up to `evaluations:` as it now stands. Lowering it leaves the later ones in the file,
+    uncounted; they count again if it is raised (review 2026-11-21, NE1)."""
     seen = {}
     for line in lines_of(run, ev.name):
         if line.get("evaluator_hash") in (ev.same_as or {ev.version}) and line.get("output") is not None:
-            seen.setdefault(line.get("evaluation"), line)
+            number = line.get("evaluation")
+            if isinstance(number, int) and not isinstance(number, bool) and number > ev.evaluations:
+                continue
+            seen.setdefault(number, line)
     return [seen[k] for k in sorted(seen, key=lambda k: (k is None, k))]
 
 

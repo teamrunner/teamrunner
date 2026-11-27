@@ -86,3 +86,12 @@ def test_save_needs_diagram(tmp_path, capsys):
     """C10: `explain --save` without `--diagram` was silently ignored."""
     assert main(["explain", str(debate(tmp_path)), "--save"]) == 1
     assert "`--save` keeps the `--diagram` page; add `--diagram`" in capsys.readouterr().err
+
+
+def test_a_decision_that_jumps_forward_gives_a_range(tmp_path):
+    """Review 2026-11-21, NC9: "5 turns" for a flow that took 3 or 5."""
+    flow = "judge -> for -> against\njudge --bad--> for\njudge --ok--> against\n"
+    team = debate(tmp_path, **{"chair.md": flow, "judge.md": "---\nmodel: openai/gpt-5\noutput:\n  verdict: [ok, bad]\n"
+                                                              "---\nJudge {{topic}}.\n"})
+    fewest, most, _ = turn_range(team_of(team))
+    assert (fewest, most) == (2, 3)

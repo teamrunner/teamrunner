@@ -75,8 +75,18 @@ function lostServer() {
   if (serverGone) return;
   serverGone = true;
   byId("server-lost").hidden = false;
-  for (const button of document.querySelectorAll("button")) if (!byId("server-lost").contains(button)) button.disabled = true;
+  // A dialog that is open can still be closed: its Cancel or Close stays (review 2026-11-21, NU8).
+  const closes = button => Boolean(button.closest("dialog")) && (/cancel|close/.test(button.id) || button.closest("form")?.method === "dialog");
+  for (const button of document.querySelectorAll("button")) if (!byId("server-lost").contains(button) && !byId("crash-bar").contains(button) && !closes(button)) button.disabled = true;
   byId("copy-unsaved").hidden = !current;
+}
+// One request that fails is not yet TeamRunner having stopped: a request it refuses for its
+// size, for one, reaches the browser as a failed fetch. So the page asks once more, with
+// the smallest request there is, and believes it has stopped only if that fails too
+// (review 2026-11-21, NU8).
+async function serverAnswers() {
+  try { await fetch("/api/job", {headers: {"X-TeamRunner-Token": token}}); return true; }
+  catch (error) { return false; }
 }
 async function api(route, data) {
   if (serverGone) throw new Error(STOPPED);
@@ -85,11 +95,29 @@ async function api(route, data) {
     response = await fetch(route, {method: data === undefined ? "GET" : "POST",
       headers: {"X-TeamRunner-Token": token, ...(data === undefined ? {} : {"Content-Type": "application/json"})},
       ...(data === undefined ? {} : {body: JSON.stringify(data)})});
-  } catch (error) { lostServer(); throw new Error(STOPPED); }
+  } catch (error) {
+    if (!serverGone && await serverAnswers()) throw Object.assign(new Error("That request did not get through. Try again. If it sent a file, the file may be too large (8 MB at most)."), {unsent: true});
+    lostServer(); throw new Error(STOPPED);
+  }
   const result = await response.json();
+  if (result.crash) showCrash(result.crash);
   if (!response.ok) throw Object.assign(new Error(result.error || "The action could not be completed."), {status: response.status, result});
   return result;
 }
+// A crash: an error TeamRunner did not foresee (D165). The bar offers a bug report, filled in;
+// `key` names what crashed (a job's id), so a bar the person dismissed does not come back for it.
+let crashShown = null, crashUrl = null;
+function showCrash(crash, key) {
+  if (key !== undefined && key === crashShown) return;
+  crashShown = key ?? null; crashUrl = crash.report;
+  byId("crash-what").textContent = `(${crash.what}.)`;
+  byId("crash-details").textContent = crash.details ? `The full details stay on your computer, in ${crash.details}.` : "";
+  byId("crash-sent").textContent = crash.sent ? `A crash report with only those facts was sent to TeamRunner; setting ${crash.off}=1 stops this.` : "";
+  byId("crash-mail").href = crash.mail; byId("crash-mail").textContent = crash.email;
+  byId("crash-bar").hidden = false;
+}
+byId("crash-report").addEventListener("click", () => { if (crashUrl) window.open(crashUrl, "_blank", "noopener,noreferrer"); });
+byId("crash-dismiss").addEventListener("click", () => { byId("crash-bar").hidden = true; });
 const notice = text => { byId("notice").textContent = text; };
 const pathQuery = path => `?path=${encodeURIComponent(path)}`;
 const parent = path => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
@@ -166,7 +194,9 @@ function updateState() {
   byId("trash").disabled = !current || current.readonly;
   // Run records are read-only: nothing is created beside them, and a team is not trashed from inside them.
   const record = Boolean(current?.readonly);
-  byId("new-team").disabled = byId("new-member").disabled = record;
+  // A team inside a team comes in a later version, so the opened folder, when it is itself
+  // a team, has nowhere to put another (review 2026-11-21, NU9).
+  byId("new-member").disabled = record; byId("new-team").disabled = record || Boolean(info?.team);
   chairState();
   for (const id of ["new-team", "new-member", "new-chair"]) byId(id).hidden = mode === "experiments";
   for (const id of ["new-experiment", "new-variant", "new-metric", "new-task"]) byId(id).hidden = mode !== "experiments";
@@ -180,7 +210,7 @@ function updateState() {
   byId("new-experiment").disabled = !info?.teams?.length;
   byId("new-experiment").title = info?.teams?.length ? "Start a new experiment on one of your teams" : "Make a team first, in Teams: an experiment runs versions of a team";
   const built = current?.generated ? "Built from experiment.md: read-only. Edit experiment.md or its variants/ instead." : "";
-  byId("new-team").title = built || (record ? "Run records are read-only. Select a team’s file to create a team." : "Create a new team folder");
+  byId("new-team").title = built || (record ? "Run records are read-only. Select a team’s file to create a team." : info?.team ? "The folder you opened is itself a team. To make another team, open the folder above it with teamrunner ui." : "Create a new team folder");
   byId("new-member").title = built || (record ? "Run records are read-only. Select a team’s file to add a member." : "Add a member to the selected team");
   byId("trash-team").disabled = !context || inRuns(context) || Boolean(current?.generated);
   byId("trash-team").title = context ? `Move the team ${context} to the trash` : info?.team ? "This team is the folder you opened; it can’t be moved to the trash from here." : "Select a team to move it to the trash";
@@ -196,7 +226,10 @@ function updateState() {
   byId("team-name").textContent = experimentContext ? (fileCheck?.experiment === experimentContext && fileCheck.name || experimentContext.split("/").pop())
     : context ? context.split("/").pop() : info?.team ? info.name : "—";
   byId("run-team").textContent = experimentContext ? "Open in Experiments" : "Run…";
-  byId("run-team").title = experimentContext ? "This experiment’s plan, runs and summary" : "";
+  // A run made in a condition's built folder is deleted by the next build (review 2026-11-21, NU1).
+  const builtRun = !experimentContext && chose === "file" && Boolean(current?.generated);
+  byId("run-team").disabled = builtRun || serverGone;
+  byId("run-team").title = experimentContext ? "This experiment’s plan, runs and summary" : builtRun ? "Built from experiment.md: a run made here would be deleted by the next build. Run the experiment, or the team it starts from." : "";
   byId("validate").title = experimentContext
     ? "Check this experiment as teamrunner experiment --plan does: its settings, every condition’s team, each change and each metric. Saving does this too. Free; needs no keys."
     : "Check this team’s files, then its keys and models (teamrunner validate). Saving does this too; use the button to check again without an edit. Free; asks each provider which models it serves.";
@@ -236,7 +269,14 @@ function markers() {
 }
 let opening = 0;
 async function openFile(path, line, again = false) {
-  if (!again && current && current.path === path) { chose = "file"; document.dispatchEvent(new Event("teamrunner:file-open")); if (line) jump(line); return; }
+  if (!again && current && current.path === path) {
+    const folderChosen = chose === "folder";
+    chose = "file"; document.dispatchEvent(new Event("teamrunner:file-open")); if (line) jump(line);
+    // A team folder was chosen since this file was opened: the bar, + Chair and the trash
+    // go back to this file's team, as Run and Validate do (review 2026-11-21, NU6).
+    if (folderChosen) { if (current.readonly) updateState(); else await validate(false); }
+    return;
+  }
   if (!again && !mayLeave()) return;
   const request = ++opening;  // two quick clicks: the file clicked last wins (U6)
   try {
@@ -513,7 +553,7 @@ async function pollDisk() {
         if (byId("show-tab").getAttribute("aria-pressed") === "true") await inspect();
       }
     }
-  } catch (error) { if (current === file && !serverGone) { byId("disk-warning").hidden = false; notice(error.message); } }
+  } catch (error) { if (current === file && !serverGone && !error.unsent) { byId("disk-warning").hidden = false; notice(error.message); } }
   finally { pollingDisk = false; }
 }
 setInterval(pollDisk, 3000);
@@ -630,7 +670,7 @@ byId("new-experiment").addEventListener("click", () => {
   dialog("New experiment", "An experiment runs versions of one team side by side and compares them. This makes experiments/<name>/experiment.md, with two copies of the team to start from and notes on what to change. Use letters, digits, _ and -.", "my_study", async (name, chosen) => {
     const result = await api("/api/new-experiment", {name, team: chosen});
     dirty = false; await refresh(); await openFile(result.path);
-    notice(`${result.folder} is ready. Write what differs under variant's change:, then Validate, then Rehearse · free in Overview.`);
+    notice(`${result.folder} is ready. Write what differs under variant's change:, then Validate, then Rehearse · free in Plan.`);
   }, info.teams.map(path => ({value: path, label: path.replace(/^teams\//, "")})));
   byId("choice-label").textContent = "Team to experiment on";
   byId("form-choice").value = info.teams.includes(team) ? team : info.teams[0];
@@ -638,9 +678,13 @@ byId("new-experiment").addEventListener("click", () => {
 });
 // + Variant, + Metric, + Task: one file in the chosen experiment's own folder, then the line
 // that uses it, shown to copy: experiment.md is the person's to edit.
+// The experiment in view: the open file's while Files is showing, else the one open in
+// Plan, Runs or Summary. The page keeps both, and the Files one used to win everywhere, so
+// the buttons could act on an experiment that was not on screen (review 2026-11-21, NU7).
 function chosenExperiment() {
-  if (experimentContext) return experimentContext;
-  try { return mode === "experiments" ? experimentPath : ""; } catch { return ""; }  // experiments.js not read yet
+  let open = "";
+  try { open = mode === "experiments" ? experimentPath : ""; } catch { /* experiments.js not read yet */ }
+  return byId("files-workspace").hidden ? (open || experimentContext) : (experimentContext || open);
 }
 function showLine(result) {
   byId("line-hint-where").textContent = `To use it, add this line ${result.where.replace(/`/g, "")}:`;

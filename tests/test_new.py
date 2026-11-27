@@ -234,3 +234,25 @@ def test_new_from_an_example_experiment_copies_it_and_its_team(tmp_path, monkeyp
     assert (team / "noah.md").read_text(encoding="utf-8").endswith("Edited.\n")
     assert main(["new", "study", "--from", "leader_vs_flat"]) == 1
     assert "already exists" in capsys.readouterr().err
+
+
+def test_new_from_reads_files_a_windows_tool_saved_and_a_failed_copy_leaves_nothing(tmp_path):
+    """Review 2026-11-21, NC6: with a byte-order mark a member kept its id and the command said
+    "copied"; a file that was not UTF-8 left half a copy that then "already exists"."""
+    source = debate(tmp_path / "source")
+    validate(source, write_ids=True)
+    for name in ("team.yaml", "judge.md"):
+        text = (source / name).read_text(encoding="utf-8")
+        (source / name).write_text(text, encoding="utf-8-sig")
+    old = re.search(r"^id: (\S+)", (source / "judge.md").read_text(encoding="utf-8-sig"), re.M).group(1)
+    copy, _ = copy_from(source, tmp_path / "copy")
+    judge = (copy / "judge.md").read_text(encoding="utf-8")
+    assert f"parent_id: {old}" in judge and f"\nid: {old}" not in judge
+    assert (copy / "team.yaml").read_text(encoding="utf-8").startswith("id: ") or "name: copy" in (copy / "team.yaml").read_text(encoding="utf-8")
+    assert validate(copy).ok
+
+    (source / "for.md").write_bytes(b"---\ndescription: caf\xe9\n---\nhi\n")
+    for _ in range(2):  # the second try says the same, not "already exists"
+        with pytest.raises(NewError, match="for.md in source is not UTF-8 text"):
+            copy_from(source, tmp_path / "second")
+        assert not (tmp_path / "second").exists()

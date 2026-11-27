@@ -299,22 +299,32 @@ def join_written(folder: str, name: str) -> str:
     return name if folder in ("", ".") else f"{folder.rstrip('/')}/{name}"
 
 
-def create_member(root: Path, written: str) -> dict:
-    path = editable(root, written)
+NOT_MEMBERS = ("chair.md", "manager.md", "readme.md")
+
+
+def member_filename(path: Path):
+    """What a member's file may be called; + Member and Rename ask the same."""
     if path.suffix != ".md":
         raise ValueError("Give the member a Markdown filename, such as researcher.md.")
     if path.name.lower() == "chair.md":
         raise ValueError("The chair is not a member. Use + Chair to write the team’s flow.")
-    if path.name.lower() in ("manager.md", "readme.md"):
+    if path.name.lower() in NOT_MEMBERS:
         raise ValueError(f"{path.name} is not a member’s file. Choose another name, such as researcher.md.")
     from ..loader import member_name
     from ..validate import WORD
     from ..vocabulary import RESERVED_NAMES
-    from .. import vocabulary as V
     name = member_name(path)
     if not WORD.fullmatch(name) or name in RESERVED_NAMES:
         raise ValueError("Use a member name with letters, digits and underscores, starting with a letter or underscore; avoid flow words such as done and stop.")
+
+
+def create_member(root: Path, written: str) -> dict:
+    path = editable(root, written)
+    member_filename(path)
+    from .. import vocabulary as V
     team_folder(root, str(path.parent.relative_to(root)))
+    if path.exists() or path.is_symlink():  # said here, not by Python's "[Errno 17]" (review 2026-11-21, NU12)
+        raise Conflict(f"{path.name} already exists in this team. Choose another name.")
     with path.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(f'---\ndescription: ""\n---\n{V.MEMBER_STARTER}\n')
     return read_file(root, written)
@@ -342,6 +352,14 @@ def rename_file(root: Path, written: str, destination: str, revision: str) -> di
     target = target.with_name(Path(destination).name)
     if source.name == "team.yaml" or source.suffix != target.suffix or source.parent != target.parent:
         raise ValueError("Rename a file in the same folder, keeping its extension. Keep team.yaml's name.")
+    # In a team's folder a Markdown file's name says what it is, so Rename keeps + Member's
+    # rules: the chair stays the chair, and a member gets a member's name (review 2026-11-21).
+    if (source.suffix == ".md" and (source.parent / "team.yaml").is_file()
+            and source.name.casefold() != target.name.casefold()):
+        if source.name.lower() in NOT_MEMBERS:
+            raise ValueError(f"Keep {source.name}'s name: it says what this file is to the team. "
+                             "To remove it, move it to the trash.")
+        member_filename(target)
     if read_file(root, written)["revision"] != revision:
         raise Conflict("This file changed on disk. Reload it before renaming.")
     if target.exists():
@@ -417,9 +435,25 @@ def new_place(root: Path, written: str) -> Path:
     return path
 
 
+def new_team_place(root: Path, written: str) -> Path:
+    """Where a new team goes, and never inside another team: the engine refuses a team in a
+    team until a later version, so the new folder broke its parent (review 2026-11-21, NU9)."""
+    path = new_place(root, written)
+    for folder in path.parents:
+        if not folder.is_relative_to(root):
+            break
+        if (folder / "team.yaml").is_file():
+            if folder == root:
+                raise ValueError("The folder you opened is itself a team, and a team inside a team comes in a "
+                                 "later version. To make another team, open the folder above it with teamrunner ui.")
+            raise ValueError(f"{folder.relative_to(root).as_posix()} is a team, and a team inside a team comes "
+                             "in a later version. Give the new team a name alone to make it beside your other teams.")
+    return path
+
+
 def new_team(root: Path, written: str, example: str = "") -> dict:
     from ..new import EXAMPLES, examples, create, copy_from
-    path = new_place(root, written)
+    path = new_team_place(root, written)
     if example:
         if example not in examples():
             raise ValueError("Choose one of the shipped examples.")
@@ -444,7 +478,7 @@ def team_names(root: Path) -> list[str]:
     return found
 
 
-EXPERIMENT_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+EXPERIMENT_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*\Z")  # `$` let a final newline through (NS11)
 EXPERIMENT_TEMPLATE = """---
 # An experiment runs versions of a team side by side, many times each, and compares
 # them. This file is the whole plan. Your team is never edited: each condition is
@@ -496,7 +530,7 @@ What do you expect to see, and which metric would show it?
 
 Why this matters, where the idea came from, what to try next. Every run records
 this file, so write for whoever reads the results later. Validate checks the plan;
-Rehearse · free (Experiments, Overview) runs it end to end without calling a model.
+Rehearse · free (Experiments, Plan) runs it end to end without calling a model.
 """
 
 
@@ -506,6 +540,9 @@ def new_experiment(root: Path, name: str, team: str) -> dict:
     from ..workspace import is_workspace
     if not EXPERIMENT_NAME.match(name or ""):
         raise ValueError("Name the experiment with letters, digits, `_` and `-`, such as advocate_model.")
+    from .experiments import SKIP
+    if name.lower() in SKIP:  # the Experiments list never looks inside a folder of these names
+        raise ValueError(f"`{name}` is a folder name TeamRunner uses for its own files. Choose another name.")
     if team not in team_names(root):
         raise ValueError("Choose one of the teams in this folder.")
     folder = new_place(root, f"experiments/{name}")
@@ -526,9 +563,27 @@ def key_status(root: Path, written: str) -> dict:
     from ..checks import needed_keys
     from ..keys import PROVIDER_KEYS, find_keys
     from ..builtin_tools import TOOL_KEYS
-    folder = team_folder(root, written)
-    team, _ = load_team(folder)
-    names = needed_keys(team) if team else []
+    # Keys live outside every team, so they can be set with an experiment selected, or with
+    # nothing selected at all: a new workspace has no team yet (review 2026-11-21, NU3).
+    names = []
+    path = inside(root, written) if written else root
+    path = path if path.is_dir() else path.parent
+    for folder in (path, *path.parents):  # the experiment a selected file belongs to, if any
+        if (folder / "experiment.md").is_file() or (folder / "team.yaml").is_file() or folder == root:
+            path = folder if (folder / "experiment.md").is_file() else path
+            break
+    if (path / "experiment.md").is_file():
+        from ..experiment import build, read_experiment
+        from ..plan import keys_needed
+        exp = read_experiment(path)
+        build(exp)
+        names = list(keys_needed(exp))
+    else:
+        try:
+            team, _ = load_team(team_folder(root, written))
+        except ValueError:
+            team = None
+        names = needed_keys(team) if team else []
     keys = find_keys(names, None, None)
     return {"keys": [{"name": name, "present": name not in keys.missing} for name in names],
             "allowed": sorted(set(PROVIDER_KEYS.values()) | set(TOOL_KEYS.values()))}

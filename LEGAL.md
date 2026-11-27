@@ -101,7 +101,21 @@ machine, user or network, and deleting the file makes a new one.
 TEAMRUNNER_NO_VERSION_CHECK=1 hides the update reminder but not the request,
 because the client must still learn whether its version may run.
 
-Apart from this check, the local client does not send usage telemetry to the publisher.
+When the local client hits an error it did not foresee (a crash), it sends one
+report to https://version.teamrunner.ai/crash on the same server: the two headers
+above, and three fields: the exception's type, and the file and line in
+TeamRunner's own code where the error happened. It carries no error message,
+traceback, team, model, file, path, key, username or command; a type defined
+outside Python, TeamRunner and installed packages is sent as "other". The server
+logs the time and those fields, to count crashes and find their cause; it does
+not log the IP address. At most 5 reports are sent a day.
+TEAMRUNNER_NO_CRASH_REPORTS=1 turns crash reports off. The full details of a
+crash stay on the machine, in ~/.teamrunner/last-error.txt. "teamrunner report"
+and the browser page's "Report this problem" button open a GitHub issue form
+filled in with the version, the system and the same three fields; nothing is
+posted unless the person submits it.
+
+Apart from this check and crash reports, the local client does not send usage telemetry to the publisher.
 Requests to the demo model also carry TeamRunner's version, the Python version
 and the platform in their User-Agent, so the demo can stop answering versions
 that are too old.

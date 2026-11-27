@@ -117,9 +117,11 @@ def measures_of(runs: list[tuple[Path, dict]], metrics, events_of) -> list[Measu
                 if f.type == "text":
                     continue
                 kind = {"number": "number", "flag": "yes_no", "choice": "choice"}[f.type]
+                bounds = (None, None)
                 if kind == "yes_no" and m.evaluations > 1:
-                    kind = "number"  # the share of evaluations saying yes
-                col = Measure(f"{m.name}.{name}", kind, options=f.options)
+                    kind = "number"  # the share of evaluations saying yes: never below 0 or above 1
+                    bounds = (0.0, 1.0)
+                col = Measure(f"{m.name}.{name}", kind, options=f.options, bounds=bounds)
                 for rid, lines in made.items():
                     values = [ln["output"].get(name) for ln in lines if name in (ln.get("output") or {})]
                     if not values:
@@ -239,7 +241,7 @@ def summary(exp, runs: list[tuple[Path, dict]], left_out: Counter, metrics, out,
     say, paint = out.say, out.paint
     money = ""
     if spent_runs is not None:
-        money = f" · {_money(spent_runs)} runs" + (f" + {_money(spent_evaluating)} evaluating"
+        money = f" · {_money(spent_runs)} for these runs" + (f" + {_money(spent_evaluating)} evaluating"
                                                    if spent_evaluating else "")
     title = exp.name or exp.folder.name
     say(f"{title} · {len(runs)} of {exp.runs} runs completed{money}{note}")
@@ -269,7 +271,7 @@ def summary(exp, runs: list[tuple[Path, dict]], left_out: Counter, metrics, out,
                 interval = f"[{_num(ci[0])}, {_num(ci[1])}]" if ci else ""
                 say(f"  {cond:<{w}}{n:>4}  {_fmt(row['mean'], 7)} {_fmt(row['sd'], 7)}   {interval}")
         if m["marginals"]:
-            say(f"  {'marginal means':<{w}}")
+            say(f"  {'marginal means, pooled over runs':<{w}}")  # a level with more runs weighs more (NE11)
         for row in m["marginals"]:
             ci = row["ci"]
             interval = f"[{_num(ci[0])}, {_num(ci[1])}]" if ci else ""

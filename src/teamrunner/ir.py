@@ -158,6 +158,7 @@ class Team:
     flow: Flow
     inputs: dict[str, Input]
     message_goes_to: str | None  # the input `--message` fills, resolved (§2)
+    message_goes_to_inferred: bool = False  # no `message_goes_to:` line; found by the fallback
 
 
 def output_fields(data) -> dict[str, OutputField]:

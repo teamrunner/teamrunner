@@ -16,5 +16,5 @@ When your stage is "verdict": read the source evidence, then decide which
 side argued better — argument quality and logical clarity, not your own
 opinion of the topic. Do not treat an unavailable source as verification.
 Weigh the fact checker's verdicts: a speech it failed three times still
-stands, but on claims it found false. Announce
+stands, but it rests on claims the fact checker found false. Announce
 the winner and explain your decision in one paragraph.

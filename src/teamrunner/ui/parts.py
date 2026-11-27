@@ -16,9 +16,10 @@ from io import StringIO
 
 from ruamel.yaml import YAML, YAMLError
 
-from .api import OutsideRoot, inside
+from ..loader import IndentingTab, load_tabs_as_spaces
+from .api import OutsideRoot, editable, inside, visible
 
-NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*\Z")
 INPUT = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
 
@@ -40,11 +41,32 @@ def _name(name: str) -> str:
     return name
 
 
-def _new_file(folder: Path, part: str, filename: str) -> Path:
+def _new_file(root: Path, folder: Path, part: str, filename: str) -> Path:
+    """The file to make, checked as every other write in the page is: an ordinary file in an
+    ordinary folder of the experiment. A `variants` that is a link, or a link waiting where
+    the new file would go, wrote outside the opened folder (review 2026-11-21, NS7)."""
     path = folder / part / filename
+    if path.parent.is_symlink() or path.is_symlink():
+        raise OutsideRoot(f"{part}/ or {part}/{filename} is a link. This page writes only to ordinary "
+                          "files and folders inside the opened folder.")
     if path.exists():
         raise FileExistsError(f"{part}/{filename} already exists. Choose another name.")
+    if editable(root, path.relative_to(root).as_posix()) != path:
+        raise OutsideRoot("Choose a file inside the opened folder.")
     path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _source(team: Path, filename: str) -> Path:
+    """The team's file a variant copies: its chair or one of its members, an ordinary file in
+    the team's own folder. Any other name, such as `.env`, copied a file the page refuses to
+    show into one it does show (review 2026-11-21, NS7)."""
+    from ..experiment import _members
+    offered = {p.name for p in _members(team).values()} | {"chair.md"}
+    path = team / filename
+    if (filename not in offered or not visible(Path(filename)) or path.is_symlink()
+            or not path.is_file() or path.resolve().parent != team.resolve()):
+        raise ValueError("Choose one of the team's files.")
     return path
 
 
@@ -89,8 +111,9 @@ def parts(root: Path, written: str) -> dict:
                         if spec.type != "text":  # text cannot be counted or averaged: grade it with an evaluator
                             measurable.append(path)
         try:
-            data = YAML(typ="safe").load((team / "team.yaml").read_text(encoding="utf-8")) or {}
-        except (OSError, YAMLError):
+            data = load_tabs_as_spaces(YAML(typ="safe").load,
+                                       (team / "team.yaml").read_text(encoding="utf-8")) or {}
+        except (OSError, YAMLError, IndentingTab):
             data = {}
         defaults = data.get("default_inputs") or {}
         for path in sorted(team.glob("*.md")):
@@ -116,13 +139,13 @@ def new_variant(root: Path, written: str, name: str, source: str) -> dict:
     prompt_only = source.endswith("#prompt")
     team_name, _, filename = source.removesuffix("#prompt").partition("/")
     team = next((t for t in _teams(folder) if t.name == team_name), None)
-    if team is None or "/" in filename or not (team / filename).is_file():
+    if team is None:
         raise ValueError("Choose one of the team's files.")
-    original = (team / filename).read_text(encoding="utf-8")
+    original = _source(team, filename).read_text(encoding="utf-8")
     from ..experiment import _members
     key = "chair" if filename == "chair.md" else next(
         (m for m, p in _members(team).items() if p.name == filename), Path(filename).stem)
-    path = _new_file(folder, "variants", f"{name}.md")
+    path = _new_file(root, folder, "variants", f"{name}.md")
     if prompt_only:
         _, body = _split(original)
         text = body  # exactly the prompt: anything added here would be sent to the model
@@ -190,13 +213,18 @@ def new_metric(root: Path, written: str, name: str, kind: str) -> dict:
         return {"path": None, "line": f"  - {wanted}", "where": "under `metrics:` in experiment.md"}
     _name(name)
     found = parts(root, written)
+    # One name is one line under `metrics:`, so an answer key and an evaluator cannot share it.
+    taken = next((p.name for p in sorted((folder / "metrics").glob(f"{name}.*"))
+                  if p.suffix in (".yaml", ".yml", ".md")), None)
+    if taken:
+        raise FileExistsError(f"metrics/{taken} already exists. Choose another name.")
     description = "What this measures, in one line"
     if kind == "answer_key":
         source = found["outputs"][0] if found["outputs"] else "member.output.field"
-        path = _new_file(folder, "metrics", f"{name}.yaml")
+        path = _new_file(root, folder, "metrics", f"{name}.yaml")
         path.write_text(ANSWER_KEY.format(description=description, source=source), encoding="utf-8")
     elif kind == "evaluator":
-        path = _new_file(folder, "metrics", f"{name}.md")
+        path = _new_file(root, folder, "metrics", f"{name}.md")
         path.write_text(EVALUATOR.format(description=description, model="anthropic/claude-sonnet-5-5"),
                         encoding="utf-8")
     else:
@@ -210,7 +238,7 @@ def new_task(root: Path, written: str, name: str) -> dict:
     folder = _experiment(root, written)
     _name(name)
     inputs = parts(root, written)["inputs"]
-    path = _new_file(folder, "tasks", f"{name}.yaml")
+    path = _new_file(root, folder, "tasks", f"{name}.yaml")
     out, writer = StringIO(), YAML()
     writer.width = 88
     writer.dump({"inputs": inputs or {"topic": ""}}, out)

@@ -176,19 +176,51 @@ def check(quiet: bool = False, err=None) -> int | None:
     # floor above itself keeps refusing offline until it is updated (D148 (4), (5)).
     if _below(__version__, state.get("min_secure_version")):
         message = _plain(state.get("message"))
-        print(f"✗ TeamRunner {__version__} has a known security problem and will not run. "
-              f"Version {_shown(state['min_secure_version'])} or later is needed.", file=err)
+        # Said calmly (D170): an update is needed, nothing has gone wrong, nothing of theirs changes.
+        print(f"↑ TeamRunner {__version__} needs an update before it runs: "
+              f"version {_shown(state['min_secure_version'])} or later.", file=err)
         if message:
             print(f"  {message}", file=err)
-        print(f"  Update with: {UPDATE}", file=err)
+        print(f"  Update with: {UPDATE}   (your teams, runs and keys stay as they are)", file=err)
         return 1
     # The nudge only; the request above still goes, so a secure floor still arrives (D149).
     if (_below(__version__, state.get("min_version")) and not quiet
-            and os.environ.get("TEAMRUNNER_NO_VERSION_CHECK", "").strip() not in {"1", "true", "yes"}):
+            and _switch("TEAMRUNNER_NO_VERSION_CHECK") not in {"1", "true", "yes"}):
         message = _plain(state.get("message"))
         print(f"↑ A newer TeamRunner is wanted: version {_shown(state['min_version'])} or later "
               f"(you have {__version__}).{' ' + message if message else ''}", file=err)
         print(f"  Update with: {UPDATE}   (TEAMRUNNER_NO_VERSION_CHECK=1 hides this)", file=err)
+    return None
+
+
+# `python -m` and `python -c` put the current folder first on the import path, so a `pip.py`
+# or `teamrunner.py` in a downloaded folder would run instead. `-P` (Python 3.11 on) leaves
+# it off; `cmd_update` also runs every command from an empty folder, which covers 3.10.
+SAFE_PATH = ("-P",) if sys.version_info >= (3, 11) else ()
+
+
+def _switch(name: str) -> str:
+    from .keys import switch
+    return switch(name)
+
+
+def _program(name: str, platform: str = sys.platform) -> str | None:
+    """Where `name` is on PATH. Windows looks in the current folder before PATH, and the
+    current folder may be a team someone sent, so a program found only there is not used
+    (review 2026-11-21, NS3)."""
+    found = shutil.which(name)
+    if not found or platform != "win32":
+        return found
+    here = Path.cwd().resolve()
+    folders = [Path(f) for f in os.environ.get("PATH", "").split(os.pathsep) if f.strip()]
+    if Path(found).resolve().parent != here or here in {f.resolve() for f in folders if f.is_absolute()}:
+        return found
+    endings = [e for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if e]
+    for folder in folders:
+        if folder.is_absolute() and folder.resolve() != here:
+            for ending in endings:
+                if (folder / (name + ending)).is_file():
+                    return str(folder / (name + ending))
     return None
 
 
@@ -208,13 +240,13 @@ def how_installed(prefix: str | None = None, dist=None) -> tuple[list[str] | Non
         where = urllib.request.url2pathname(str(direct.get("url", ""))[len("file://"):]) or "a folder"
         return None, f"TeamRunner runs from the source folder {where}; update that folder instead (git pull)"
     if (root / "uv-receipt.toml").is_file():
-        return [shutil.which("uv") or "uv", "tool", "upgrade", "teamrunner"], "uv tool"
+        return [_program("uv") or "uv", "tool", "upgrade", "teamrunner"], "uv tool"
     if (root / "pipx_metadata.json").is_file():
-        return [shutil.which("pipx") or "pipx", "upgrade", "teamrunner"], "pipx"
+        return [_program("pipx") or "pipx", "upgrade", "teamrunner"], "pipx"
     if installer == "uv":
-        return [shutil.which("uv") or "uv", "pip", "install", "--upgrade", "--python", sys.executable,
+        return [_program("uv") or "uv", "pip", "install", "--upgrade", "--python", sys.executable,
                 "teamrunner"], "uv pip"
     if installer in {"pip", ""}:
-        return [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", "teamrunner"], "pip"
+        return [sys.executable, *SAFE_PATH, "-m", "pip", "install", "--upgrade", "--quiet", "teamrunner"], "pip"
     return None, (f"TeamRunner was installed by {installer}, which it cannot drive; "
                   f"update it with {installer} instead")

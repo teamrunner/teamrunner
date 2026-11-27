@@ -38,7 +38,7 @@ class Describing:
         with self.lock:
             if self.state["state"] == "writing":
                 raise api.Conflict("A team is already being written. Wait for it to finish.")
-        path = api.new_place(self.root, str(data.get("path", "")))
+        path = api.new_team_place(self.root, str(data.get("path", "")))
         if path.exists():
             raise api.Conflict(f"{path.relative_to(self.root).as_posix()} already exists; choose another name.")
         description = check_description(data.get("description", ""))

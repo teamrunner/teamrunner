@@ -33,7 +33,7 @@ MAX_DESCRIPTION = 50_000  # bytes, by either route (D162)
 # Offered when no model is named, for whichever keys are set.
 DESCRIBE_MODELS = {"OPENAI_API_KEY": "openai/gpt-6-luna", "ANTHROPIC_API_KEY": "anthropic/claude-sonnet-5-5",
                    "GEMINI_API_KEY": "gemini/gemini-2.5-pro"}
-ALLOWED = re.compile(r"^(team\.yaml|[A-Za-z0-9_]+\.md|models/[A-Za-z0-9_]+\.yaml)$")
+ALLOWED = re.compile(r"^(team\.yaml|[A-Za-z0-9_]+\.md|models/[A-Za-z0-9_]+\.yaml)\Z")
 
 ANSWER = """
 ## How to answer here
@@ -143,13 +143,20 @@ def describe(folder: Path, description: str, model_name: str, model: Model,
                                     f"Write a team that does this:\n\n{description.strip()}"},
     ]
     cost, unknown, notes, report, wrong = 0.0, False, "", None, []
+    made = False  # this call made `folder`; one that appeared meanwhile is someone else's (NS11)
+
+    def clear():
+        if folder.exists():
+            if not made:
+                raise NewError(f"{folder} already exists; `new` never writes over anything")
+            shutil.rmtree(folder)
     for round_ in range(1, MAX_ROUNDS + 1):
         if on_round:
             on_round(round_)
         try:
             reply = asyncio.run(model.complete(model_name, {}, messages, SCHEMA))
         except Exception as e:  # no credit, a wrong model name, the network (review 2026-11-16, C8)
-            if folder.exists():
+            if made and folder.exists():
                 shutil.rmtree(folder)  # only ever a folder this command made, in an earlier round
             reason = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
             raise NewError(f"the model could not write the team: {reason}; nothing was made") from e
@@ -159,9 +166,9 @@ def describe(folder: Path, description: str, model_name: str, model: Model,
             cost += reply.cost_usd
         files, notes, wrong = _files(reply.text)
         if not wrong:
-            if folder.exists():
-                shutil.rmtree(folder)  # only ever a folder this command made, in an earlier round
+            clear()
             folder.mkdir(parents=True)
+            made = True
             for path, content in files:
                 target = folder / path
                 target.parent.mkdir(parents=True, exist_ok=True)

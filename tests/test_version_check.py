@@ -161,8 +161,9 @@ def test_below_min_secure_version_refuses(lookup):
     state["served"] = {"min_version": "0.0.0", "min_secure_version": "99.0", "message": "A key could leak."}
     code, said = run()
     assert code == 1
-    assert "known security problem" in said and "A key could leak." in said
-    assert "teamrunner --update" in said
+    assert "needs an update before it runs: version 99.0 or later" in said and "A key could leak." in said
+    assert "teamrunner --update" in said and "stay as they are" in said
+    assert "security" not in said.replace("A key could leak.", "")  # calm: no alarm of its own (D170)
 
 
 def test_the_off_switch_does_not_turn_off_the_refusal(lookup, monkeypatch):
@@ -180,7 +181,7 @@ def test_a_remembered_secure_floor_refuses_offline(lookup, monkeypatch):
     monkeypatch.setattr(version_check, "today", lambda: "2099-01-01")
     code, said = run()
     assert len(sent) == 2 and code == 1
-    assert "known security problem" in said
+    assert "needs an update before it runs" in said
     for word in ("check", "lookup", "offline", "reach", "network"):
         assert word not in said.lower()
 
@@ -196,4 +197,4 @@ def test_the_cli_refuses_before_doing_anything(lookup, tmp_path, capsys):
     state["served"] = {"min_version": "0.0.0", "min_secure_version": "99.0"}
     assert main(["new", str(tmp_path / "t")]) == 1
     assert not (tmp_path / "t").exists()
-    assert "known security problem" in capsys.readouterr().err
+    assert "needs an update before it runs" in capsys.readouterr().err

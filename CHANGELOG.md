@@ -4,6 +4,215 @@ TeamRunner is an early release: a 0.0.x version may change in ways that
 break teams and run folders made with an earlier one. Each such change is
 listed here.
 
+## 0.0.8 — crash reports, and every run drawn as a picture
+
+- **A crash sends a small report, and you can file the details yourself.** A
+  crash is an error TeamRunner did not foresee: a fault of its own, not a
+  missing key or a mistake in a file. When one happens TeamRunner now sends
+  one report to `https://version.teamrunner.ai/crash`: its version, the
+  Python version and the platform, the random install id (the same two
+  headers as the daily version check), the kind of error (such as
+  `KeyError`), and the file and line in TeamRunner's own code. Never the
+  error's message, a traceback, a path of yours, a team, model, file, key or
+  command; the server does not store your IP address. At most 5 a day, and
+  the crash's message says when one was sent.
+  **`TEAMRUNNER_NO_CRASH_REPORTS=1` turns them off.** This changes the
+  README's and LEGAL.md's statement about telemetry, which now reads "apart
+  from this check and crash reports".
+- **`teamrunner report`** opens a bug report on GitHub in your browser,
+  filled in with your version, your system and where the last crash
+  happened. Nothing is posted until you press Submit. The full details stay
+  on your computer in `~/.teamrunner/last-error.txt`, for you to read and
+  paste from if you choose.
+- **In the browser page, a crash shows a "Report this problem" button**
+  beside its message, which opens the same filled-in bug report. Before, a
+  run or an action that crashed in the page said only that it could not
+  finish.
+- **In the browser page, every run is drawn as a picture.** A run you open
+  starts with its timeline: one cell per turn, coloured by the value of an
+  output you choose (such as the judge's `winner`); click a cell to go to
+  its message. **Runs → Show as: Wall** draws all of a team's runs that
+  way, and an experiment's **Runs** tab has **Grid** and **Wall**, the wall
+  grouped by condition.
+- **`--input name=value` (`-i`) gives inputs by name**, repeated for
+  several: `teamrunner run debate -i motion="Should zoos be abolished?" -i
+  opening_side=pro`. The value is the text after the first `=`, as typed;
+  a number or a list still comes from a task file. It can be used with
+  `--message` and `--task-file`; an input given twice stops the run and
+  names both.
+- **When team.yaml does not say where `--message` goes, the run says where
+  it went:** `your message went to topic, the team's only input`, on the
+  line under the run line. The input's entry in `record.json` gains
+  `via: --message`. Where it goes is unchanged.
+- **A tab in a YAML file no longer stops it being read.** A tab between
+  words or after `key:` is read as a space, as YAML allows; a tab that
+  indents a line is named on its line: "this line is indented with a tab;
+  YAML needs spaces to indent". An unreadable `team.yaml` is now the only
+  problem reported, without "has no model" for every member.
+- **About & notices in the page shows the version.**
+- **A copy too old to run says so calmly.** When a version must be updated
+  before it runs, it now says "TeamRunner 0.0.8 needs an update before it
+  runs: version 0.0.9 or later", and that your teams, runs and keys stay as
+  they are, instead of "has a known security problem and will not run".
+- **Security: TeamRunner no longer runs the `git` program.** A run's record
+  keeps the commit the team's folder is at. That was asked of git, and git
+  obeys settings in the folder's own `.git/config`; 0.0.7 switched off the
+  ones known then, but a team shared as a zip with a `.git` folder set up as a
+  partial clone could still run a program on `run`, even `--rehearse`. The
+  commit is now read from `.git/HEAD` as plain text, with or without git
+  installed. **A record no longer has `git_dirty`**; `content_hash` already
+  says whether two runs used the same files, committed or not.
+- **Security: `conditions/` and `runs/` in an experiment must be its own
+  folders.** An experiment someone sent could ship `conditions` as a link to
+  a folder elsewhere, and `teamrunner experiment --plan` (or opening it in
+  the page) copied a team's files there. A linked `conditions/`, condition
+  folder or `runs/` is now an error and nothing is written through it. If
+  you linked `runs/` to another disk yourself, make it a real folder.
+- **Security: `teamrunner --update` no longer reads Python files from the
+  folder you are in.** A `pip.py` or `teamrunner.py` in a downloaded folder
+  was run in place of the real one. The update now runs from an empty
+  folder, and on Windows a `uv` or `pipx` found only in the current folder
+  is not used.
+- **Lowering an evaluator's `evaluations:` counts only that many.** After
+  going from 3 to 1, a run evaluated no, yes, no was read as "yes". The later
+  evaluations stay in the file and count again if the number is raised.
+- **A share of evaluations saying yes keeps its interval inside 0 to 1.**
+- **`--keep-unchanged` never brings back runs from before a `--restart`.** A
+  condition that had not changed counted its oldest runs, the ones the
+  restart had set aside.
+- **A task file edited while an experiment runs does not reach its runs.**
+  Every run gets the inputs read when the session started; the edit shows as
+  a changed study the next time.
+- **A `.md` data file is part of the study.** A `.md` with no settings block
+  is a note only in a team's own folder (beside `team.yaml`). Anywhere else,
+  such as `docs/policy.md`, it is data a run can read, and editing it now
+  changes the study as editing a `.txt` always did. Runs made by an earlier
+  version still count when the files they ran on are the same as today's.
+- **One session at a time runs an experiment.** A second `teamrunner
+  experiment` on the same folder, or the page and the command line together,
+  each ran every slot and each counted toward `max_cost_usd` alone. The
+  second is now told the experiment is already running and starts nothing.
+  `--plan`, `--summary`, `--export` and `--rehearse` are not held back. The
+  lock is a hidden `.session.lock` in the experiment's folder, removed when
+  the session ends.
+- **A killed session's spending is counted.** `kill` and closing the
+  terminal now stop a command as Ctrl-C does, so runs in progress write
+  their records. Where a session still ended with no record (a crash, a
+  power cut), the next session says so and counts what those runs had spent
+  toward the ceiling; their slots run again.
+- **A turn that does not finish keeps the cost of its calls.** A turn that
+  paid for a call and then failed, or was stopped by the ceiling or Ctrl-C,
+  left that cost out of the run's total. It is now written as a `retry`
+  event of kind `unfinished` and counted.
+- **A key file saved by Notepad or PowerShell is read.** A file starting
+  with a byte-order mark lost its first key, and a UTF-16 file (PowerShell
+  5's `echo KEY=… > .env`) brought every command down with a traceback. Both
+  are now read; a file that is not text at all is named in one line.
+- **An experiment names every missing key before anything runs.** Without
+  keys it printed a raw `Problem(...)`, named one key per attempt and left
+  failed run folders. Now every condition's and evaluator's keys are checked
+  first, and `--plan` ends with a "Keys needed" line saying which are found.
+- **In the page, Set up keys works with an experiment selected, or with
+  nothing selected.** It answered "Choose a team folder", so a new workspace
+  with no team yet had no way to set the key it asked for.
+- **A free model can run under a ceiling.** The page's own experiment
+  template writes `max_cost_usd:`, and on the demo team the page said it
+  could not run, because a free model has no known longest reply.
+- **`validate` names a `.md` file that is a note, not a member.** A `.md`
+  with no settings block is left alone, as before, but `validate` now says
+  so in a line, and a chair that names such a file says why it is not a
+  member.
+- **Security: sandboxed code cannot import a module from the internet.**
+  `run_code` switched the network off, but Deno keeps a separate permission
+  for importing modules, which by default allows six hosts (esm.sh, jsr.io
+  and a GitHub one among them). It is now denied, with `network: true` too.
+- **Security: `read_page` and `run_code`'s fetch check the name they
+  connect to.** For a host name with `ß` (and a few other letters), the name
+  checked and the name connected to differed, so a link could lead to this
+  computer or its local network. Both are now checked.
+- **The kept crash details hide keys from your shell, and are yours alone.**
+  `~/.teamrunner/last-error.txt` hid only the keys in the key file; a key
+  set only in the shell, and the command line, were kept as typed. Values of
+  environment variables named like keys (`…KEY`, `…TOKEN`, `…SECRET`,
+  `…PASSWORD`) are now hidden as well, and the file is readable only by you.
+- **`TEAMRUNNER_NO_CRASH_REPORTS` set to any value turns reports off**,
+  except `0`, `false` and `no`. Before, `on` still sent.
+- **A link that leads nowhere in a team is not a crash.** With one in a
+  team's data folder, `experiment --plan` stopped as a fault of
+  TeamRunner's own and sent a crash report. The copy now leaves the link
+  out, as the team itself cannot read it; `validate` names it.
+- **A repeat count is at most 1,000, and `replications:` at most 10,000.**
+  `rounds(*50000000)` validated, and a slip such as `*30000` is real money.
+  **Breaking** only for a flow or an experiment with a larger number.
+- **A model profile is named exactly.** `model: Careful.yaml` for the file
+  `models/careful.yaml` passed `validate` on a Mac or Windows and then
+  failed everywhere else; it is now an error that suggests the right name.
+- **An unquoted date in a task file or `default_inputs` is the text you
+  wrote.** `topic: 2026-01-01` crashed the run. An input with nothing after
+  its colon is now asked for, in place of reaching the prompt as `null`.
+- **A single run with `--max-cost` checks the ceiling can be kept before it
+  starts**, as an experiment does: a model with no list price or no known
+  longest reply used to stop the run at that member's first turn, after
+  earlier turns were paid.
+- **`explain` gives a range when a decision can jump forward.** It said "5
+  turns" for a flow that took 3 or 5.
+- **`new --from` reads files saved by Windows tools**, and a copy that
+  cannot be finished leaves nothing behind.
+- **Ids are written safely when several runs start at once**: beside the
+  file and moved into place, so no run reads a half-written `team.yaml`.
+- **`validate` warns when a team has no member that speaks**, refuses a
+  block called `done` or `stop`, and stops with an error on a link back to
+  the team's own folder, which used to hang it.
+- **`gather` changes nothing when a link leads nowhere**, where it used to
+  stop part-way.
+- **`prices.yaml` refuses `.inf`, and so does `max_cost_usd:`.**
+- **The two switches can be set in the key file.** A line
+  `TEAMRUNNER_NO_CRASH_REPORTS=1` (or `TEAMRUNNER_NO_VERSION_CHECK=1`) in
+  `~/.teamrunner/.env` now works, for anyone who has never set a shell
+  variable.
+- **Experiments: a condition that changes nothing is warned about.** A slip
+  in a name under `change:` made two identical teams, and the plan said so
+  only as information.
+- **Experiments: one variant file can be used for two members.** After the
+  first run the experiment was refused for good, as a duplicate id.
+- **Experiments: a linked folder in the team no longer stops every run**
+  with "changed while the experiment was running".
+- **Experiments: `--plan`, `--summary` and `--export` leave a built
+  condition alone when nothing in it changed**, so they cannot disturb an
+  experiment that is running.
+- **Experiments: `--plan` with a ceiling and a model with no list price
+  says which model**, where it crashed.
+- **Experiments: the summary's first line gives what the counted runs
+  cost**, the figure its rows add up to; before, it left out turns a
+  continued run reused. The estimate after round 1 counts that round's own
+  evaluations. Marginal means are labelled "pooled over runs".
+- **Experiments: `evaluations.csv` gives an evaluation's cost once**, on its
+  first row, so the column adds up to what was spent; a reply that never
+  fit, and was paid for, now has a row.
+- **A value that is not one of a setting's choices is named in words**:
+  "should be `pdf`", not "'html' is not one of ['pdf']".
+- **Security, in the page: + Variant, + Metric and + Task stay inside the
+  opened folder**, and "Open run folder" on a Mac shows the folder in Finder
+  and never starts anything in it.
+- **In the page, the cost estimate no longer holds up the Run dialog.** It
+  is asked for apart from the dialog, only for a real run, and stops after
+  two seconds on a very long flow, saying so.
+- **In the page, one failed request no longer declares TeamRunner
+  stopped.** The page asks once more first; a file that is too large is
+  answered, not dropped.
+- **In the page: + Team never makes a team inside a team**; a run cannot be
+  started in a condition's built folder, where the next build deleted it;
+  the copy of a saved team goes in `teams/`; Refresh no longer blanks an
+  open comparison; the bar, + Chair and the trash follow the file you
+  clicked; Plan, Summary and the + buttons act on the experiment on screen;
+  and dialogs give plain sentences, without Python's own error text or
+  whole paths.
+
+- **The examples use one seed, 1.** The README's experiment and the shipped
+  `leader_vs_flat` example now say `seed: 1`, as the starter `experiment.md`
+  already did. A copy of `leader_vs_flat` you made earlier keeps its own seed
+  and its runs.
+
 ## 0.0.7 — a team someone else wrote stays in its own folder
 
 Four security fixes. Each closes a way for a team or experiment you
@@ -108,7 +317,8 @@ Also:
 - **Clearer help and messages.** `--max-cost` says it limits an estimate at
   list prices, not your bill. `new --help` and the team argument of
   `validate`, `run` and `explain` say a name is found in your workspace. A
-  word TeamRunner does not know suggests `pip install -U teamrunner`.
+  word TeamRunner does not know suggests updating TeamRunner (`teamrunner
+  --update`, as the next entry describes).
   `validate` with a key missing says the team is "not ready to run yet"
   rather than that a run cannot start. `--plan` explains its "at most"
   figure when it is above the ceiling, and no longer prints LiteLLM's

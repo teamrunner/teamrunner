@@ -27,6 +27,39 @@ WHITEBOARD_FILE = "whiteboard.yaml"
 # Reserved folders at the top of a package (D66, D69, D93).
 TOOLS_DIR, MODELS_DIR, RUNS_DIR = "tools", "models", "runs"
 
+TAB_PROBLEM = "found character '\\t' that cannot start any token"
+
+
+class IndentingTab(Exception):
+    """A tab that indents a line: YAML cannot tell how deep it goes, so it is not guessed."""
+
+    def __init__(self, line: int, text: str):
+        super().__init__(f"line {line + 1} is indented with a tab")
+        self.line, self.text = line, text  # 0-based, as ruamel counts; the line as written
+
+
+def load_tabs_as_spaces(load, text: str):
+    """`load(text)`, reading a tab between words or tokens as a space. YAML allows a
+    tab there (after `key:`, inside a plain value, at a line's end), but ruamel stops
+    at it; editors put them in without showing them. A tab in quotes or block text
+    never reaches here, and stays a tab. A tab that indents a line raises IndentingTab."""
+    for _ in range(text.count("\t") + 1):
+        try:
+            return load(text)
+        except YAMLError as e:
+            mark = getattr(e, "problem_mark", None)
+            if (getattr(e, "problem", None) != TAB_PROBLEM or mark is None
+                    or not 0 <= mark.index < len(text) or text[mark.index] != "\t"):
+                raise
+            start = text.rfind("\n", 0, mark.index) + 1
+            end = text.find("\n", mark.index)
+            line = text[start:end if end >= 0 else len(text)]
+            if not text[start:mark.index].strip() and line.strip():
+                raise IndentingTab(mark.line, line) from e
+            text = text[:mark.index] + " " + text[mark.index + 1:]
+    return load(text)
+
+
 class ThreadYAML:
     """A round-trip YAML reader and writer, one per thread. ruamel's parser keeps
     its state on the YAML object, so one shared by an experiment's runs, which
@@ -46,7 +79,7 @@ class ThreadYAML:
         return mine
 
     def load(self, text):
-        return self._own().load(text)
+        return load_tabs_as_spaces(self._own().load, text)
 
     def dump(self, data, stream) -> None:
         self._own().dump(data, stream)
@@ -102,6 +135,7 @@ class Team:
     subteams: list["Team"] = field(default_factory=list)
     retired_files: list[Path] = field(default_factory=list)
     broken: list[Path] = field(default_factory=list)  # member files that could not be read
+    notes: list[Path] = field(default_factory=list)  # .md files with no settings block: not members (D91)
 
     @property
     def name(self) -> str:
@@ -160,6 +194,11 @@ def read_yaml(path: Path, problems: Problems, text: str | None = None, line_offs
             return None
     try:
         data = _yaml.load(text)
+    except IndentingTab as e:
+        problems.error(path, "this line is indented with a tab; YAML needs spaces to indent",
+                       line=e.line + line_offset,
+                       fix="replace the tab at the start of the line with spaces, as many as the lines around it use")
+        return None
     except YAMLError as e:
         mark = getattr(e, "problem_mark", None)
         line = mark.line + line_offset if mark else None
@@ -205,16 +244,21 @@ def read_member(path: Path, problems: Problems) -> Member | None:
     return Member(path, member_name(path), doc, body, body_line)
 
 
-def read_team(folder: Path, problems: Problems, is_top: bool) -> Team:
+def read_team(folder: Path, problems: Problems, is_top: bool, above: frozenset = frozenset()) -> Team:
     doc = read_yaml(folder / TEAM_FILE, problems)
     team = Team(folder, doc)
+    above = above | {folder.resolve()}
     for entry in sorted(folder.iterdir()):
         name = entry.name
         if name.startswith(".") or (is_top and name in (TOOLS_DIR, MODELS_DIR, RUNS_DIR)):
             continue
         if entry.is_dir():
             if (entry / TEAM_FILE).is_file():
-                team.subteams.append(read_team(entry, problems, is_top=False))
+                if entry.resolve() in above:  # a link back up: followed, it never ends (NC7)
+                    problems.error(entry, "this is a link to a folder this team is inside, so the team "
+                                   "would contain itself", fix="remove the link")
+                else:
+                    team.subteams.append(read_team(entry, problems, is_top=False, above=above))
             continue
         if name == CHAIR_FILE:
             team.chair = entry
@@ -231,6 +275,8 @@ def read_team(folder: Path, problems: Problems, is_top: bool) -> Team:
                 team.members.append(member)
             elif len(problems) > before:
                 team.broken.append(entry)
+            else:
+                team.notes.append(entry)
     return team
 
 

@@ -5,6 +5,7 @@
 import json
 
 from .api import inside
+from .runviews import digest
 
 
 def events(handler, job_id, after=0):
@@ -17,6 +18,7 @@ def events(handler, job_id, after=0):
         handler.send_header(name, value)
     handler.end_headers()
     stream, pending, last_state, warned = None, b"", None, False
+    read, drawn = [], 0  # every event so far, for the run timeline (runviews.digest)
 
     def send(kind, value, sequence=None):
         frame = (f"id: {sequence}\n" if sequence is not None else "")
@@ -57,9 +59,13 @@ def events(handler, job_id, after=0):
                         send("log-warning", {"message": "An unreadable event was skipped. Raw events remain in the run folder."})
                         warned = True
                     continue
+                read.append(event)
                 if sequence > after:
                     send("log", event, sequence)
                     after = sequence
+            if len(read) != drawn:  # the timeline's rows, made here so the page has one way to draw a run
+                send("digest", digest(read))
+                drawn = len(read)
             if data:
                 continue  # Drain every flushed event before publishing completion.
             if state["done"]:

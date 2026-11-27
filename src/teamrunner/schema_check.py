@@ -37,7 +37,9 @@ def plain(value):
         return int(value)
     if isinstance(value, float):
         return float(value)
-    return str(value) if isinstance(value, str) else value
+    # YAML reads an unquoted `2026-01-01` as a date, which cannot be written to a record or
+    # put in a prompt as it stands (review 2026-11-21, NC3): it is the text the person wrote.
+    return value if isinstance(value, (bytes, tuple, set)) else str(value)
 
 
 def _shown(value) -> str:
@@ -60,6 +62,9 @@ def check_schema(doc: Doc, schema: str, problems, only: set[str] | None = None) 
         ok = False
         path = list(err.path)
         expect = err.schema.get("x-expect") if isinstance(err.schema, dict) else None
+        if expect is None and err.validator == "enum":  # in words, not "'html' is not one of ['pdf']" (ND8)
+            allowed = [f"`{v}`" for v in err.schema["enum"]]
+            expect = allowed[0] if len(allowed) == 1 else "one of " + ", ".join(allowed)
         if "propertyNames" in err.schema_path:
             # a key that does not fit: err.instance is the key itself
             problems.error(doc.path, f"`{err.instance}` under `{_setting(path)}` should be "

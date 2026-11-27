@@ -228,3 +228,20 @@ def test_the_local_network_list_is_one_deno_accepts():
     assert "127.0.0.0/8" in LOCAL_NETWORK and "[::1]" in LOCAL_NETWORK
     assert all("/" not in n for n in LOCAL_NETWORK if ":" in n)
     assert all(n.startswith("[") for n in LOCAL_NETWORK if ":" in n)
+
+
+@pytest.mark.parametrize("network", [False, True])
+def test_the_code_cannot_import_a_module_from_the_internet(tmp_path, network):
+    """Review 2026-11-21, NS4: Deno's import permission is apart from its network one, and by
+    default allows six hosts (esm.sh, jsr.io, a GitHub one among them). It is now denied,
+    so the attempt below is refused before any request is made."""
+    code = ("import js\n"
+            "for host in ('esm.sh:443', 'raw.githubusercontent.com:443', 'deno.land:443'):\n"
+            "    print(host, js.Deno.permissions.querySync(js.eval('({name: \"import\", host: \"' + host + '\"})')).state)\n"
+            "try:\n"
+            "    await js.eval('import(\"https://esm.sh/teamrunner-not-a-module\")')\n"
+            "    print('IMPORTED')\n"
+            "except Exception as e:\n"
+            "    print('refused:', str(e)[:200])\n")
+    out = ran(code, tmp_path, network=network)
+    assert out.count(" denied") == 3 and "refused:" in out and "IMPORTED" not in out, out

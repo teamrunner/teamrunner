@@ -15,14 +15,14 @@ from pathlib import Path
 
 from ..experiment import (EXPERIMENT_FILE, NotAnExperiment, build, differences, plan_runs,
                           read_experiment)
-from ..experiment_run import Study, _paid, experiment_records, fills, left_out
+from ..experiment_run import Study, _cost, _paid, experiment_records, fills, left_out
 from ..plan import ceiling_of, ceiling_words, costs, litellm_max_lines
 from ..prices import load_prices
 from ..problems import ERROR
 from ..runs import read_events
 from ..summary import COSTLY, costly, table
 from .api import inside, visible
-from .runviews import safe_folder
+from .runviews import digest, safe_folder
 
 SKIP = {"runs", "conditions", "resolved", "node_modules", "__pycache__"}
 DEPTH = 4  # the workspace's experiments/<name>/ is two down; leave room for grouping folders
@@ -102,6 +102,7 @@ def _run(root: Path, folder: Path, record: dict, warnings: list[str]) -> dict | 
     return {"path": folder.relative_to(root).as_posix(), "status": record.get("status") or "unknown",
             "stopped_by": record.get("stopped_by"), "fills": fills(record),
             "replicate": block.get("replicate"), "round": block.get("round"),
+            "digest": digest(read_events(folder), reads=False),  # for the run wall
             "cost_usd": record.get("cost_usd") if record.get("cost_usd") is not None
             else record.get("cost_known_usd"),
             "duration_s": (record.get("latency_ms") or 0) / 1000}
@@ -183,7 +184,7 @@ def detail(root: Path, written: str) -> dict:
     to_evaluate = len(pending(runs, evaluators, True)[0]) if evaluators and runs else 0
     shown["summary"] = {
         "to_evaluate": to_evaluate,
-        "completed": len(runs), "spent_runs_usd": sum(_paid(r) for _, r in runs),
+        "completed": len(runs), "spent_runs_usd": sum(_cost(r) for _, r in runs),  # as the rows add up (NE8)
         "spent_evaluating_usd": spent_on(runs, evaluators),
         "measures": table(exp, runs, exp.measures, lambda f: list(read_events(f))) if runs else [],
         "not_counted": dict(sorted(left_out(exp, study, filled).items())) if not study.changed else {},

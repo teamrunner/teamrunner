@@ -84,6 +84,7 @@ footer{display:flex;justify-content:space-between;gap:20px;border-top:1px solid 
 @media(max-width:580px){#editing{flex:none}.workspace .CodeMirror,#resolved{flex:none;height:48vh}}
 dialog{width:min(540px,calc(100vw - 30px));border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--text);padding:30px;box-shadow:0 20px 80px #0003}
 dialog::backdrop{background:#0005}dialog h2{font-size:26px;letter-spacing:-.7px;margin:0 0 14px}dialog p{font-size:13px;color:var(--muted)}dialog label{display:block;font-size:12px;margin:17px 0 6px}dialog input,dialog select{width:100%;font:14px system-ui;background:var(--bg);color:var(--text);padding:9px;border:1px solid var(--line);border-radius:5px}.dialog-actions{justify-content:flex-end;margin-top:22px}#form-error{color:#c14338}
+dialog p.about-version{margin-top:-10px;font-family:ui-monospace,monospace;font-size:12px}
 /* Run history shares the folder, with no writable record controls. */
 .modes{display:flex;gap:4px}.modes button{background:none;border:1px solid transparent;border-radius:5px;padding:6px 18px;font-size:13px}.modes button[aria-pressed=true]{color:var(--accent);background:var(--selected);border-color:var(--selected)}
 #runs-workspace,#run-workspace{padding:0;overflow-x:hidden;overflow-y:auto}.runs-heading{padding:28px 30px 12px;display:flex;justify-content:space-between;gap:20px;align-items:center}.runs-heading h2{font-size:32px;margin:6px 0 0;letter-spacing:-1px}
@@ -209,7 +210,7 @@ dialog::backdrop{background:#0005}dialog h2{font-size:26px;letter-spacing:-.7px;
 .exp-blockers li{margin:3px 0}
 
 /* TeamRunner stopped (U2); more of a long run (U8) */
-.server-lost{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:14px 30px;background:#fbeae7;color:#5c1d16;border-bottom:1px solid #c14338;font-size:14px}.server-lost p{margin:0;flex:1 1 420px}.server-lost button{border-color:#c14338}
+.server-lost{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:14px 30px;background:#fbeae7;color:#5c1d16;border-bottom:1px solid #c14338;font-size:14px}.server-lost p{margin:0;flex:1 1 420px}.server-lost button{border-color:#c14338}.crash-bar button{border:1px solid #c14338;border-radius:5px;padding:5px 11px;background:var(--paper)}.crash-bar a{color:inherit}
 .show-more{display:block;margin:18px auto}
 /* Error text readable in dark mode: 4.5:1 or more on the dark panels (U10) */
 @media(prefers-color-scheme:dark){.server-lost{background:#3a1f1c;color:#f6d3ce}.check-mark[data-state=error],.gutter-error,#form-error,#describe-error,#describe-problems,#run-form-error,#live-check,.event-note.error,.problem.error strong,#experiments-workspace .slot.failed{color:#f29a91}.event-note.error{border-color:#f29a91}}
@@ -241,3 +242,42 @@ dialog::backdrop{background:#0005}dialog h2{font-size:26px;letter-spacing:-.7px;
 .folder-name{font-size:13px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
 .tree-root .folder-name{flex:1;min-width:0}.tree-root #refresh{margin-left:auto;flex:none}
 .tree-root #refresh{border:1px solid var(--line);border-radius:5px;background:var(--paper);padding:3px 5px!important}.tree-root #refresh:hover{border-color:var(--accent)}
+
+/* The run timeline and the run wall (picture.js). --out1 to --out5: one colour per value of
+   the chosen output, in the order first seen; --out0: every value after the fifth. */
+:root{--out1:#2a78d6;--out2:#eb6834;--out3:#1baf7a;--out4:#eda100;--out5:#4a4a8f;--out0:#9a958a;--fault:#c14338}
+@media(prefers-color-scheme:dark){:root{--out1:#3987e5;--out2:#d95926;--out3:#199e70;--out4:#c98500;--out5:#9085e9;--out0:#7d786e;--fault:#f29a91}}
+.picture{margin:18px 0 4px;padding:14px 16px;border:1px solid var(--line);border-radius:7px;background:var(--paper)}
+.picture-controls{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center}
+.picture-choice{display:inline-flex;flex-wrap:wrap;gap:4px;align-items:center}.picture-choice .bar-label{margin-right:4px}
+:is(#runs-workspace,#run-workspace,#experiments-workspace) .picture-choice button{padding:3px 9px}:is(#runs-workspace,#run-workspace,#experiments-workspace) .picture-choice button[aria-pressed=true]{background:var(--selected);border-color:var(--accent);color:var(--accent)}
+#runs-shape{margin:0 30px 10px}
+.picture-tally{margin:8px 0 0}.picture-key{display:inline-flex;flex-wrap:wrap;gap:2px 14px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.picture-key i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.picture-scroll{overflow-x:auto;margin:10px 0 2px}.picture-scroll svg{display:block}
+.picture-label{font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:var(--text)}
+.picture-small{font:10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:var(--muted)}
+.picture-rule{stroke:var(--line)}.picture-span{stroke:var(--muted)}.picture-bar{fill:var(--muted)}
+.picture-ground{fill:var(--panel)}.picture-back{fill:var(--paper)}.picture-plain{fill:var(--text);opacity:.26}
+.picture-silent{fill:var(--paper);stroke:var(--muted);stroke-dasharray:3 2}
+.picture-mark{fill:var(--paper);stroke:var(--text);stroke-width:1.2}.picture-mark.refused{fill:var(--fault);stroke:var(--paper)}
+.picture-route{fill:var(--text);stroke:var(--paper);stroke-width:.8}.picture-route.limit,.picture-fault{fill:var(--fault)}
+.picture-cell{cursor:pointer;outline:none}.picture-cell.unread{opacity:.25}
+.picture-chosen{fill:none;stroke:var(--accent);stroke-width:2.5}.picture-read{fill:none;stroke:var(--text);stroke-width:1.2}
+.picture-cell:focus-visible .picture-back{stroke:var(--accent);stroke-width:3}
+.picture-legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:6px 0 10px}.picture-legend span{display:inline-flex;align-items:center;gap:5px}
+.picture-detail{border-top:1px solid var(--line);padding-top:10px}.picture-detail p{margin:0 0 4px}.picture-turn{font-size:13px}
+.picture-lines{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:8px 0 0;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.picture-lines dt{color:var(--muted)}.picture-lines dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+:is(#runs-workspace,#run-workspace,#experiments-workspace) button.picture-more{padding:1px 7px;font:11px system-ui,sans-serif;vertical-align:1px}
+#runs-wall{padding:0 30px}.picture-group{border-top:1px solid var(--line);padding:12px 0 16px}
+.picture-head{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;margin-bottom:8px}.picture-head strong{font:600 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.picture-group>.message-meta{margin:8px 0 0}
+.picture-thumbs{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+:is(#runs-workspace,#run-workspace,#experiments-workspace) button.picture-thumb{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:2px;border-color:transparent;background:none;line-height:1}
+:is(#runs-workspace,#run-workspace,#experiments-workspace) button.picture-thumb:hover{border-color:var(--accent)}.picture-thumb span{font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted)}
+.picture-note{max-width:680px;margin:6px 0 0}
+/* Real runs | Rehearsals and Grid | Wall: the chosen one is lit (the id rule above outranked the old one). */
+#experiments-workspace .exp-toggle button[aria-pressed=true]{background:var(--selected);border-color:var(--accent);color:var(--accent)}
+.message-card{scroll-margin-top:56px}.message-card.picked{border-color:var(--accent);box-shadow:0 0 0 2px var(--selected)}
+@media(max-width:580px){#runs-shape{margin-left:18px;margin-right:18px}#runs-wall{padding:0 18px}.picture-lines{grid-template-columns:1fr}}

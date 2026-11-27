@@ -141,18 +141,35 @@ def _allowed_host(host: str, domains: list[str] | None) -> bool:
     return any(host == d.lower() or host.endswith("." + d.lower()) for d in domains)
 
 
+def _names(host: str) -> list[str]:
+    """`host`, and the name the HTTP library really connects to. They differ for a name with
+    `ß` and a few other letters: Python looks up `fass.example` for `faß.example`, and the
+    library connects to `xn--fa-hia.example`, which its owner can point at this computer
+    (review 2026-11-21, NS5). Both are checked."""
+    names = [host]
+    try:
+        import httpx
+        wire = httpx.URL(f"http://[{host}]/" if ":" in host else f"http://{host}/").raw_host.decode("ascii")
+        if wire.strip("[]") != host:
+            names.append(wire.strip("[]"))
+    except Exception:  # noqa: BLE001: a name the library cannot write is refused when it is asked for
+        pass
+    return names
+
+
 def _public(host: str) -> bool:
     """A page on the internet, not this machine or its local network."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        return True  # let the request fail on its own, with its own message
-    for info in infos:
-        address = ipaddress.ip_address(info[4][0].split("%")[0])
-        if getattr(address, "ipv4_mapped", None):
-            address = address.ipv4_mapped
-        if not address.is_global or address.is_multicast:
-            return False
+    for name in _names(host):
+        try:
+            infos = socket.getaddrinfo(name, None)
+        except OSError:
+            continue  # let the request fail on its own, with its own message
+        for info in infos:
+            address = ipaddress.ip_address(info[4][0].split("%")[0])
+            if getattr(address, "ipv4_mapped", None):
+                address = address.ipv4_mapped
+            if not address.is_global or address.is_multicast:
+                return False
     return True
 
 

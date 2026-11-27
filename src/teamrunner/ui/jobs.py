@@ -10,14 +10,16 @@ from pathlib import Path
 import secrets
 import shlex
 import tempfile
+import time
 from threading import Event, Lock, Thread
 
 from ruamel.yaml import YAML
 
 from ..build import load_team
-from ..inputs import resolve
+from ..inputs import InputError, resolve
 from ..run import Options, entry_path, run_team
 from . import api, runviews
+from .. import crash
 
 
 class InvalidTeam(ValueError):
@@ -46,29 +48,101 @@ class Job:
     speaking: dict | None = None
     reason: str | None = None
     check: dict | None = None
+    crash: dict | None = None  # an error TeamRunner did not foresee: what the report button needs (D165)
     thread: Thread | None = None
 
 
-def run_estimate(team) -> dict | None:
+ESTIMATE_SECONDS = 2.0  # the longest the Run dialog's estimate may work
+TOO_LONG = ("this team's flow takes too many turns to walk through quickly. "
+            "Rehearse it, then read the turns it took.")
+BUILT_RUN = ("This folder is built from experiment.md and built again before every run, so a run "
+             "made here would be deleted. Run the experiment, or the team it starts from, instead.")
+
+
+class _OutOfTime(BaseException):
+    """Ends a walk of the flow at the deadline. Not an Exception: a turn treats one of those
+    as the model failing, and would answer it by trying again."""
+
+
+def _walk(team, inputs: dict, seed: int, reply_tokens, deadline: float):
+    """One walk of the flow, as estimate.walk makes it, given up at `deadline`: the time is
+    looked at before every model call, so a walk ends within one turn of it."""
+    import asyncio
+    from ..builtin_tools import Context
+    from ..engine import Engine
+    from ..estimate import Counter
+    from ..events import Log
+    from ..turns import Members
+
+    class Timed(Counter):
+        async def complete(self, *args, **kwargs):
+            if time.monotonic() > deadline:
+                raise _OutOfTime()
+            return await super().complete(*args, **kwargs)
+
+    counter = Timed(seed, reply_tokens)
+    context = Context(Path("inputs"), Path("work"), {}, team.package_top, rehearsal=True, inputs=inputs)
+    actor = Members(team, inputs, counter, Log(), context=context, waits=())
+    asyncio.run(Engine(team, actor, lambda event: None).run())
+    return counter
+
+
+def _priced(counters: list, prices) -> tuple[float | None, list[str], float]:
+    """The mean cost and calls of the walks, as estimate.estimate works them out."""
+    from ..prices import model_price
+    totals: dict[str, list[int]] = {}
+    for counter in counters:
+        for model, used in counter.usage.items():
+            held = totals.setdefault(model, [0, 0, 0])
+            for at in range(3):
+                held[at] += used[at]
+    cost, unpriced = 0.0, []
+    for model, (tokens_in, tokens_out, _) in totals.items():
+        price = model_price(model, prices)
+        if price["input_per_million"] is None:
+            unpriced.append(model)
+            continue
+        cost += (tokens_in * price["input_per_million"] + tokens_out * price["output_per_million"]) / 1e6
+    n = len(counters)
+    return (None if unpriced else cost / n), sorted(unpriced), sum(t[2] for t in totals.values()) / n
+
+
+def run_estimate(team, seconds: float = ESTIMATE_SECONDS) -> dict | None:
     """What one real run of the team would cost with its default inputs, as an experiment's
     plan estimates it: typical, and at most if every reply ran to its limit (review
     2026-11-16, U9). None when it cannot be said (the team does not load, or an input has
-    no default)."""
+    no default).
+
+    The work is capped at `seconds`: a walk takes every turn of the flow, and a chair with
+    thousands of steps held the page for minutes (review 2026-11-21, NU5). One typical walk
+    and one longest-reply walk come first, then more typical walks (up to estimate.WALKS)
+    while there is time; `walks` says how many the figure is the mean of, out of `of`, and
+    `too_long` that not even one could be finished."""
     if team is None:
         return None
-    from ..estimate import REPLY_TOKENS, estimate
-    from ..inputs import InputError, resolve
+    from ..estimate import REPLY_TOKENS, WALKS
     from ..prices import load_prices, unpriced_note
     try:
         values = {name: item.value for name, item in resolve(team).items()}
     except InputError:
         return None
-    prices = load_prices()
-    typical = estimate(team, values, list(range(1, 9)), prices, REPLY_TOKENS)
-    most = estimate(team, values, [1, 2], prices, None)
-    return {"typical_usd": typical.per_run_usd, "most_usd": most.per_run_usd,
-            "unpriced": typical.unpriced, "calls": typical.calls,
-            "note": unpriced_note(typical.unpriced, prices) if typical.unpriced else None}
+    prices, deadline = load_prices(), time.monotonic() + seconds
+    typical, most = [], []
+    try:
+        typical.append(_walk(team, values, 1, REPLY_TOKENS, deadline))
+        most.append(_walk(team, values, 1, None, deadline))
+        for seed in range(2, WALKS + 1):
+            typical.append(_walk(team, values, seed, REPLY_TOKENS, deadline))
+        most.append(_walk(team, values, 2, None, deadline))
+    except _OutOfTime:
+        pass
+    if not typical:
+        return {"typical_usd": None, "most_usd": None, "unpriced": [], "calls": None, "walks": 0,
+                "of": WALKS, "too_long": True, "note": TOO_LONG}
+    typical_usd, unpriced, calls = _priced(typical, prices)
+    return {"typical_usd": typical_usd, "most_usd": _priced(most, prices)[0] if most else None,
+            "unpriced": unpriced, "calls": calls, "walks": len(typical), "of": WALKS, "too_long": False,
+            "note": unpriced_note(unpriced, prices) if unpriced else None}
 
 
 class Jobs:
@@ -94,17 +168,35 @@ class Jobs:
             return {"id": job.id, "team": job.team, "state": job.state,
                     "name": job.name,
                     "folder": job.folder.relative_to(self.root).as_posix() if job.folder else None,
-                    "speaking": job.speaking, "reason": job.reason, "check": job.check,
+                    "speaking": job.speaking, "reason": job.reason, "check": job.check, "crash": job.crash,
                     "done": job.done.is_set(), "command": job.command, "rehearse": job.rehearse}
+
+    def _not_built(self, path):
+        """A run in a condition's generated folder is refused, as writes there are (D152):
+        the next build of the experiment deletes the folder and the run's record with it,
+        and a real run there was money spent on nothing kept (review 2026-11-21, NU1)."""
+        if api.generated(self.root, path):
+            raise api.OutsideRoot(BUILT_RUN)
+
+    def estimate(self, written):
+        """The cost estimate, asked for apart from the dialog and only when a real run is in
+        view. The team is read under the file lock; the walks are made after it is let go,
+        so Save and every other button keep working meanwhile (review 2026-11-21, NU5)."""
+        with self.files_lock:
+            folder = api.team_folder(self.root, written)
+            self._not_built(folder)
+            team, _ = load_team(folder)
+        return {"team": folder.relative_to(self.root).as_posix(), "estimate": run_estimate(team)}
 
     def setup(self, written):
         folder = api.team_folder(self.root, written)
+        self._not_built(folder)
         team, _ = load_team(folder)
         records, _ = runviews.records(self.root, folder.relative_to(self.root).as_posix())
         ran = any(r.run.get("entry") == entry_path(team) if team else r.team == folder.name for r in records)
         return {"team": folder.relative_to(self.root).as_posix(), "name": team.name if team else folder.name,
                 "default_rehearse": not ran, "command_base": command(["teamrunner", "run", folder]),
-                "windows": os.name == "nt", "estimate": run_estimate(team)}
+                "windows": os.name == "nt"}
 
     def _upload(self, staging, upload):
         if not isinstance(upload, dict):
@@ -186,6 +278,7 @@ class Jobs:
                 raise api.Conflict("The local server is stopping.")
             if self.active and not self.jobs[self.active].done.is_set():
                 raise api.Conflict("A run is already in progress. Stop it or wait for it to finish.")
+        self._not_built(api.inside(self.root, data.get("path", "")))  # before validating: that writes ids
         report = api.validate_team(self.root, data.get("path", ""), offline=True)
         if not report["ok"]:
             raise InvalidTeam(report)
@@ -242,6 +335,14 @@ class Jobs:
             job.thread = Thread(target=self._work, args=(job, folder, options, temporary), daemon=False)
             job.thread.start()
             return self.status(job.id)
+        except InputError as error:
+            # The input file is a copy in a temporary folder; the message names the file as
+            # the person chose it, never that folder (review 2026-11-21, NU12).
+            text = str(error)
+            for held in {str(staging), str(staging.resolve())}:
+                text = text.replace(held + os.sep, "")
+            temporary.cleanup()
+            raise InputError(text) from None
         except BaseException:
             temporary.cleanup()
             raise
@@ -278,9 +379,14 @@ class Jobs:
                 job.check = outcome.check.event() if outcome.check else None
                 if job.cancel.is_set() and outcome.folder is None:
                     job.state, job.reason = "stopped", "Stopped before the first turn; no run folder was created."
-        except Exception:
+        except OSError:  # the folder or a file went away or could not be written: not a fault of TeamRunner's
             with self.lock:
                 job.state, job.reason = "failed", "The run could not finish. Any events already written remain in its run folder."
+        except Exception as error:  # noqa: BLE001 — a crash (D165)
+            found = crash.shown(crash.record(error, "ui run"))
+            with self.lock:
+                job.state, job.reason = "failed", "The run could not finish. Any events already written remain in its run folder."
+                job.crash = found
         finally:
             if locked:
                 self.files_lock.release()

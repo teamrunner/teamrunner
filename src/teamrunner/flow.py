@@ -43,6 +43,9 @@ STEP = re.compile(rf"^(?P<name>{WORD})(?::(?P<stage>{WORD}))?(?:\((?P<args>[^)]*
 BLOCK_DEF = re.compile(rf"^(?P<name>{WORD})\s*=(?!=)\s*(?P<rest>.*)$")
 ARROW = re.compile(r"(--[^>]*?-->|->)")
 COUNT = re.compile(r"^\*\s*(\d+)$")
+# The most a count may be (review 2026-11-21, NC5): `(*50000000)` validated, and on a real run
+# a slip such as `*30000` is real money.
+MOST_REPEATS = 1000
 
 
 @dataclass
@@ -239,9 +242,13 @@ def _parse_step(token: str, path, line_no, problems, allow_repeat: bool) -> Step
             problems.error(path, f"a loop that leaves on a condition {LATER}",
                            line=line_no, value=token, fix="repeat it a fixed number of times: `name(*3)`")
             return None
-        if not count or int(count[1]) < 1:
+        if not count or len(count[1]) > 9 or int(count[1]) < 1:
             problems.error(path, f"`({args})` should be a count, such as `(*3)`", line=line_no,
                            value=token)
+            return None
+        if int(count[1]) > MOST_REPEATS:
+            problems.error(path, f"`({args})` repeats more than {MOST_REPEATS:,} times", line=line_no, value=token,
+                           fix=f"a count is at most {MOST_REPEATS:,}: every pass is a turn, and a turn costs")
             return None
         if not allow_repeat:
             problems.error(path, "a decision points to a step, not a repeat", line=line_no,
@@ -420,6 +427,8 @@ def _resolve(block: Block, routes: list[_Route], path, problems) -> None:
                 if decision.bound is not None:
                     problems.error(path, f"`{step.label}` has two counted ways out; keep one",
                                    line=route.line, value=label)
+                elif len(count[1]) > 9 or int(count[1]) > MOST_REPEATS:
+                    problems.error(path, f"a count is at most {MOST_REPEATS:,}", line=route.line, value=label)
                 elif int(count[1]) < 1:
                     problems.error(path, "a count starts at 1", line=route.line, value=label)
                 else:
@@ -450,6 +459,7 @@ class Cast:
     kinds: dict[str, str]  # name -> llm | toolkeeper | team | unreadable (already reported)
     outputs: dict[str, dict[str, OutputField]]
     may_ask: dict[str, object]  # toolkeeper name -> callable(asker) -> bool
+    notes: frozenset = frozenset()  # .md files in the folder that are notes, by member name (D91)
 
 
 def _loops(index: int, route) -> bool:
@@ -474,10 +484,13 @@ def check_flow(flow: Flow, cast: Cast, path, problems: Problems) -> None:
             elif step.kind == "member":
                 if step.name not in cast.kinds:
                     hint = suggest(step.name, names)
+                    if step.name in cast.notes:  # the file is there, which is what misleads (ND3)
+                        fix = (f"`{step.name}.md` has no settings block, so it is a note, not a member: "
+                               "start it with a line of `---`, then `description: \"\"`, then `---`")
+                    else:
+                        fix = f"did you mean `{hint}`?" if hint else "members are named by their file names"
                     problems.error(path, f"`{step.name}` is not a member of this team or a named block",
-                                   line=step.line, value=step.name,
-                                   fix=f"did you mean `{hint}`?" if hint else
-                                   "members are named by their file names")
+                                   line=step.line, value=step.name, fix=fix)
                     continue
                 on_stage.add(step.name)
                 if cast.kinds[step.name] == "toolkeeper":
@@ -486,7 +499,10 @@ def check_flow(flow: Flow, cast: Cast, path, problems: Problems) -> None:
             _check_decision(block, index, decision, cast, path, problems)
 
     for name, block in blocks.items():
-        if name in cast.kinds:
+        if name in (DONE, STOP):
+            problems.error(path, f"a block cannot be called `{name}`: the word ends the flow", line=block.line,
+                           fix="rename the block")
+        elif name in cast.kinds:
             problems.error(path, f"the block `{name}` has the same name as a member", line=block.line,
                            fix="rename the block")
         elif name not in used_blocks:

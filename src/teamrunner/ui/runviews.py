@@ -5,6 +5,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from collections import OrderedDict
@@ -103,6 +104,83 @@ def output_text(folder: Path, warnings: list[str]) -> str:
         return ""
 
 
+def message(record) -> str:
+    """What the run was given, for the list. A file is shown by its name: the record holds
+    its whole path, and the first 32 characters of that were the same for every file run
+    (review 2026-11-21)."""
+    inputs = record.run.get("inputs") or {}
+    first = next(iter(inputs.values()), None)
+    file = first.get("file") if isinstance(first, dict) else None
+    if isinstance(file, dict) and isinstance(file.get("original"), str):
+        return file["original"].replace("\\", "/").rsplit("/", 1)[-1] + " (file)"
+    return record.input
+
+
+SHORT = 24  # a declared output this short is drawn as a value; longer text never is
+
+
+def shown_value(value) -> str:
+    """A declared output as the pictures compare it: spacing and case are ignored, so
+    `10, 12, 15` and `10,12,15` are one value. Order and wording are not touched."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return re.sub(r"\s*([,;|/])\s*", r"\1", re.sub(r"\s+", " ", text)).strip().casefold()
+
+
+def digest(events, *, reads: bool = True) -> list[dict]:
+    """One row per turn, for the run timeline and the run wall: who spoke, in which stage or
+    round, what it declared, how much it wrote and read, and the tool calls, retries and
+    route decision that belong to the turn. Nothing here names a field or a member, so the
+    pictures work for any team. A tool call is counted with the member's next message, or
+    with its last one when no message follows. `reads=False` leaves out what each turn could
+    read, which the wall does not draw."""
+    turns, waiting, latest = [], {}, {}
+
+    def who(event):
+        name = event.get("from") or event.get("member")
+        path = event.get("instance_path")
+        return name if isinstance(name, str) else path.split("/")[-1] if isinstance(path, str) else None
+
+    for event in events:
+        try:
+            kind = event["event"]
+            if kind == "tool_call":
+                waiting.setdefault(who(event), []).append({"tool": event.get("tool"), "access": event.get("access")})
+            elif kind == "retry":
+                waiting.setdefault(who(event), []).append({"tool": None, "access": "retry"})
+            elif kind == "route_decision":
+                turn = latest.get(event.get("decider"))
+                if turn is not None:
+                    turn["route"] = {"field": event.get("field"), "option": event.get("option"),
+                                     "to": event.get("to"), "limit": bool(event.get("bound_applied"))}
+            elif kind == "agent_message":
+                member = who(event) or "member"
+                content = event.get("content") if isinstance(event.get("content"), str) else ""
+                outputs = event.get("output") if isinstance(event.get("output"), dict) else {}
+                shown = {key: shown_value(value) for key, value in outputs.items()}
+                usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+                passed = event.get("pass") if isinstance(event.get("pass"), dict) else {}
+                number = lambda value: value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+                turn = {"seq": event.get("seq"), "member": member,
+                        "group": str(event.get("stage") or event.get("block") or ""),
+                        "round": passed.get("number") if number(passed.get("of")) > 1 else None,
+                        "outputs": {key: value for key, value in shown.items() if len(value) <= SHORT},
+                        "long": [key for key, value in shown.items() if len(value) > SHORT],
+                        "words": len(content.split()),
+                        "tokens_read": number(usage.get("input")), "tokens_written": number(usage.get("output")),
+                        "cost": number(event.get("cost_usd")), "ms": number(event.get("latency_ms")),
+                        "tools": waiting.pop(member, []), "route": None}
+                if reads:
+                    turn["read"] = event["read"] if isinstance(event.get("read"), list) else None
+                turns.append(turn)
+                latest[member] = turn
+        except (KeyError, TypeError, AttributeError):
+            continue  # one event of an unexpected shape does not hide the rest of the run
+    for member, calls in waiting.items():
+        if member in latest:
+            latest[member]["tools"] += calls
+    return turns
+
+
 def row(root: Path, record, warnings: list[str]) -> dict:
     try:
         result = record.result
@@ -112,7 +190,7 @@ def row(root: Path, record, warnings: list[str]) -> dict:
     run = record.run
     return {"path": record.folder.relative_to(root).as_posix(), "when": record.shown_when,
             "team": record.team, "status": run.get("status") or "unknown",
-            "message": record.input, "result": result, "turns": run.get("turns", 0),
+            "message": message(record), "result": result, "turns": run.get("turns", 0),
             "length": seconds(run.get("latency_ms")), "cost": money(run.get("cost_usd")),
             "cost_known": money(run.get("cost_known_usd")),
             "rehearsal": bool(run.get("rehearsal")), "backup": bool(run.get("backup_models")),
@@ -121,7 +199,7 @@ def row(root: Path, record, warnings: list[str]) -> dict:
 
 
 def listing(root: Path, written: str = "", *, team: str = "", status: str = "",
-            search: str = "", limit: int = 50, offset: int = 0) -> dict:
+            search: str = "", limit: int = 50, offset: int = 0, wall: bool = False) -> dict:
     found, warnings = records(root, written)
     matching = []
     for record in found:
@@ -135,7 +213,14 @@ def listing(root: Path, written: str = "", *, team: str = "", status: str = "",
             if search.casefold() not in (message + "\n" + output).casefold():
                 continue
         matching.append(record)
-    return {"runs": [row(root, r, warnings) for r in matching[offset:offset + limit]],
+    source = inside(root, written)
+    source = source if source.is_dir() else source.parent  # the folder `teamrunner runs` takes
+    rows = [row(root, r, warnings) for r in matching[offset:offset + limit]]
+    if wall:  # the run wall draws every listed run, so each row carries its turns
+        for shown, record in zip(rows, matching[offset:offset + limit]):
+            shown["digest"] = digest(read_events(record.folder), reads=False)
+    return {"runs": rows,
+            "source": source.relative_to(root).as_posix(),
             "total": len(matching), "all_total": len(found), "offset": offset,
             "teams": sorted({r.team for r in found}),
             "statuses": sorted({r.run.get("status") or "unknown" for r in found}),
@@ -220,10 +305,18 @@ def detail(root: Path, written: str, versions_cache: HistoryVersions | None = No
     artifacts = inventory(root, record.folder, warnings)
     output = output_text(record.folder, warnings)
     return {"summary": row(root, record, warnings), "record": record.run,
-            "events": events, "members": members, "output": output,
+            "events": events, "digest": digest(events), "members": members, "output": output,
             "artifacts": artifacts, "raw_files": [name for name in CORE if (record.folder / name).is_file()],
             "has_spec": any(item["path"] == "resolved/team.yaml" for item in artifacts),
             "warnings": list(dict.fromkeys(warnings))}
+
+
+def reveal_command(platform: str, folder: Path) -> list[str]:
+    """The command that shows a run folder in the file manager. On macOS it is `open -R`,
+    which selects the folder in Finder and never launches it: plain `open` starts a folder
+    that is an app bundle, and a downloaded team can hold a run folder named `x.app`
+    (review 2026-11-21, NS9)."""
+    return ["open", "-R", str(folder)] if platform == "darwin" else ["xdg-open", str(folder)]
 
 
 def open_folder(root: Path, written: str) -> dict:
@@ -231,6 +324,6 @@ def open_folder(root: Path, written: str) -> dict:
     if sys.platform == "win32":
         os.startfile(str(folder))
     else:
-        subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", str(folder)],
+        subprocess.run(reveal_command(sys.platform, folder),
                        check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {"ok": True}

@@ -94,6 +94,52 @@ def test_bad_yaml_has_a_line(tmp_path):
     assert p.file.name == "for.md" and "not valid YAML" in p.message and p.line
 
 
+JUDGE = "---\nmodel: openai/gpt-5\noutput:\n  winner: [for, against]\n  reasoning: \"\"\n---\nJudge {{topic}}.\n"
+
+
+def test_a_tab_between_words_reads_as_a_space(tmp_path):
+    """YAML allows these tabs; ruamel stops at them, so TeamRunner reads each as a space."""
+    report = validate(debate(tmp_path, **{
+        "team.yaml": 'name:\tdebate\t\ndefault_inputs:\n  topic:\t"Cars\tdowntown"  \t# a comment\n\t\n',
+        "for.md": DEBATER.replace("description: Argues in favor", "description: Argues\tin favor"),
+        "judge.md": JUDGE.replace("  winner: [for, against]", "  winner:\t[for,\tagainst]")}))
+    assert report.ok, messages(report)
+    team = report.package.team
+    assert team.doc.data["name"] == "debate"
+    assert team.doc.data["default_inputs"]["topic"] == "Cars\tdowntown"  # in quotes, a tab stays a tab
+    by_name = {m.name: m for m in team.members}
+    assert by_name["for"].front.data["description"] == "Argues in favor"
+    assert list(by_name["judge"].front.data["output"]["winner"]) == ["for", "against"]
+
+
+@pytest.mark.parametrize("judge", [JUDGE.replace("  winner", "\twinner"), JUDGE.replace("  winner", "  \twinner")])
+def test_a_tab_that_indents_a_member_line(tmp_path, judge):
+    report = validate(debate(tmp_path, **{"judge.md": judge}))
+    [p] = report.problems.errors
+    assert (p.file.name, p.line) == ("judge.md", 4)
+    assert p.message == "this line is indented with a tab; YAML needs spaces to indent"
+
+
+def test_an_unreadable_team_yaml_is_the_only_problem(tmp_path):
+    """Its `default_model:` and `default_inputs:` cannot be read, so a member's missing
+    model or an input's missing default is not reported on top of it."""
+    team = debate(tmp_path, **{"team.yaml": 'name: debate\ndefault_model: openai/gpt-5\ndefault_inputs:\n\ttopic: x\n',
+                              "for.md": "---\ndescription: x\n---\n{{topic}}\n"})
+    report = validate(team)
+    assert messages(report) == [("team.yaml", 4, "this line is indented with a tab; YAML needs spaces to indent")]
+    assert messages(report, "warning") == []
+
+
+def test_a_task_file_indented_with_a_tab(tmp_path):
+    from teamrunner.inputs import InputError, read_task_file
+    task = tmp_path / "task.yaml"
+    task.write_text("inputs:\n\ttopic: x\n", encoding="utf-8")
+    with pytest.raises(InputError, match="line 2 is indented with a tab"):
+        read_task_file(task)
+    task.write_text("inputs:\n  topic:\tx\t\n", encoding="utf-8")
+    assert read_task_file(task) == {"topic": "x"}
+
+
 def test_every_llm_worker_needs_a_model(tmp_path):
     report = validate(debate(tmp_path, **{"for.md": "---\ndescription: x\n---\n{{topic}}\n"}))
     [p] = report.problems.errors
@@ -480,3 +526,84 @@ def test_windows_line_endings_read_as_plain_newlines(tmp_path):
     assert report.ok, [p.message for p in report.problems.errors]
     [member] = [m for m in report.package.team.members if m.name == "for"]
     assert "\r" not in member.body and "\n" in member.body
+
+
+def test_a_md_file_with_no_settings_block_is_named_as_a_note(tmp_path, capsys):
+    """Review 2026-11-21, ND3: such a file is silently not a member. `validate` said OK and
+    counted one member fewer, and a chair naming it said "not a member" with the file there."""
+    from teamrunner.cli import main
+    team = tmp_path / "t"
+    team.mkdir()
+    (team / "team.yaml").write_text("name: t\ndefault_model: openai/gpt-5\n", encoding="utf-8")
+    (team / "writer.md").write_text("---\ndescription: writes\n---\nWrite.\n", encoding="utf-8")
+    (team / "judge.md").write_text("Judge the writing.\n", encoding="utf-8")
+    (team / "README.md").write_text("About this team.\n", encoding="utf-8")
+    assert main(["validate", str(team), "--offline"]) == 0
+    said = capsys.readouterr().out
+    assert "judge.md has no settings block" in said and "note, not a member" in said and "README.md has" not in said
+    assert "1 member" in said and "OK" in said and "warning" not in said  # allowed (D91): said, not warned
+    (team / "chair.md").write_text("writer -> judge\n", encoding="utf-8")
+    assert main(["validate", str(team), "--offline"]) == 1
+    said = capsys.readouterr().out
+    assert "`judge` is not a member of this team" in said
+    assert "`judge.md` has no settings block, so it is a note, not a member" in said
+
+
+# --- review 2026-11-21: the rest of the engine list ----------------------------------------------
+
+def _messages(report) -> str:
+    return "\n".join(f"{p.message} {p.fix or ''}" for p in report.problems)
+
+
+def test_a_model_profile_is_named_exactly(tmp_path):
+    """NC4: on a disk that ignores capitals, `Careful.yaml` passed `validate` for the file
+    `careful.yaml`, and everything after it failed."""
+    team = debate(tmp_path, **{"models/careful.yaml": "name: openai/gpt-5\n",
+                               "for.md": "---\nmodel: Careful.yaml\n---\nfor argues for {{topic}}.\n"})
+    said = _messages(validate(team))
+    assert "there is no model profile `Careful.yaml`" in said and "did you mean `careful.yaml`?" in said
+
+
+@pytest.mark.parametrize("flow, said", [
+    ("rounds(*50000000) -> judge\n\nrounds = for -> against\n", "repeats more than 1,000 times"),
+    ("rounds(*" + "9" * 5000 + ") -> judge\n\nrounds = for -> against\n", "should be a count"),
+    ("rounds(*2) -> judge\n\nrounds = for -> against\ndone = for -> against\n", "a block cannot be called `done`"),
+])
+def test_a_count_has_a_limit_and_a_block_is_not_called_done(tmp_path, flow, said):
+    """NC5 and a smaller item: `(*50000000)` validated and `explain` ran for 20 seconds."""
+    assert said in _messages(validate(debate(tmp_path, **{"chair.md": flow})))
+
+
+def test_a_link_back_to_the_team_s_own_folder_is_an_error_not_a_hang(tmp_path):
+    """NC7: such a link was read as a subteam, and so on without end."""
+    team = debate(tmp_path / "t")
+    try:
+        (team / "again").symlink_to(team, target_is_directory=True)
+        (team / "and_again").symlink_to(team, target_is_directory=True)
+    except OSError:
+        pytest.skip("this system does not let the test make a link")
+    assert "the team would contain itself" in _messages(validate(team))
+
+
+def test_a_team_with_no_member_that_speaks_is_warned(tmp_path):
+    team = tmp_path / "t"
+    team.mkdir()
+    (team / "team.yaml").write_text("name: t\n", encoding="utf-8")
+    report = validate(team)
+    assert report.ok and "no member that speaks yet" in _messages(report)
+
+
+def test_an_id_is_written_so_that_the_file_is_never_seen_half_made(tmp_path):
+    """NC10: of eight first runs at once, one read team.yaml while another was writing it. The
+    id is now written beside the file and moved into place."""
+    import os
+    from teamrunner.ids import write_team_id
+    path = tmp_path / "team.yaml"
+    path.write_text("name: t\n", encoding="utf-8")
+    os.chmod(path, 0o640)
+    before = path.stat().st_ino
+    ulid = write_team_id(path)
+    assert f"id: {ulid}" in path.read_text(encoding="utf-8") and path.stat().st_ino != before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["team.yaml"]  # nothing left beside it
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o640

@@ -410,3 +410,49 @@ def test_answers_are_compared_as_numbers_and_yes_no_words():
     assert _items(["3.0", "True", " x "], None) == _items([3, True, "x"], None) == frozenset({"3", "true", "x"})
     assert _items("2.50, 1e1, FALSE", "list") == frozenset({"2.5", "10", "false"})
     assert _items("3.0001", None) != _items("3", None) and _items("inf", None) == frozenset({"inf"})
+
+
+def _sound_rows(exp, capsys):
+    """The `quality.sound` rows of --summary: (mean, low, high, the line) for each condition."""
+    import re
+    from teamrunner.cli import main
+    capsys.readouterr()
+    assert main(["experiment", str(exp), "--summary"]) == 0
+    text = capsys.readouterr().out
+    block = text[text.index("quality.sound"):].split("\n\n")[0].splitlines()[1:]
+    rows = []
+    for line in block:
+        found = re.search(r"(-?\d+\.\d+)\s+(?:-?\d+\.\d+|—)?\s*\[(-?\d+\.\d+), (-?\d+\.\d+)\]", line)
+        if found:
+            rows.append((*map(float, found.groups()), line))
+    assert len(rows) == 2, text
+    return rows
+
+
+def test_lowering_evaluations_counts_only_the_first_and_a_share_stays_inside_0_to_1(exp, capsys):
+    """Review 2026-11-21. NE1: after `evaluations:` went from 3 to 1, a run evaluated no, yes, no
+    was read as its stored share, 0.33, which counts as "yes". NE4: the share of evaluations
+    saying yes had an interval that left 0 to 1."""
+    rubric = (exp / "metrics" / "quality.md").read_text(encoding="utf-8")
+    three = rubric.replace("kind: evaluator\n", "kind: evaluator\nevaluations: 3\n")
+    (exp / "metrics" / "quality.md").write_text(three, encoding="utf-8")
+    code, out = go(exp, Grader())
+    assert code == 0, out
+    for folder, record in records(exp):  # no, yes, no; and all yes in each condition's first run
+        made = lines(folder)
+        assert len(made) == 3
+        for line in made:
+            line["output"]["sound"] = record["experiment"]["replicate"] == 1 or line["evaluation"] == 2
+        (folder / "evaluations" / "quality.jsonl").write_text(
+            "".join(json.dumps(x) + "\n" for x in made), encoding="utf-8")
+    for mean, low, high, line in _sound_rows(exp, capsys):  # shares 1, 1/3, 1/3: a wide interval
+        assert round(mean, 2) == 0.56 and 0.0 <= low <= high <= 1.0 and high == 1.0, line
+
+    (exp / "metrics" / "quality.md").write_text(rubric, encoding="utf-8")  # back to one evaluation
+    for mean, low, high, line in _sound_rows(exp, capsys):  # the first evaluation alone: yes in 1 run of 3
+        assert round(mean, 2) == 0.33 and "(Wilson)" in line, line
+    model = Grader()
+    code, out = go(exp, model)  # and nothing is evaluated again
+    assert code == 0 and model.calls == 0
+    (exp / "metrics" / "quality.md").write_text(three, encoding="utf-8")  # raised again: all three count
+    assert all(round(mean, 2) == 0.56 for mean, *_ in _sound_rows(exp, capsys))

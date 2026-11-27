@@ -4,6 +4,7 @@
 
 import io
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -600,3 +601,192 @@ def test_runs_beyond_replications_do_not_count(exp, capsys):
     assert main(["experiment", str(exp), "--summary"]) == 0
     out = capsys.readouterr().out
     assert "4 of 4 runs completed" in out and "beyond `replications: 2`" in out
+
+
+# --- review 2026-11-21: wrong numbers ---------------------------------------------------------
+
+def test_keep_unchanged_never_brings_back_runs_from_before_a_restart(exp):
+    """NE2: after --restart, a later --keep-unchanged counted the runs the restart had set aside,
+    because an unchanged condition's oldest runs won."""
+    from teamrunner.experiment import build, read_experiment
+    from teamrunner.experiment_run import counted, experiment_records
+    model = Paid()
+    go(exp, model=model)
+    first = {r["run_id"] for _, r in records(exp)}
+    (exp / "variants" / "alice.md").write_text("alice leads, firmly, the review of {{code}}.\n", encoding="utf-8")
+    code, out = go(exp, model=model, change="restart")
+    assert code == 0 and model.calls == 60
+    (exp / "variants" / "alice.md").write_text("alice leads, kindly, the review of {{code}}.\n", encoding="utf-8")
+    code, out = go(exp, model=model, change="keep_unchanged")
+    assert code == 0 and "6 completed of 6" not in out and model.calls == 75  # only `led` ran again
+    e = build(read_experiment(exp))
+    filled = counted(e, experiment_records(e))
+    assert len(filled) == 6 and not {r["run_id"] for _, r in filled.values()} & first
+    flat = [r for (cond, _), (_, r) in filled.items() if cond == "flat"]
+    assert len(flat) == 3 and all(r["experiment"]["study_change"] == "restart" for r in flat)
+
+
+def test_a_task_file_edited_during_an_experiment_does_not_reach_its_runs(exp):
+    """NE3: each run read the task file again, so an edit made while the experiment ran put two
+    tasks under one study. Every run now gets the inputs read when the experiment was built."""
+    text = (exp / "experiment.md").read_text(encoding="utf-8")
+    (exp / "experiment.md").write_text(text.replace("seed: 7\n", "seed: 7\ntask: task.yaml\n"), encoding="utf-8")
+    (exp / "task.yaml").write_text("inputs:\n  code: print(2)\n", encoding="utf-8")
+    edited = []
+
+    class Editing(Paid):
+        async def complete(self, *args, **kw):
+            if not edited:
+                edited.append(True)
+                (exp / "task.yaml").write_text("inputs:\n  code: print(3)\n", encoding="utf-8")
+            return await super().complete(*args, **kw)
+
+    code, out = go(exp, model=Editing())
+    assert code == 0 and "6 completed of 6" in out
+    assert [r["inputs"]["code"] for _, r in records(exp)] == [{"value": "print(2)", "source": "given"}] * 6
+    code, out = go(exp, model=Paid())  # the edit is seen the next time, as a changed study
+    assert "The study has changed" in out
+
+
+def test_a_data_file_in_markdown_is_part_of_the_study(exp, tmp_path):
+    """NE5: a `.md` with no settings block was left out of the study's hash wherever it was, so
+    editing `docs/policy.md` pooled runs made on two texts. It is a note only in a team's folder."""
+    from teamrunner.experiment import build, read_experiment
+    policy = tmp_path / "review" / "docs" / "policy.md"
+    write(tmp_path / "review", {"docs/policy.md": "Returns within 30 days.\n", "NOTES.md": "to do\n"})
+    before = [c.study_hash for c in build(read_experiment(exp)).conditions]
+    (tmp_path / "review" / "NOTES.md").write_text("done\n", encoding="utf-8")  # a note beside team.yaml
+    assert [c.study_hash for c in build(read_experiment(exp)).conditions] == before
+    policy.write_text("Returns within 90 days.\n", encoding="utf-8")
+    assert all(a != b for a, b in zip([c.study_hash for c in build(read_experiment(exp)).conditions], before))
+
+
+def test_runs_made_before_0_0_8_still_count_when_their_files_are_the_same(exp, tmp_path):
+    """NE5 changed the hash for a team with such a file. A run that carries the earlier hash
+    counts when the files it ran on are today's, and not when they differ."""
+    from teamrunner.experiment import build, experiment_hash, read_experiment
+    write(tmp_path / "review", {"docs/policy.md": "Returns within 30 days.\n"})
+    model = Paid()
+    go(exp, model=model)
+    e = build(read_experiment(exp))
+    old = {c.name: c.study_hash_before for c in e.conditions}
+    assert all(old[c.name] != c.study_hash for c in e.conditions)
+    for folder, record in records(exp):  # as 0.0.7 wrote them
+        record["experiment"]["study_hash"] = old[record["experiment"]["condition"]]
+        record["experiment"]["experiment_hash"] = experiment_hash(e, before=True)
+        (folder / "record.json").write_text(json.dumps(record), encoding="utf-8")
+    code, out = go(exp, model=model)
+    assert code == 0 and "nothing to do" in out and model.calls == 30
+    (tmp_path / "review" / "docs" / "policy.md").write_text("Returns within 90 days.\n", encoding="utf-8")
+    code, out = go(exp, model=model)
+    assert "The study has changed" in out and model.calls == 30
+
+
+# --- review 2026-11-21: lost money ------------------------------------------------------------
+
+def test_a_second_session_on_a_running_experiment_starts_nothing(exp):
+    """NE12: two sessions at once each ran every slot, and each counted toward the ceiling alone."""
+    seen = {}
+
+    class Second(Paid):
+        async def complete(self, *args, **kw):
+            if not seen:  # while the first session is in a run, start another on the same experiment
+                seen["other"] = other = Paid()
+
+                def second():
+                    seen["code"], seen["out"] = go(exp, model=other)
+                    seen["rehearsal"] = go(exp, rehearse=True)[0]
+                thread = threading.Thread(target=second)
+                thread.start()
+                thread.join()
+            return await super().complete(*args, **kw)
+
+    first = Second()
+    code, out = go(exp, model=first)
+    assert code == 0 and "6 completed of 6" in out and first.calls == 30
+    assert seen["code"] == 1 and seen["other"].calls == 0
+    assert "already running (process " in seen["out"] and "nothing was started here" in seen["out"]
+    assert seen["rehearsal"] == 0  # a rehearsal spends and counts nothing, so it is not held back
+    assert len([r for _, r in records(exp) if not r.get("rehearsal")]) == 6
+    code, out = go(exp, model=Paid())  # the lock ended with the session
+    assert code == 0 and "nothing to do" in out
+
+
+def test_runs_a_killed_session_left_count_toward_the_ceiling(exp):
+    """NE13: a killed process leaves run folders with no record. What they had spent was left
+    out of the ceiling for good."""
+    go(exp, model=Paid(cost=0.01))
+    spent = sum(r["cost_usd"] for _, r in records(exp))
+    victims = [f for f, _ in records(exp)][:2]
+    for folder in victims:  # as a kill leaves them: the events so far, no record, no output
+        (folder / "record.json").unlink()
+        (folder / "output.md").unlink()
+    model = Paid(cost=0.01)
+    code, out = go(exp, model=model)
+    assert code == 0 and model.calls == 10  # the two slots run again
+    assert "2 run folders in runs/ have no record" in out and "counts toward the ceiling" in out
+    assert f"${spent:.2f}" in out  # all of the first session's spending is still counted
+
+    ceiling(exp, round(spent + 0.05, 2))  # room for the two reruns only if the lost ones were forgotten
+    for folder in [f for f in sorted((exp / "runs").iterdir()) if (f / "record.json").is_file()][:2]:
+        (folder / "record.json").unlink()
+    model = Paid(cost=0.01)
+    code, out = go(exp, model=model)
+    assert "over the ceiling, so nothing was run" in out and model.calls == 0
+
+
+def test_being_asked_to_end_stops_a_command_as_ctrl_c_does():
+    import os
+    import signal
+    import time
+    from teamrunner.cli import _stopped_like_ctrl_c
+    if not hasattr(signal, "SIGHUP"):
+        pytest.skip("this system has no such signals to send")
+    before = signal.getsignal(signal.SIGTERM)
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        with pytest.raises(KeyboardInterrupt):
+            with _stopped_like_ctrl_c():
+                os.kill(os.getpid(), number)
+                time.sleep(0.5)
+    assert signal.getsignal(signal.SIGTERM) == before  # and it is put back
+
+
+# --- review 2026-11-21: the newcomer's path -----------------------------------------------------
+
+def test_every_missing_key_is_named_before_anything_runs(exp, home, tmp_path, capsys):
+    """ND7: without keys an experiment printed a raw `Problem(...)`, named one key at a time and
+    left two failed run folders for each attempt; --plan gave no hint."""
+    (home / ".env").write_text("", encoding="utf-8")
+    bob = tmp_path / "review" / "bob.md"
+    bob.write_text(bob.read_text(encoding="utf-8").replace("---\nparams", "---\nmodel: anthropic/claude-sonnet-4-5\nparams"),
+                   encoding="utf-8")
+    code, out = go(exp, model=Paid())
+    assert code == 1 and "a key is missing, so nothing was run" in out and "Problem(" not in out
+    assert "OPENAI_API_KEY: needed by flat, led" in out and "ANTHROPIC_API_KEY: needed by flat, led" in out
+    assert not (exp / "runs").exists()
+    assert go(exp, rehearse=True)[0] == 0  # a rehearsal needs none
+    capsys.readouterr()
+    assert main(["experiment", str(exp), "--plan"]) == 0
+    said = capsys.readouterr().out
+    assert "Keys needed: OPENAI_API_KEY (missing), ANTHROPIC_API_KEY (missing)" in said
+    (home / ".env").write_text("OPENAI_API_KEY=sk-a\nANTHROPIC_API_KEY=sk-b\n", encoding="utf-8")
+    assert main(["experiment", str(exp), "--plan"]) == 0
+    assert "Keys needed: OPENAI_API_KEY (found), ANTHROPIC_API_KEY (found)" in capsys.readouterr().out
+
+
+def test_one_variant_file_can_stand_in_for_two_members(exp, tmp_path):
+    """Review 2026-11-21, NE18: the first member's id was written into the variant, the second
+    member's copy then carried it too, and the duplicate-id check refused the experiment for good."""
+    from teamrunner.experiment import _id_of
+    (exp / "variants" / "brief.md").write_text("---\nparams:\n  max_tokens: 100\n---\nBe brief about {{code}}.\n",
+                                               encoding="utf-8")
+    text = (exp / "experiment.md").read_text(encoding="utf-8")
+    (exp / "experiment.md").write_text(text.replace(
+        "      alice.prompt: file:variants/alice.md\n",
+        "      alice: file:variants/brief.md\n      bob: file:variants/brief.md\n"), encoding="utf-8")
+    for _ in range(2):  # the second time is the one that was refused
+        code, out = go(exp, rehearse=True)
+        assert code == 0, out
+    led = exp / "conditions" / "led"
+    review = tmp_path / "review"
+    assert _id_of(led / "alice.md") == _id_of(review / "alice.md") != _id_of(led / "bob.md") == _id_of(review / "bob.md")

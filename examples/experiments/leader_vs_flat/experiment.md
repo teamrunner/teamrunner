@@ -10,7 +10,7 @@ conditions:
 task: tasks/order_summary     # the team's own inputs, pinned here: editing the team cannot change the task
 
 replications: 5   # 2 conditions x 5 = 10 runs: a first look, kept small
-seed: 7
+seed: 1
 
 metrics:
   - metrics/bugs_found

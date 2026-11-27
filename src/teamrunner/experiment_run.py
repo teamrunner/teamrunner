@@ -40,11 +40,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .build import _team
-from .ceiling import Ceiling, Guarded, max_reply
+from .ceiling import Ceiling, Guarded, cannot_keep
 from .experiment import (Condition, Experiment, Slot, _what_changed, canonical_files, copy_package,
-                         experiment_hash, plan_runs, read_experiment, study_hash, write_ids)
+                         experiment_hash, linked_away, plan_runs, read_experiment, study_hash,
+                         write_ids)
 from .loader import RUNS_DIR, find_top
-from .plan import RAISE, _money, ceiling_of, litellm_max_lines, per_run, report_problems, say_estimate
+from .plan import (RAISE, _money, ceiling_of, keys_needed, litellm_max_lines, per_run, report_problems,
+                   say_estimate, say_missing_keys)
 from .prices import Prices, load_prices, model_price
 from .evaluate import estimate_one, pending, run_jobs, shuffle, spent_on
 from .metrics import Evaluator
@@ -113,9 +115,17 @@ def note_decision(exp: Experiment, study_hash: str, change: str) -> None:
     path = exp.folder / RUNS_DIR / STUDY_FILE
     path.parent.mkdir(exist_ok=True)
     line = {"experiment_hash": study_hash, "change": change,
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            "at": datetime.now(timezone.utc).isoformat()}  # to the microsecond: runs are compared with it
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(line) + "\n")
+
+
+def _when(text) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 class Study:
@@ -125,9 +135,25 @@ class Study:
         self.exp = exp
         self.hash = experiment_hash(exp)
         self.hashes = {c.name: c.study_hash for c in exp.conditions}
+        # Runs made by 0.0.7 or earlier carry hashes that left out some `.md` data files
+        # (NE5). Such a run still counts when the files it ran on, hashed as now, are today's.
+        self.hashes_before = {c.name: c.study_hash_before for c in exp.conditions}
+        self.same = {self.hash, experiment_hash(exp, before=True)} - {None}
+        self._checked: dict[Path, bool] = {}
         self.real = [(f, r) for f, r in records if not r.get("rehearsal")]
-        mine = [r for _, r in self.real if r["experiment"].get("experiment_hash") == self.hash]
-        decided = [d for d in decisions(exp) if d.get("experiment_hash") == self.hash]
+        every = decisions(exp)
+        # The latest --restart: no run made before it counts again, whatever is chosen later
+        # (review 2026-11-21, NE2). Before 0.0.7 a restart was written only into its runs.
+        marks = [_when(d.get("at")) for d in every if d.get("change") == "restart"]
+        first = {}
+        for _, r in self.real:
+            if r["experiment"].get("study_change") == "restart" and _when(r.get("started_at")):
+                key = r["experiment"].get("experiment_hash")
+                first[key] = min(first.get(key, _when(r["started_at"])), _when(r["started_at"]))
+        self.restarted = max([m for m in [*marks, *first.values()] if m], default=None)
+        mine = [r for f, r in self.real if r["experiment"].get("experiment_hash") in self.same
+                and self._same_condition(f, r)]
+        decided = [d for d in every if d.get("experiment_hash") in self.same]
         # Changed: there are runs, none of them of this study, and no decision yet.
         self.changed = bool(self.real) and not mine and not decided
         kept = (any(r["experiment"].get("study_change") == "keep_unchanged" for r in mine)
@@ -135,21 +161,40 @@ class Study:
         self.change = change if self.changed else None
         self.by_condition = kept or self.change == "keep_unchanged"
 
-    def belongs(self, record: dict) -> bool:
+    def _same_condition(self, folder: Path, record: dict) -> bool:
+        """The run's condition is the condition as it now stands."""
         block = record["experiment"]
-        if self.hashes.get(block.get("condition")) != block.get("study_hash"):
+        now, was = self.hashes.get(block.get("condition")), block.get("study_hash")
+        if now == was:
+            return True
+        before = self.hashes_before.get(block.get("condition"))
+        if now is None or was != before or not (folder / "resolved").is_dir():
+            return False
+        if folder not in self._checked:  # an earlier version's hash: look at the files it ran on
+            cond = next(c for c in self.exp.conditions if c.name == block.get("condition"))
+            self._checked[folder] = study_hash(folder / "resolved", cond.inputs, self.exp.seed) == now
+        return self._checked[folder]
+
+    def belongs(self, folder: Path, record: dict) -> bool:
+        block = record["experiment"]
+        if not self._same_condition(folder, record):
             return False
         replicate = block.get("replicate")
         if isinstance(replicate, int) and self.exp.replications and replicate > self.exp.replications:
             return False  # beyond `replications:` as it now stands; counts again if it is raised (E6)
-        return self.by_condition or block.get("experiment_hash") == self.hash
+        if block.get("experiment_hash") in self.same:
+            return True
+        if not self.by_condition:
+            return False
+        started = _when(record.get("started_at"))
+        return self.restarted is None or (started is not None and started >= self.restarted)
 
     def slots(self) -> tuple[dict, dict]:
         """(filled, to redo): each slot's filling run, and each slot's latest run that
         failed or was cut off, not yet replaced."""
         filled, redo = {}, {}
         for folder, record in self.real:
-            if not self.belongs(record):
+            if not self.belongs(folder, record):
                 continue
             block = record["experiment"]
             slot = (block["condition"], block.get("replicate"))
@@ -198,7 +243,7 @@ def left_out(exp: Experiment, study: Study, filled: dict) -> dict[str, int]:
     """Why the slots without a counting run are empty: failed, stopped, or not run yet."""
     why = {}
     for folder, record in study.real:
-        if not study.belongs(record) or (folder, record) in filled.values():
+        if not study.belongs(folder, record) or (folder, record) in filled.values():
             continue
         if record["experiment"].get("replaced_by"):
             continue
@@ -208,8 +253,8 @@ def left_out(exp: Experiment, study: Study, filled: dict) -> dict[str, int]:
     missing = exp.runs - len(filled)
     if missing - sum(why.values()) > 0:
         why["not run yet"] = missing - sum(why.values())
-    beyond = sum(1 for _, r in study.real if not study.belongs(r) and fills(r)
-                 and study.hashes.get(r["experiment"].get("condition")) == r["experiment"].get("study_hash")
+    beyond = sum(1 for f, r in study.real if not study.belongs(f, r) and fills(r)
+                 and study._same_condition(f, r)
                  and (r["experiment"].get("replicate") or 0) > exp.replications)
     if beyond:  # kept, and counted again if `replications:` is raised (E6)
         why[f"beyond `replications: {exp.replications}`"] = beyond
@@ -234,6 +279,8 @@ def resolve(cond: Condition, dest: Path) -> Path:
 
 def _folder_for(exp: Experiment, slot: Slot, now: datetime) -> Path:
     runs = exp.folder / RUNS_DIR
+    if linked_away(exp, RUNS_DIR) is not None:  # read_experiment reports it; never write through it
+        raise OSError(f"{runs} is a link to another folder")
     runs.mkdir(exist_ok=True)
     name = f"{now.strftime('%Y-%m-%d_%H%M%S')}_{slot.condition}_r{slot.replicate:02d}"
     path, n = runs / name, 2
@@ -256,6 +303,105 @@ def block(exp: Experiment, cond: Condition, slot: Slot, *, continued_from: str |
             "study_change": study_change,  # restart | keep_unchanged, in the session that chose it
             "replaced_by": None, "continued_from": continued_from,
             "body": exp.body}
+
+
+LOCK_FILE = ".session.lock"  # in the experiment's folder, while a session runs or evaluates
+
+
+class SessionLock:
+    """One session at a time spends on an experiment (review 2026-11-21, NE12): two at once
+    each ran every slot, and each kept its own count toward the ceiling. The lock is the
+    operating system's, on `.session.lock` in the experiment's folder, so it ends with the
+    process that holds it, however that process ends. The file is removed when the session
+    ends; one left by a killed session holds nothing back."""
+
+    def __init__(self, exp: Experiment):
+        self.path, self.file = exp.folder / LOCK_FILE, None
+
+    def acquire(self) -> str | None:
+        """None when this session now holds the lock; otherwise who does, in words."""
+        import errno
+        for _ in range(5):
+            try:
+                file = self.path.open("a+", encoding="utf-8")
+            except OSError:
+                return None  # a folder that cannot be written will say so when the first run starts
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    file.seek(1 << 30)  # one byte far past the text, so the text stays readable
+                    msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as e:
+                held = e.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK)
+                who = ""
+                if held:
+                    try:
+                        file.seek(0)
+                        who = file.read(200).strip()
+                    except OSError:
+                        pass
+                file.close()
+                # A disk that has no locks (some network folders) must not stop the work.
+                return (who or "another session") if held else None
+            try:  # the session before may have removed the file between our opening and locking it
+                if os.name != "nt" and os.fstat(file.fileno()).st_ino != os.stat(self.path).st_ino:
+                    raise FileNotFoundError
+            except OSError:
+                file.close()
+                continue
+            self.file = file
+            try:
+                file.seek(0)
+                file.truncate()
+                file.write(f"process {os.getpid()}, started {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                file.flush()
+            except OSError:
+                pass
+            return None
+        return None
+
+    def release(self) -> None:
+        if self.file is None:
+            return
+        if os.name != "nt":  # removed while still held, so no one locks a file that is going away
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+        self.file.close()  # closing gives the lock back
+        self.file = None
+        if os.name == "nt":  # Windows removes a file only once it is closed, and not one another has open
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+
+def unfinished(exp: Experiment) -> tuple[int, float]:
+    """Run folders a session left with no record: it was killed, or its terminal was closed,
+    before they finished (review 2026-11-21, NE13). Returns how many, and what their calls
+    had cost by then, which was really spent. Only the session holding the lock may ask:
+    for anyone else a folder with no record yet is a run in progress."""
+    from .runs import read_events
+    count, cost = 0, 0.0
+    runs = exp.folder / RUNS_DIR
+    for folder in sorted(runs.iterdir()) if runs.is_dir() else []:
+        if not (folder / "events.jsonl").is_file() or record_file(folder) is not None:
+            continue
+        try:
+            events = list(read_events(folder))
+        except (OSError, ValueError):
+            continue
+        if any(e.get("event") == "run_started" and e.get("rehearsal") for e in events):
+            continue
+        count += 1
+        cost += sum(e.get("cost_usd") or 0.0 for e in events
+                    if not e.get("reused_from") and (e.get("event") in ("agent_message", "tool_call")
+                                                     or (e.get("event") == "retry" and e.get("kind") != "provider")))
+    return count, cost
 
 
 REFUSED_FIX = "change or remove the setting under `params:` in the evaluator's file"
@@ -293,6 +439,8 @@ class Runner:
         self.spent_before = 0.0
         self.over_after_first = False
         self.changed_midway = None  # the team that was edited while the experiment ran (E3)
+        self.alone = False  # this session holds the experiment's lock
+        self.left_behind = (0, 0.0)  # run folders a killed session left, and what they had cost
 
     def one(self, slot: Slot, ceiling: Ceiling) -> dict:
         cond = self.by_name[slot.condition]
@@ -311,7 +459,8 @@ class Runner:
             return {"slot": slot, "status": "changed", "folder": None, "record": {}, "outcome": None}
         if self.on_slot:
             self.on_slot(slot, folder, None)
-        options = Options(task_file=self.exp.task, quiet=True, rehearse=self.rehearse, seed=slot.seed,
+        options = Options(task_file=None if self.exp.task_inputs is not None else self.exp.task,
+                          task_inputs=self.exp.task_inputs, quiet=True, rehearse=self.rehearse, seed=slot.seed,
                           run_folder=folder,
                           experiment=block(self.exp, cond, slot, study_change=self.study_change,
                                            continued_from=old.get("run_id") if old else None),
@@ -362,6 +511,9 @@ class Runner:
         real = [r for _, r in records if not r.get("rehearsal")]
         spent = sum(_paid(r) for r in real) + spent_on([(f, r) for f, r in records if not r.get("rehearsal")],
                                                      self.evaluators)
+        if self.alone and not self.rehearse:
+            self.left_behind = unfinished(exp)
+            spent += self.left_behind[1]
         study = Study(exp, records, self.change)
         real_done, real_redo = study.slots()
         done = {} if self.rehearse else real_done
@@ -463,6 +615,25 @@ class Runner:
         return total
 
     def run(self) -> int:
+        """The session, alone on the experiment: a second one started while this one runs is
+        told so and starts nothing. A rehearsal spends nothing and counts nothing, so it may run."""
+        if self.rehearse:
+            return self._run()
+        lock = SessionLock(self.exp)
+        other = lock.acquire()
+        if other is not None:
+            self.out.say(self.out.paint.red(
+                f"✗ this experiment is already running ({other}), so nothing was started here. "
+                "Wait for it to finish, or stop it first; --summary and --plan still work"))
+            return 1
+        self.alone = True
+        try:
+            return self._run()
+        finally:
+            self.alone = False
+            lock.release()
+
+    def _run(self) -> int:
         exp, out, say = self.exp, self.out, self.out.say
         self.width = max(len(c.name) for c in exp.conditions)
         records, spent, study, done, todo = self._prepare()
@@ -471,6 +642,13 @@ class Runner:
         title = exp.name or exp.folder.name
         mode = " · rehearsal: no model is called, nothing is spent, nothing counts" if self.rehearse else ""
         say(f"experiment · {title} · {exp.runs} runs ({len(exp.conditions)} conditions × {exp.replications}){mode}")
+        if self.left_behind[0]:
+            n, cost = self.left_behind
+            say(out.paint.yellow(f"! {n} run folder{'s' if n != 1 else ''} in runs/ ha{'ve' if n != 1 else 's'} no "
+                                 "record: a session ended before "
+                                 f"{'they' if n != 1 else 'it'} finished. What {'they' if n != 1 else 'it'} had "
+                                 f"spent, {_money(cost)}, counts toward the ceiling; the slot"
+                                 f"{'s run' if n != 1 else ' runs'} again"))
         if not self.rehearse and study.changed and study.change is None:
             return self._changed(study)
         if self.change and not self.rehearse and not study.changed:
@@ -495,6 +673,16 @@ class Runner:
                 say(f"  {line}")
             say(f"  {REFUSED_FIX}")
             return 1
+        # Every key, for every condition and evaluator, before anything is spent: a run that
+        # cannot start for want of a key named one key and left a folder behind, and the key
+        # a later condition needed was found out one failed attempt at a time (ND7).
+        if not self.rehearse and (todo or self.evaluating == "only"):
+            needed = keys_needed(exp, members=self.evaluating != "only" and bool(todo),
+                                 evaluators=self.evaluating != "none")
+            if any(not e["found"] for e in needed.values()):
+                say(out.paint.red("✗ a key is missing, so nothing was run:"))
+                say_missing_keys(out, needed)
+                return 1
         if self.evaluating == "only":
             return self._after(Ceiling(None if self.rehearse else limit, spent), 0)
         if not todo:
@@ -576,7 +764,7 @@ class Runner:
         out.say("")
         note = " · rehearsal: placeholder values, not results" if self.rehearse else ""
         evaluating = spent_on(runs, self.evaluators) if not self.rehearse else None
-        runs_cost = sum(_paid(r) for _, r in runs) if not self.rehearse else None
+        runs_cost = sum(_cost(r) for _, r in runs) if not self.rehearse else None  # as the rows below add up (NE8)
         summary(exp, runs, Counter(left), exp.measures, out, lambda f: list(read_events(f)),
                 spent_runs=runs_cost, spent_evaluating=evaluating, note=note)
         if self.rehearse and self.real_todo:
@@ -726,18 +914,7 @@ class Runner:
 
     def _unpriceable(self, evaluators_only: bool = False) -> list[str]:
         """Every model whose worst case cannot be priced: a hard ceiling needs them all."""
-        uses = self._uses(evaluators_only)
-        found = []
-        for name, model, params in uses:
-            if model_price(model, self.prices)["input_per_million"] is None:
-                line = f"{model} has no list price; add it to {self.prices.shown}"
-            elif max_reply(model, params) is None:
-                line = f"{name} on {model}: no known longest reply; give it `params: {{max_tokens: …}}`"
-            else:
-                continue
-            if line not in found:
-                found.append(line)
-        return found
+        return cannot_keep(self._uses(evaluators_only), self.prices)
 
     def _estimate(self, slots: list[Slot], spent: float, real_costs: bool = False) -> float | None:
         """What the slots will cost, plus what is already spent: from rehearsal
@@ -758,7 +935,9 @@ class Runner:
         evaluating = 0.0
         if self.evaluating != "none":
             walks = self._walk()
-            for s in slots:
+            # After round 1 its own runs are not evaluated yet either: they are still to pay (NE14).
+            done = [r["slot"] for r in self.results if r["record"] and fills(r["record"])] if real_costs else []
+            for s in [*slots, *done]:
                 for ev in self.evaluators:
                     one = estimate_one(ev, walks[s.condition].tokens_out, self.prices)
                     if one is None:
@@ -781,8 +960,9 @@ class Runner:
             outcome = self.could_not_start["outcome"]
             say(paint.red(f"✗ a run could not start, so the experiment stopped: {outcome.reason}"))
             if outcome.check is not None:
-                for problem in outcome.check.problems:
-                    say(f"  {problem}")
+                for p in outcome.check.problems:
+                    who = f" ({', '.join(p.who)})" if p.who else ""
+                    say(f"  {p.what}{who}: {p.wrong}. {p.fix}")
         by = {}
         for r in self.results:
             by[r["status"]] = by.get(r["status"], 0) + 1
@@ -850,7 +1030,7 @@ def print_summary(folder: Path, out) -> int:
     runner = Runner(exp, out, rehearse=False, max_cost=None, prices=load_prices())
     evaluators = runner.evaluators
     summary(exp, runs, Counter(runner._left_out(study, filled)), exp.measures, out,
-            lambda f: list(read_events(f)), spent_runs=sum(_paid(r) for _, r in runs),
+            lambda f: list(read_events(f)), spent_runs=sum(_cost(r) for _, r in runs),
             spent_evaluating=spent_on(runs, evaluators))
     return 0
 

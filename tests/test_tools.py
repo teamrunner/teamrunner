@@ -345,6 +345,25 @@ def test_local_addresses_are_not_public(monkeypatch, address):
     assert not _public("anything.example")
 
 
+def test_the_name_connected_to_is_the_name_checked(monkeypatch):
+    """Review 2026-11-21, NS5: for `faß.example` Python looks up `fass.example`, and the HTTP
+    library connects to `xn--fa-hia.example`. Its owner points the first at a public address
+    and the second at this computer; a page the model reads can supply such a link."""
+    import socket
+    import httpx
+    from teamrunner.builtin_tools import _public, _refuse_local
+    asked = []
+
+    def lookup(host, port):
+        asked.append(host)
+        return [(0, 0, 0, "", ("127.0.0.1" if str(host).startswith("xn--") else "93.184.216.34", 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    assert not _public("faß.example") and "xn--fa-hia.example" in asked
+    assert _public("plain.example") and _public("93.184.216.34")
+    with pytest.raises(Refused, match="on this computer or its local network"):
+        asyncio.run(_refuse_local(httpx.Request("GET", "http://faß.example/x")))
+
+
 MAIL = """\
 Message-ID: <m001@mail.example>
 From: Rosa Diaz <rosa@clients.example>

@@ -24,7 +24,10 @@ def test_package_beneath_unrelated_runs_folder_remains_editable(tmp_path, relati
         assert post(server, '/api/save', {**file, 'text':file['text']+'\nAn edit.\n'})[0] == 200
         assert post(server, '/api/validate', {'path':'', 'offline':True})[0] == 200
         assert post(server, '/api/member', {'path':'researcher.md'})[0] == 200
-        assert post(server, '/api/new', {'path':'new_team'})[0] == 200
+        # The opened folder is a team: another team is not made inside it (review 2026-11-21, NU9),
+        # and that, not the folder named runs above it, is why.
+        status, refused = post(server, '/api/new', {'path':'new_team'})
+        assert status == 400 and 'itself a team' in refused['error'] and not (root/'new_team').exists()
         (root/'runs'/'old').mkdir(parents=True)
         (root/'runs'/'old'/'output.md').write_text('a record')
         file = json.loads(get(server,'/api/file?path=runs/old/output.md')[2])

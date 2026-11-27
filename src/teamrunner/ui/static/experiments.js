@@ -9,6 +9,7 @@
 // starts only on the confirmation the page showed, with its cost (D151).
 
 let experimentPath = "", experimentData = null, experimentRequest = 0, refreshRequest = 0, slotsShown = "real";
+let slotsAsWall = false;  // the Runs tab as the run wall (picture.js) instead of the grid
 // Experiments running in this server session (D150: several at once, each only once), by path,
 // and the open experiment's job with its lines. Polled while anything runs.
 let experimentJobs = {}, experimentLive = null, experimentPoll = null, experimentSeen = "", experimentQuote = null;
@@ -65,7 +66,9 @@ async function openExperiment(path) {
     if (path !== experimentPath) { delete byId("experiment-detail").dataset.tab; slotsShown = "real"; closeConfirm(); }
     experimentPath = path; experimentData = data;
     byId("experiments-list-panel").hidden = true; byId("experiment-detail").hidden = false;
-    experimentLive = experimentJobs[path] ? await api("/api/experiment-job" + pathQuery(path)).catch(() => null) : null;
+    const live = experimentJobs[path] ? await api("/api/experiment-job" + pathQuery(path)).catch(() => null) : null;
+    if (request !== experimentRequest) return;  // another was chosen meanwhile: its own job, not this one's
+    experimentLive = live;
     renderExperiment(); expNotice("");
   } catch (error) { if (request === experimentRequest) expNotice(error.message); }
 }
@@ -95,6 +98,7 @@ function showJobControls() {
   const line = byId("experiment-job");
   line.hidden = !job;
   if (!job) return;
+  if (job.crash) showCrash(job.crash, `experiment ${job.id}`);
   const what = job.rehearse ? "Rehearsal" : job.evaluating === "only" ? "Evaluation" : "Run";
   const finished = `${plural(job.finished, "run")} finished`, spent = job.rehearse ? "" : ` · ${usd(job.spent_usd)} spent by these runs`;
   line.textContent = {
@@ -212,7 +216,7 @@ async function startReal(q, button) {
 }
 
 async function stopExperiment() {
-  if (!experimentLive) return;
+  if (!experimentLive || experimentLive.path !== experimentPath) return;  // only the experiment on screen
   byId("stop-experiment").disabled = true;
   try { experimentLive = {...experimentLive, ...await api("/api/experiment-stop", {path: experimentLive.path})}; showJobControls(); }
   catch (error) { expNotice(error.message); byId("stop-experiment").disabled = false; }
@@ -356,7 +360,31 @@ function renderSlots(data) {
     button.addEventListener("click", () => { slotsShown = which; showExperimentTab("runs"); });
     toggle.append(button);
   }
+  for (const [asWall, label] of [[false, "Grid"], [true, "Wall"]]) {
+    const button = node("button", label); button.type = "button"; button.setAttribute("aria-pressed", String(slotsAsWall === asWall));
+    if (asWall) { button.title = "Every run as a small picture of its turns"; button.style.marginLeft = "14px"; }
+    button.addEventListener("click", () => { slotsAsWall = asWall; showExperimentTab("runs"); });
+    toggle.append(button);
+  }
   parts.push(toggle);
+  if (slotsAsWall) {
+    // The run wall (picture.js): one group per condition, runs in replicate order.
+    const rows = [], order = new Map(data.conditions.map((c, at) => [c.name, at]));
+    let missing = 0;
+    for (const slot of data.slots) {
+      const run = slotsShown === "real" ? slot.run : slot.rehearsal;
+      if (!run) { missing++; continue; }
+      rows.push({path:run.path, team:data.name, group:slot.condition, digest:run.digest || [], status:run.fills ? "completed" : run.status,
+        experiment:{condition:slot.condition, replicate:slot.replicate},
+        title:`Replicate ${slot.replicate}, round ${slot.round}: ${run.status} · ${(run.digest || []).length} turns · ${usd(run.cost_usd)} · ${run.duration_s.toFixed(1)}s${run.fills ? "" : " · will be redone"}`});
+    }
+    rows.sort((a, b) => order.get(a.group) - order.get(b.group) || a.experiment.replicate - b.experiment.replicate);
+    const host = node("div", undefined, "exp-wall");
+    if (rows.length) showRunWall(host, rows, path => openRun(path, experimentPath), "by replicate");
+    else host.append(node("p", "No runs to draw yet.", "exp-note"));
+    parts.push(host);
+    if (missing) parts.push(node("p", `${missing} planned run${missing === 1 ? " is" : "s are"} not made yet and not drawn.`, "exp-note"));
+  }
   const reps = data.replications, byCondition = new Map(data.conditions.map(c => [c.name, []]));
   for (const slot of data.slots) byCondition.get(slot.condition)?.push(slot);
   const head = ["Condition"]; for (let r = 1; r <= reps; r++) head.push(String(r));
@@ -388,8 +416,8 @@ function renderSlots(data) {
     }
     rows.append(row);
   }
-  const wrap = node("div", undefined, "exp-grid-wrap"); wrap.append(grid); parts.push(wrap);
-  parts.push(node("p", "Columns are replicates. ✓ counts · ✗ failed and ■ stopped are redone in the same slot with the same seed · empty: not run yet. Choose a mark to read that run.", "exp-note"));
+  const wrap = node("div", undefined, "exp-grid-wrap"); wrap.append(grid); if (!slotsAsWall) parts.push(wrap);
+  if (!slotsAsWall) parts.push(node("p", "Columns are replicates. ✓ counts · ✗ failed and ■ stopped are redone in the same slot with the same seed · empty: not run yet. Choose a mark to read that run.", "exp-note"));
   if (slotsShown === "real" && data.summary.costly.length) parts.push(costlyNote(data.summary));
   if (slotsShown === "rehearsal") parts.push(node("p", "Rehearsals check the wiring with placeholder words and random answers. They never count.", "exp-note"));
   const not = Object.entries(data.summary.not_counted);
@@ -421,7 +449,7 @@ function costlyNote(s) {
 
 function renderSummary(data) {
   const parts = [], s = data.summary;
-  let measures = s.measures, title = `${s.completed} of ${data.runs} runs completed · ${usd(s.spent_runs_usd)} runs` + (s.spent_evaluating_usd ? ` + ${usd(s.spent_evaluating_usd)} evaluating` : "");
+  let measures = s.measures, title = `${s.completed} of ${data.runs} runs completed · ${usd(s.spent_runs_usd)} for these runs` + (s.spent_evaluating_usd ? ` + ${usd(s.spent_evaluating_usd)} evaluating` : "");
   if (!s.completed && data.rehearsal_summary) {
     measures = data.rehearsal_summary.measures;
     title = `No real runs yet. From ${plural(data.rehearsal_summary.completed, "rehearsal")}: placeholder values, not results`;
@@ -462,9 +490,8 @@ function renderSummary(data) {
 }
 
 // Plan, Runs and Summary in the tab row: the chosen experiment's, or the list to choose from.
-async function experimentTab(name) {
+async function experimentTab(name, chosen = chosenExperiment()) {
   setMode("experiments");
-  const chosen = chosenExperiment();
   if (!chosen) { byId("experiment-detail").dataset.tab = name; await loadExperiments(); showView("experiments"); return; }
   byId("experiment-detail").dataset.tab = name;
   if (chosen !== experimentPath || !experimentData) await openExperiment(chosen);
@@ -475,7 +502,8 @@ async function experimentTab(name) {
 }
 for (const name of ["plan", "summary"]) byId(`${name}-view`).addEventListener("click", () => experimentTab(name));
 document.addEventListener("teamrunner:experiment-select", event => {
-  if (!byId("experiments-workspace").hidden) experimentTab(byId("experiment-detail").dataset.tab || "plan");
+  // The experiment just chosen in the sidebar, not the one that was open (review 2026-11-21, NU7).
+  if (!byId("experiments-workspace").hidden) experimentTab(byId("experiment-detail").dataset.tab || "plan", event.detail);
 });
 byId("refresh-experiments").addEventListener("click", () => experimentPath ? openExperiment(experimentPath) : loadExperiments());
 byId("all-experiments").addEventListener("click", () => { delete byId("experiment-detail").dataset.tab; loadExperiments(); });

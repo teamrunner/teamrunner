@@ -18,8 +18,9 @@ only by you (on Windows, the profile folder's own permissions do that). TeamRunn
 record configured key values: `record.json` (`run.json` in older folders) records
 only where each key came from, and an error a provider sends back is recorded
 with any key in it replaced by `[key hidden]`. Inputs, prompts and tool results are logged, so
-secrets pasted into them can still appear in run folders. `validate` and `run` refuse a team whose files
-contain something that looks like a key. The sandbox is not given the host environment. Do not grant toolkeepers
+secrets pasted into them can still appear in run folders. `validate` and `run` refuse a team, and
+`experiment` refuses an experiment, whose text files contain something that looks like a key
+(`runs/` and hidden files are not searched). The sandbox is not given the host environment. Do not grant toolkeepers
 access to your key file or other secret-bearing folders.
 
 **`run_code`, the sandbox.** Python runs in WebAssembly (Pyodide), inside

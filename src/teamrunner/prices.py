@@ -50,7 +50,8 @@ class Prices:
 
 
 def _number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+    import math  # `.inf` is a float in YAML: as a price it would make every estimate infinite
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 and math.isfinite(value)
 
 
 def load_prices(path: Path | None = None) -> Prices:

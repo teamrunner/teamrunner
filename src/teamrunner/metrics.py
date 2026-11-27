@@ -38,9 +38,9 @@ SOURCE_REPORTS = ("hits", "misses", "false_alarms", "correct")
 COMPARE_REPORTS = ("suppressed",)
 ANSWER_KEY_WORDS = {"name", "description", "kind", "answer", "source", "stage", "parse", "compare", "reports", "id"}
 EVALUATOR_WORDS = {"name", "description", "kind", "model", "params", "output", "evaluations", "id"}
-METRIC_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+METRIC_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*\Z")
 PLACEHOLDER = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
-SOURCE = re.compile(r"^(\w[\w-]*)\.output\.(\w[\w-]*)$")
+SOURCE = re.compile(r"^(\w[\w-]*)\.output\.(\w[\w-]*)\Z")
 EVERYONE = "everyone"
 
 

@@ -466,3 +466,82 @@ def test_a_conditions_generated_folder_is_read_only(workspace):
             status, _, body = get(server, "/api/file?" + urlencode({"path": path}))
             assert json.loads(body)["readonly"] is False and json.loads(body)["generated"] is None
     assert "x" != (workspace / led / "alice.md").read_text()
+
+
+# --- review 2026-11-21: the newcomer's path -----------------------------------------------------
+
+def test_keys_can_be_set_with_an_experiment_or_nothing_selected(workspace, tmp_path):
+    """NU3: the keys dialog answered "Choose a team folder" for an experiment and for an empty
+    workspace, where a new user has no team yet and no way to set the key they are asked for."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with running(workspace) as server:
+        status, _, body = get(server, "/api/keys?" + urlencode({"path": "experiments/exp"}))
+        assert status == 200 and json.loads(body)["keys"] == [{"name": "OPENAI_API_KEY", "present": True}]
+        status, _, body = get(server, "/api/keys?" + urlencode({"path": "experiments/exp/variants/alice.md"}))
+        assert status == 200 and json.loads(body)["keys"] == [{"name": "OPENAI_API_KEY", "present": True}]
+        status, _, body = get(server, "/api/keys?path=")
+        assert status == 200 and json.loads(body)["keys"] == [] and "OPENAI_API_KEY" in json.loads(body)["allowed"]
+    with running(empty) as server:
+        status, _, body = get(server, "/api/keys?path=")
+        assert status == 200 and "ANTHROPIC_API_KEY" in json.loads(body)["allowed"]
+        assert post(server, "/api/key", {"name": "ANTHROPIC_API_KEY", "value": "sk-new"})[0] == 200
+
+
+def test_a_free_model_with_no_longest_reply_can_run_under_a_ceiling(workspace):
+    """NU4: the page's own experiment template writes `max_cost_usd:`, and on the demo team the
+    quote said it could not run, because a free model has no known longest reply."""
+    review = workspace / "teams" / "review"
+    for name in ("alice.md", "bob.md"):
+        (review / name).write_text((review / name).read_text().replace("params:\n  max_tokens: 200\n", ""))
+    (review / "team.yaml").write_text((review / "team.yaml").read_text().replace("openai/gpt-5", "ollama/llama3"))
+    with running(workspace) as server:
+        seams(server, Paid())
+        server.experiment_jobs.seams["listers"] = {"ollama": lambda key, settings: {"llama3"}}
+        q = quote(server)
+        assert q["free"] and q["blockers"] == [] and q["can_run"], q
+
+
+# --- review 2026-11-21: the browser page ---------------------------------------------------------
+
+def test_a_run_is_refused_in_a_conditions_generated_folder(workspace):
+    """NU1: Run… in conditions/<name>/ made a run record there, and the next build of the
+    experiment deleted it: a real run cost money and vanished."""
+    led = "experiments/exp/conditions/led"
+    with running(workspace) as server:
+        detail(server)  # opening the experiment builds conditions/
+        before = sorted(p.name for p in (workspace / led).iterdir())
+        status, _, body = get(server, "/api/run-setup?" + urlencode({"path": led}))
+        assert status == 403 and "would be deleted" in json.loads(body)["error"]
+        assert get(server, "/api/run-estimate?" + urlencode({"path": f"{led}/alice.md"}))[0] == 403
+        for path in (led, f"{led}/alice.md", f"{led}/team.yaml"):
+            status, answer = post(server, "/api/start", {"path": path, "rehearse": True})
+            assert status == 403 and "built from experiment.md" in answer["error"], answer
+        assert not server.jobs.jobs and sorted(p.name for p in (workspace / led).iterdir()) == before
+        assert get(server, "/api/run-setup?" + urlencode({"path": "teams/review"}))[0] == 200  # its base team runs
+
+
+def test_an_experiment_cannot_take_a_name_the_list_skips(workspace):
+    """Review 2026-11-21 (smaller): an experiment named `conditions` was made and never listed."""
+    with running(workspace) as server:
+        for name in sorted(experiments.SKIP):
+            status, answer = post(server, "/api/new-experiment", {"name": name, "team": "teams/review"})
+            assert status == 400 and "Choose another name" in answer["error"], (name, answer)
+            assert not (workspace / "experiments" / name).exists()
+        assert post(server, "/api/new-experiment", {"name": "conditions_2", "team": "teams/review"})[0] == 200
+        listed = [e["path"] for e in json.loads(get(server, "/api/experiments")[2])["experiments"]]
+        assert "experiments/conditions_2" in listed
+
+
+def test_each_slot_run_carries_its_turns_for_the_wall():
+    """The experiment's Runs tab can draw the run wall: a slot's run comes with its digest."""
+    from teamrunner.ui import experiments
+    record = {"status": "completed", "experiment": {"replicate": 1, "round": 1}, "cost_usd": 0.1, "latency_ms": 2000}
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve(); folder = root / "runs" / "one"; folder.mkdir(parents=True)
+        (folder / "events.jsonl").write_text(json.dumps({"event": "agent_message", "seq": 3, "from": "judge",
+                                                         "content": "For.", "output": {"winner": "for"}}) + "\n")
+        run = experiments._run(root, folder, record, [])
+    assert [(t["member"], t["outputs"]) for t in run["digest"]] == [("judge", {"winner": "for"})]

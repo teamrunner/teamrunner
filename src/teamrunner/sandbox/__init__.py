@@ -91,7 +91,9 @@ async def run(code: str, work: Path, read: list[tuple[Path, str]], network: bool
     home.mkdir(parents=True, exist_ok=True)
     command = [deno_bin(), "run", "--quiet", "--no-prompt", "--no-config",
                f"--allow-read={home},{SCRIPT}", f"--allow-write={home}",
-               "--allow-env", "--allow-net", f"--deny-net={','.join(LOCAL_NETWORK)}", str(SCRIPT)]
+               "--allow-env", "--allow-net", f"--deny-net={','.join(LOCAL_NETWORK)}",
+               "--deny-import",  # no module from the internet, ever; Pyodide is an npm package, not one
+               str(SCRIPT)]
     process = await asyncio.create_subprocess_exec(
         *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, env={**_plain_env(), "DENO_DIR": str(home)}, limit=MAX_LINE)
@@ -160,7 +162,10 @@ async def fetch_for_code(asked: dict) -> dict:
     import httpx
     from ..builtin_tools import MAX_DOWNLOAD, Refused, _public, _refuse_local
     url = str(asked.get("url", ""))
-    host = httpx.URL(url).host if url.startswith(("http://", "https://")) else ""
+    try:  # a link the library cannot read (`http://0177.0.0.1/`) is an answer, not a wait (NS11)
+        host = httpx.URL(url).host if url.startswith(("http://", "https://")) else ""
+    except Exception:  # noqa: BLE001
+        return {"error": f"TeamRunner could not read the link {url[:100]}"}
     if not host:
         return {"error": f"TeamRunner fetches only http and https links, not {url[:100]}"}
     if not _public(host):

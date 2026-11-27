@@ -118,18 +118,8 @@ def restore(root: Path, written: str, destination: str):
             if (Path(directory) / name).is_symlink():
                 raise api.OutsideRoot("Saved team links cannot be copied. "
                                       "Open a complete saved team without links.")
-    target = api.inside(root, destination)
-    if api.in_runs(root, target):
-        raise api.OutsideRoot("Run records are read-only.")
-    if api.generated(root, target):
-        raise api.OutsideRoot(api.BUILT)
-    parent = target.parent
-    while parent.is_relative_to(root):
-        if (parent / "team.yaml").exists():
-            raise ValueError("Choose a workspace without a parent team.yaml. Open its parent "
-                             "folder with teamrunner ui to create an independent team.")
-        if parent == root:
-            break
-        parent = parent.parent
+    # As + Team does: a name alone goes in the workspace's teams/, where the Teams sidebar
+    # shows it, and never inside another team (review 2026-11-21, NU11).
+    target = api.new_team_place(root, destination)
     folder, warnings = copy_from(source, target)
     return {"path": (folder / "team.yaml").relative_to(root).as_posix(), "warnings": warnings}

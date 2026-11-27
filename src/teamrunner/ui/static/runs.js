@@ -3,6 +3,7 @@
 "use strict";
 
 let runSource = "", runData = null, runRows = [], runRequest = 0, detailRequest = 0, searchTimer;
+let runsAsWall = false;  // Run history as the run wall (picture.js) instead of the table
 const node = (tag, text, className) => {
   const item = document.createElement(tag);
   if (text !== undefined) item.textContent = typeof text === "string" ? text : JSON.stringify(text);
@@ -17,7 +18,7 @@ const runTeam = path => { const parts = path.split("/"), at = parts.lastIndexOf(
 const runNotice = text => { byId("run-notice").textContent = text; };
 
 // Two modes, Teams and Experiments, each with its own tabs (app.js setMode): Teams has
-// Files, Run and Run history; Experiments has Overview, Files and Run. One Run tab serves both.
+// Files, Run and Run history; Experiments has Files, Plan, Runs and Summary. One Run tab serves both.
 const VIEWS = {files: "files-workspace", flow: "flow-workspace", run: "run-workspace", runs: "runs-workspace",
   experiments: "experiments-workspace"};
 // The lit tab: Files, Flow diagram or Runs for a team; Files, Plan, Runs or Summary for an
@@ -34,6 +35,7 @@ function showView(name) {
   const lit = subTab(name);
   for (const id of ["files-view", "flow-view", "plan-view", "runs-view", "summary-view"]) byId(id).setAttribute("aria-pressed", String(id === lit));
   document.title = `${info?.name || "TeamRunner"} · ${byId(lit).textContent}`;
+  updateState();  // + Variant, + Metric and + Task name the experiment now in view (NU7)
 }
 function fileView() { showView("files"); editor.refresh(); }
 // What the Run tab shows: the run in progress, or the saved run opened last.
@@ -69,13 +71,15 @@ function options(id, values, label) {
   for (const value of values) { const option = node("option", value); option.value = value; select.append(option); }
   select.value = values.includes(selected) ? selected : "";
 }
+// Reads the list again and leaves what is on screen alone: with a comparison open the list is
+// hidden, and hiding the comparison too left the view empty (review 2026-11-21, NU10).
 async function loadRuns(append = false) {
-  byId("run-comparison").hidden = true;
   const request = ++runRequest;
   if (!append) runRows = [];
   byId("refresh-runs").disabled = true; runsNotice("Reading run folders…");
   const query = new URLSearchParams({path:runSource, team:byId("runs-team").value,
-    status:byId("runs-status").value, search:byId("runs-search").value, limit:50, offset:runRows.length});
+    status:byId("runs-status").value, search:byId("runs-search").value, limit:runsAsWall ? 200 : 50, offset:runRows.length});
+  if (runsAsWall) query.set("wall", "1");
   try {
     const result = await api("/api/runs?" + query);
     if (request !== runRequest) return;
@@ -95,9 +99,14 @@ async function loadRuns(append = false) {
     }
     byId("more-runs").hidden = runRows.length >= result.total;
     byId("runs-table").hidden = !runRows.length;
+    runTableWrap.hidden = runsAsWall; byId("compare-runs").hidden = runsAsWall; byId("runs-wall").hidden = !runsAsWall;
+    if (runsAsWall) showRunWall(byId("runs-wall"), runRows, openRun);
     updateRunColumns();
     runsNotice(result.warnings.join("\n"));
-    byId("runs-command").textContent = `teamrunner runs ${JSON.stringify(info ? join(info.folder, runSource) : runSource || ".")}`;
+    // The folder the list was read from: a file chosen in the sidebar is not something
+    // `teamrunner runs` takes (review 2026-11-21).
+    const folder = result.source === "." ? "" : result.source;
+    byId("runs-command").textContent = `teamrunner runs ${JSON.stringify(info ? join(info.folder, folder) : folder || ".")}`;
   } catch (error) {
     if (request === runRequest) { runsNotice(error.message); byId("runs-rows").replaceChildren(); byId("runs-count").textContent = ""; byId("more-runs").hidden = true; }
   } finally { if (request === runRequest) byId("refresh-runs").disabled = false; }
@@ -154,6 +163,7 @@ function renderConversation(data = runData, container = byId("run-conversation")
     if (event.event === "agent_message") {
       messages++;
       const card = node("article", undefined, "message-card");
+      if (event.seq != null) card.dataset.seq = event.seq;
       const heading = node("header"); heading.append(node("h4", `${speaker(event, data)} → ${typeof event.to === "string" ? event.to : pretty(event.to) || "not recorded"}`));
       const stage = event.stage ? `stage ${event.stage}` : "";
       const attempt = typeof event.attempt === "object" && event.attempt ? `attempt ${event.attempt.number}${event.attempt.of == null ? "" : " of " + event.attempt.of}` : event.attempt ? `attempt ${event.attempt}` : "";
@@ -265,6 +275,7 @@ async function openRun(path, experiment = null) {
     byId("raw-run-files").replaceChildren(...result.raw_files.map(file => downloadLink(file)));
     byId("run-warnings").textContent = result.warnings.join("\n");
     renderConversation(); renderRecord();
+    showRunTimeline(byId("run-picture"), result, showMessage);
     byId("run-path").textContent = "Reading recorded path…";
     api("/api/run-path" + pathQuery(path)).then(data => {if (request === detailRequest) renderPath(byId("run-path"),data);}).catch(error => {if (request === detailRequest) byId("run-path").textContent=error.message;});
     byId("run-output").replaceChildren(result.output ? markdown(result.output) : node("p", "No output was recorded."));
@@ -291,6 +302,21 @@ byId("runs-view").addEventListener("click", () => {
   runsView();
 });
 byId("refresh-runs").addEventListener("click", () => loadRuns());
+for (const [id, asWall] of [["runs-as-table", false], ["runs-as-wall", true]]) byId(id).addEventListener("click", () => {
+  runsAsWall = asWall;
+  byId("runs-as-table").setAttribute("aria-pressed", String(!asWall)); byId("runs-as-wall").setAttribute("aria-pressed", String(asWall));
+  loadRuns();
+});
+// From a cell of the run timeline to its message, drawing more of a long run when needed.
+function showMessage(sequence, list = byId("run-conversation")) {
+  if (list.id === "run-conversation") showRunTab("conversation");
+  const find = () => list.querySelector(`.message-card[data-seq="${CSS.escape(String(sequence))}"]`);
+  let card = find();
+  for (let more; !card && (more = list.querySelector(".show-more")); card = find()) more.click();
+  if (!card) return;
+  card.scrollIntoView({block:"start"}); card.classList.add("picked");
+  setTimeout(() => card.classList.remove("picked"), 1800);
+}
 byId("refresh-run").addEventListener("click", () => openRun(runData.summary.path, byId("back-experiment").hidden ? null : experimentPath));
 byId("back-runs").addEventListener("click", () => runsView(runSource || null));
 byId("show-live").addEventListener("click", () => showRunPane("live"));
@@ -299,7 +325,7 @@ byId("runs-search").addEventListener("input", () => { clearTimeout(searchTimer);
 byId("more-runs").addEventListener("click", () => { loadRuns(true); });
 for (const name of ["conversation", "output", "record", "path"]) byId(name + "-tab").addEventListener("click", () => showRunTab(name));
 byId("open-run-folder").addEventListener("click", async () => {
-  try { await api("/api/open-run-folder", {path:runData.summary.path}); runNotice("Run folder opened on your computer."); }
+  try { await api("/api/open-run-folder", {path:runData.summary.path}); runNotice("Run folder shown on your computer."); }
   catch (error) { runNotice(error.message); }
 });
 document.addEventListener("teamrunner:file-open", fileView);
@@ -312,7 +338,7 @@ document.addEventListener("teamrunner:team-select", event => {
 const runTableWrap = byId("runs-table").parentElement;
 function updateRunColumns() {
   const end = runTableWrap.scrollWidth - runTableWrap.clientWidth;
-  byId("run-column-controls").hidden = !runRows.length || end < 2;
+  byId("run-column-controls").hidden = runsAsWall || !runRows.length || end < 2;
   byId("previous-columns").disabled = runTableWrap.scrollLeft <= 1;
   byId("next-columns").disabled = runTableWrap.scrollLeft >= end - 1;
 }

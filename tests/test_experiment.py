@@ -509,6 +509,40 @@ def test_a_change_does_not_follow_a_link_out_of_the_team(tmp_path):
     assert outside.read_text(encoding="utf-8") == "mine\n"
 
 
+def _link(link: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("this system does not let the test make a link")
+
+
+@pytest.mark.parametrize("linked", ["conditions", "conditions/led", "conditions/.led.building", "runs"])
+def test_nothing_is_written_through_a_linked_conditions_or_runs_folder(tmp_path, linked):
+    """An experiment someone sent can ship `conditions` or `runs` as a link to a folder
+    outside it; no file may land there, on a plan included (review 2026-11-21, NS2)."""
+    exp = experiment(tmp_path, SIMPLE, VARIANTS)
+    victim = tmp_path / "victim"
+    (exp / linked).parent.mkdir(parents=True, exist_ok=True)
+    _link(exp / linked, victim)
+    e = build(read_experiment(exp))
+    assert "is a link to another folder" in messages(e)
+    assert list(victim.iterdir()) == []
+    if linked != "runs":
+        assert e.conditions[1].folder is None  # `led` was not built anywhere
+
+
+def test_a_run_folder_is_never_made_through_a_linked_runs(tmp_path):
+    from datetime import datetime
+    from teamrunner.experiment_run import _folder_for
+    exp = experiment(tmp_path, SIMPLE, VARIANTS)
+    e = build(read_experiment(exp))
+    _link(exp / "runs", tmp_path / "victim")
+    with pytest.raises(OSError, match="is a link"):
+        _folder_for(e, plan_runs(e)[0], datetime.now())
+    assert list((tmp_path / "victim").iterdir()) == []
+
+
 @pytest.mark.parametrize("front, said", [
     ("conditions:\n  Short: ../review\n  short: ../review\n",
      "the conditions `Short` (line 4) and `short` differ only in capitals"),
@@ -573,3 +607,31 @@ def test_a_numeric_label_is_a_label(tmp_path, label, said):
         assert "2" in by and e.ok, messages(e)
     else:
         assert said in messages(e)
+
+
+def test_a_condition_already_built_is_left_alone(tmp_path):
+    """Review 2026-11-21, NE16: every --plan, --summary and --export replaced conditions/<name>/,
+    and a running experiment copying from it at that moment could crash."""
+    exp = experiment(tmp_path, SIMPLE, VARIANTS)
+    build(read_experiment(exp))
+    built = exp / CONDITIONS_DIR / "led"
+    before = {p: p.stat().st_ino for p in built.rglob("*")} | {built: built.stat().st_ino}
+    build(read_experiment(exp))
+    assert {p: p.stat().st_ino for p in built.rglob("*")} | {built: built.stat().st_ino} == before
+    (exp / "variants" / "alice.md").write_text("You lead, firmly. Review {{code}}.\n", encoding="utf-8")
+    build(read_experiment(exp))  # a real change is still built
+    assert "firmly" in (built / "alice.md").read_text(encoding="utf-8")
+
+
+def test_a_condition_that_changes_nothing_and_odd_settings_are_said(tmp_path):
+    """NE6, NE15 and smaller items of the 2026-11-21 review."""
+    same = SIMPLE.replace("      chair: file:variants/chair.md\n      alice.prompt: file:variants/alice.md\n"
+                          "      bob.model: anthropic/claude-sonnet-4-5\n", "      alice.params.max_tokens: 800\n")
+    e = build(read_experiment(experiment(tmp_path / "a", same, VARIANTS)))
+    assert any("`led` is the same team as `flat`" in w.message for w in e.problems.warnings)
+    for front, said in [(SIMPLE.replace("max_cost_usd: 10", "max_cost_usd: .inf"), "`max_cost_usd:` should be an amount"),
+                        (SIMPLE.replace("replications: 3", "replications: 1000000"), "`replications:` is at most 10,000"),
+                        (SIMPLE.replace("      chair: file:variants/chair.md\n", "      7: remove\n"),
+                         "`7` under `change:` should be a member")]:
+        e = build(read_experiment(experiment(tmp_path / str(len(said)), front, VARIANTS)))
+        assert said in messages(e), (said, messages(e))

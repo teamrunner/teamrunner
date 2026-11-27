@@ -110,7 +110,10 @@ try {
 // From here on the code runs. It gets no disk at all (its files live in Pyodide's own
 // memory), so it cannot change the cached Pyodide that later runs load, and no
 // environment, and no network: with `network: true`, its fetch() asks TeamRunner.
-for (const name of ["read", "write", "env", "net"]) {
+// "import" is its own permission: left alone, Deno lets code import modules from six
+// internet hosts whatever "net" says (review 2026-11-21, NS4). It is also denied on the
+// command line, so a Worker the code starts cannot have it either.
+for (const name of ["read", "write", "env", "net", "import"]) {
   await Deno.permissions.revoke({ name });
 }
 if (request.network) {

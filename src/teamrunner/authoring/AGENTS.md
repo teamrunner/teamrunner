@@ -140,7 +140,7 @@ kind: toolkeeper
 tools:
   web_search_brave: {max_results: 5, calls_per_turn: 2}   # one tool; the base terms
 access:
-  fact_checker: {calls_per_turn: 6}   # changed terms: these replace the base ones
+  fact_checker: {calls_per_turn: 6}   # changed terms: each one written replaces that base term
   judge: standard                     # the base terms
 ---
 I search the web. Send me a query and I return the top five results.
@@ -150,6 +150,11 @@ I search the web. Send me a query and I return the top five results.
   toolkeepers. Name the file after what it offers (`web.md`, `sandbox.md`).
 - `access:` lists members by name: `standard`, `deny`, or changed terms.
   **Anyone not listed is refused.** `others: standard` lets everyone else in.
+  Changed terms change only the settings they name; the rest stay as in the base terms.
+- `web_search_brave` needs the person's own Brave Search key, `BRAVE_API_KEY`, in
+  `~/.teamrunner/.env`. Tell them so.
+- The free demo model (`teamrunner/demoLLM`) cannot run a member who may use a
+  toolkeeper. A team with tools needs a model the person has a key for.
 - The tools, and the limits each understands:
 
 | Tool | Does | Its limits |

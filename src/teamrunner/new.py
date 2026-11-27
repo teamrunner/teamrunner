@@ -155,7 +155,7 @@ def _restamp(text: str, what: str) -> str:
 
 
 def _restamp_member(path: Path, what: str) -> None:
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")  # a mark Windows Notepad leaves is not part of the text
     parts = split_frontmatter(text)
     if parts is None or parts[1] is None:
         return  # notes, not members
@@ -185,22 +185,30 @@ def copy_from(source: Path, folder: Path) -> tuple[Path, list[str]]:
         return left
 
     shutil.copytree(source, folder, ignore=skip, symlinks=False)  # links become real copies (D94)
-    for path in sorted(folder.rglob("*")):
-        inside = path.relative_to(folder).parts
-        if path.name == TEAM_FILE:
-            text = path.read_text(encoding="utf-8")
-            if path.parent == folder:
-                text = re.sub(r"^name:.*$", f"name: {folder.name}", text, count=1, flags=re.MULTILINE) \
-                    if re.search(r"^name:", text, re.MULTILINE) else f"name: {folder.name}\n" + text
-            stamped = _restamp(text, "team")
-            if not reads_with_id(stamped, _old_id(stamped) or ""):
-                shutil.rmtree(folder)
-                raise NewError(f"{path.relative_to(folder)} in {source.name} could not be given the copy's "
-                               "own `id:` without breaking it, so nothing was made; check that it reads as "
-                               "`name: value` lines (`teamrunner validate` says where it does not)")
-            path.write_text(stamped, encoding="utf-8", newline="\n")
-        elif path.suffix == ".md" and path.name not in ("chair.md", "manager.md") and inside[0] != MODELS_DIR:
-            _restamp_member(path, "agent")
+    # A copy is whole or not there: a file that cannot be read stops it, and what was made so
+    # far is removed, so trying again does not say the copy "already exists" (NC6).
+    try:
+        for path in sorted(folder.rglob("*")):
+            inside = path.relative_to(folder).parts
+            if path.name == TEAM_FILE:
+                text = path.read_text(encoding="utf-8-sig")
+                if path.parent == folder:
+                    text = re.sub(r"^name:.*$", f"name: {folder.name}", text, count=1, flags=re.MULTILINE) \
+                        if re.search(r"^name:", text, re.MULTILINE) else f"name: {folder.name}\n" + text
+                stamped = _restamp(text, "team")
+                if not reads_with_id(stamped, _old_id(stamped) or ""):
+                    shutil.rmtree(folder)
+                    raise NewError(f"{path.relative_to(folder)} in {source.name} could not be given the copy's "
+                                   "own `id:` without breaking it, so nothing was made; check that it reads as "
+                                   "`name: value` lines (`teamrunner validate` says where it does not)")
+                path.write_text(stamped, encoding="utf-8", newline="\n")
+            elif path.suffix == ".md" and path.name not in ("chair.md", "manager.md") and inside[0] != MODELS_DIR:
+                _restamp_member(path, "agent")
+    except (UnicodeDecodeError, OSError) as e:
+        shutil.rmtree(folder, ignore_errors=True)
+        where = path.relative_to(folder)
+        why = "is not UTF-8 text; save it as UTF-8" if isinstance(e, UnicodeDecodeError) else f"could not be read ({e})"
+        raise NewError(f"{where} in {source.name} {why}, so nothing was made") from None
     ignore = folder / ".gitignore"
     if not ignore.exists() or "runs/" not in ignore.read_text(encoding="utf-8"):
         with ignore.open("a", encoding="utf-8", newline="\n") as f:

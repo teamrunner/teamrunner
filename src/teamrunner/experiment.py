@@ -52,7 +52,7 @@ FILE = "file:"
 RESERVED_FILES = {"chair": CHAIR_FILE, "manager": MANAGER_FILE}
 LARGE = 1 << 20  # unchanged files at least this big are hard-linked, not copied (D138 (4))
 SPEC_SUFFIXES = (".md", ".yaml", ".yml")
-NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_+-]*$")
+NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_+-]*\Z")
 LATER = V.LATER  # what whiteboards and subteams need
 
 EXPERIMENT = V.Words(
@@ -63,6 +63,7 @@ EXPERIMENT = V.Words(
              "conditions_order": "the order is drawn from `seed:`"},
 )
 LIMITS = frozenset({"max_concurrent", "max_cost_usd"})
+MOST_REPLICATIONS = 10000
 LEVEL_WORDS = frozenset({"label", "change"})
 CONDITION_WORDS = frozenset({"from", "change"})
 
@@ -84,6 +85,7 @@ class Condition:
     report: Report | None = None
     inputs: dict | None = None  # every input's value: the task's, else the team's defaults
     study_hash: str | None = None
+    study_hash_before: str | None = None  # as 0.0.7 and earlier computed it (NE5)
 
 
 @dataclass
@@ -96,6 +98,7 @@ class Experiment:
     conditions: list[Condition] = field(default_factory=list)
     factors: dict[str, list[str]] | None = None  # factor -> level labels, in the full form
     task: Path | None = None
+    task_inputs: dict | None = None  # the task file's inputs, as read when the experiment was built
     replications: int | None = None
     seed: int | None = None
     metrics: list[Path] = field(default_factory=list)
@@ -192,6 +195,7 @@ def read_experiment(folder: Path) -> Experiment:
                        fix="name each condition and its folder under `conditions:`")
 
     _check_folder_names(exp)
+    _check_own_folders(exp)
     from .validate import _scan_secrets
     _scan_secrets(exp.folder, problems, skip=(CONDITIONS_DIR, "runs"))  # experiment.md goes into every record
     if "task" in words:
@@ -215,6 +219,9 @@ def _read_replications(exp: Experiment, data, doc: Doc, words) -> None:
     if not isinstance(n, int) or isinstance(n, bool) or n < 1:
         problems.error(path, "`replications:` should be a whole number of runs per condition",
                        line=line, value=str(n))
+        return
+    if n > MOST_REPLICATIONS:  # a slip such as 1000000 began two million runs in a rehearsal
+        problems.error(path, f"`replications:` is at most {MOST_REPLICATIONS:,}", line=line, value=str(n))
         return
     single = data.get("allow_single_run") is True
     if n == 1 and not single:
@@ -499,7 +506,7 @@ def _read_limits(exp: Experiment, limits, doc: Doc) -> None:
         elif key == "max_concurrent" and not (isinstance(value, int) and not isinstance(value, bool) and value >= 1):
             exp.problems.error(exp.path, "`max_concurrent:` should be a whole number, 1 or more", line=line)
         elif key == "max_cost_usd" and not (isinstance(value, (int, float)) and not isinstance(value, bool)
-                                            and value > 0):
+                                            and 0 < value < float("inf")):  # `.inf` is no ceiling at all
             exp.problems.error(exp.path, "`max_cost_usd:` should be an amount in dollars, such as 40.00", line=line)
         else:
             exp.limits[key] = value
@@ -519,7 +526,7 @@ def build(exp: Experiment) -> Experiment:
     task_inputs = None
     if exp.task is not None:
         try:
-            task_inputs = read_task_file(exp.task)
+            task_inputs = exp.task_inputs = read_task_file(exp.task)
         except InputError as e:
             exp.problems.error(exp.task, str(e))
     for cond in exp.conditions:
@@ -538,6 +545,19 @@ def build(exp: Experiment) -> Experiment:
             cond.inputs = _inputs(exp, cond, task_inputs)
         if cond.report.ok and cond.inputs is not None and exp.seed is not None:
             cond.study_hash = study_hash(find_top(cond.folder), cond.inputs, exp.seed)
+            cond.study_hash_before = study_hash(find_top(cond.folder), cond.inputs, exp.seed, notes_anywhere=True)
+    # A condition whose changes make no difference is the same team as another: the two cannot
+    # differ, and a factor with such a level has no effect there (review 2026-11-21, NE6).
+    first = {}
+    for cond in exp.conditions:
+        if cond.study_hash is None:
+            continue
+        twin = first.setdefault(cond.study_hash, cond)
+        if twin is not cond and (cond.changes or twin.changes):
+            exp.problems.warning(exp.path, f"`{cond.name}` is the same team as `{twin.name}`: nothing in its "
+                                 "`change:` makes a difference, so the two conditions cannot differ",
+                                 line=cond.line or twin.line,
+                                 fix="check the names under `change:` for a slip; `--plan` lists the differences")
     from .metrics import members_of, read_metrics
     members = members_of(exp.conditions) or None
     names = None if any(c.inputs is None for c in exp.conditions) else \
@@ -574,14 +594,15 @@ def _id_of(path: Path) -> str | None:
     return found.group(1) if found else None
 
 
-def _give_id(source: Path, target: Path, exists: bool) -> None:
-    """A whole-file variant of a member takes that member's id; a new member, a new id."""
+def _give_id(source: Path, target: Path, exists: bool, ulid: str | None = None) -> None:
+    """Write an id into the member file `source` if it has none: `ulid`, else `target`'s
+    when it `exists`, else a new one."""
     parts = split_frontmatter(source.read_text(encoding="utf-8"))
-    if parts is None or _ID.search(parts[0]):
+    if parts is None or parts[1] is None or _ID.search(parts[0]):
         return  # not a member file (a chair's flow), or it has its id already
     from .ids import write_member_id
     what = "toolkeeper" if re.search(r"^kind:\s*toolkeeper\b", parts[0], re.M) else "agent"
-    write_member_id(source, what, _id_of(target) if exists else None)
+    write_member_id(source, what, ulid or (_id_of(target) if exists else None))
 
 
 def _sort_problems(exp: Experiment, cond: Condition) -> None:
@@ -637,11 +658,45 @@ def _inputs(exp: Experiment, cond: Condition, task_inputs: dict | None) -> dict 
     return values
 
 
+def linked_away(exp: Experiment, *inside: str) -> Path | None:
+    """The first of `<experiment>/<inside…>` that is a link, or that is really somewhere
+    else (a Windows junction); None when the whole path is the experiment's own.
+
+    TeamRunner writes into `conditions/` and `runs/`. An experiment someone else sent could
+    ship either as a link to a folder outside it, and the files would land there (review
+    2026-11-21, NS2; D155)."""
+    path = exp.folder
+    for part in inside:
+        path = path / part
+        if path.is_symlink() or (path.exists()
+                                 and os.path.normcase(path.resolve()) != os.path.normcase(path)):
+            return path
+    return None
+
+
+def _check_own_folders(exp: Experiment) -> None:
+    for name in (CONDITIONS_DIR, RUNS_DIR):
+        link = linked_away(exp, name)
+        if link is not None:
+            exp.problems.error(link, f"`{name}/` is a link to another folder, and TeamRunner writes into "
+                               f"`{name}/` only inside the experiment's own folder",
+                               fix=f"remove the link `{name}`; TeamRunner makes the folder itself"
+                               + (", and you can move the old runs into it" if name == RUNS_DIR else ""))
+
+
 def _build_condition(exp: Experiment, cond: Condition) -> bool:
     """Write conditions/<name>/: the base's package, every change applied."""
     top = find_top(cond.base)
     inside = cond.base.relative_to(top)
     out = exp.folder / CONDITIONS_DIR / cond.name
+    for name in (cond.name, f".{cond.name}.building"):
+        link = linked_away(exp, CONDITIONS_DIR, name)
+        if link is not None:
+            if link.name != CONDITIONS_DIR:  # `conditions` itself is reported once, when the file is read
+                exp.problems.error(link, f"conditions/{name} is a link to another folder, so nothing is "
+                                   "built there", fix=f"remove the link; TeamRunner builds `{cond.name}` "
+                                   "itself from experiment.md")
+            return False
     if out.exists() and not (out / MARKER).is_file():
         exp.problems.error(out, f"conditions/{cond.name}/ was not built by TeamRunner, so it is left alone",
                            fix=f"move or rename that folder; TeamRunner builds `{cond.name}` there from "
@@ -655,6 +710,13 @@ def _build_condition(exp: Experiment, cond: Condition) -> bool:
     copy_package(top, building)
     team_dir = building / inside
     # Whole files first, then fields, so a field change reads the file it lands in.
+    odd = [k for k in cond.changes if not isinstance(k, str)]
+    if odd:  # `7: remove`: YAML reads the key as a number, and a member's name is text
+        exp.problems.error(exp.path, f"`{odd[0]}` under `change:` should be a member, a file or a setting, "
+                           "written as text", line=cond.line, value=str(odd[0]),
+                           fix=f"if a member is really called that, quote it: `\"{odd[0]}\": …`")
+        shutil.rmtree(building)
+        return False
     ordered = sorted(cond.changes.items(), key=lambda kv: _is_field(kv[0]))
     for key, value in ordered:
         _apply(exp, cond, team_dir, str(key), value)
@@ -664,12 +726,30 @@ def _build_condition(exp: Experiment, cond: Condition) -> bool:
     rel = Path(os.path.relpath(cond.base, exp.folder)).as_posix()
     (building / MARKER).write_text(MARKER_TEXT.format(name=cond.name, experiment=EXPERIMENT_FILE, base=rel),
                                    encoding="utf-8")
-    if out.exists():
-        shutil.rmtree(out)
-    building.rename(out)
+    # A condition already built with these very files is left as it is: --plan, --summary and
+    # --export build too, and replacing the folder while a running experiment copies from it
+    # could crash that run (review 2026-11-21, NE16).
+    if out.exists() and _same_files(building, out):
+        shutil.rmtree(building)
+    else:
+        if out.exists():
+            shutil.rmtree(out)
+        building.rename(out)
     cond.folder = out / inside
     cond.generated = True
     return True
+
+
+def _same_files(one: Path, other: Path) -> bool:
+    """Two folders hold the same files with the same contents."""
+    def files(top):
+        return {p.relative_to(top).as_posix(): p for p in top.rglob("*") if p.is_file()}
+    a, b = files(one), files(other)
+    try:
+        return a.keys() == b.keys() and all(a[k].stat().st_size == b[k].stat().st_size
+                                            and a[k].read_bytes() == b[k].read_bytes() for k in a)
+    except OSError:
+        return False
 
 
 def copy_package(top: Path, dest: Path) -> None:
@@ -691,7 +771,10 @@ def copy_package(top: Path, dest: Path) -> None:
                 pass
         return shutil.copy2(src, dst)
 
-    shutil.copytree(top, dest, ignore=ignore, copy_function=link_or_copy, symlinks=False)
+    # A link that leads nowhere cannot be read in the team either, so the copy leaves it out as
+    # the team effectively does; `validate` names the link. Before, it was a crash (NS8).
+    shutil.copytree(top, dest, ignore=ignore, copy_function=link_or_copy, symlinks=False,
+                    ignore_dangling_symlinks=True)
 
 
 def _is_field(key: str) -> bool:
@@ -841,9 +924,16 @@ def _whole_file(exp: Experiment, line, key: str, target: Path, value, exists: bo
                                line=line, value=str(value),
                                fix=f"to change one setting, write `{key}.<setting>: …`")
         return
+    before = _id_of(target) if exists else None
     if exp.writing_ids:
         _give_id(source, target, exists)
     shutil.copyfile(source, target)
+    # One variant file may stand in for two members. It carries the first one's id, so in the
+    # second one's copy that id is put back to the member's own: left as it was, the two were
+    # duplicates and the experiment was refused for good (review 2026-11-21, NE18).
+    if before and _id_of(target) not in (None, before):
+        text = target.read_text(encoding="utf-8")
+        target.write_text(_ID.sub(f"id: {before}", text, count=1), encoding="utf-8")
 
 
 def _prompt(exp: Experiment, line, key: str, path: Path, value) -> None:
@@ -907,20 +997,43 @@ def _field(exp: Experiment, line, key: str, path: Path, names: list[str], value)
 
 # --- the study's hash (D138 (9)) ------------------------------------------------------
 
-def canonical_files(top: Path) -> dict[str, object]:
+def canonical_files(top: Path, notes_anywhere: bool = False) -> dict[str, object]:
     """A package's files as they matter to a run: settings as data (comments and
     spacing left out), prompts as their text, flows without comments, any other
     file by its hash. Ids are left out: `validate` writes them in (D64), and a
-    run of the base must not change every study built on it."""
+    run of the base must not change every study built on it.
+
+    A `.md` with no settings block is a note (D91) only in a team's own folder. In any
+    other folder it is data a run can read, and counts by its hash (review 2026-11-21,
+    NE5). `notes_anywhere` is the rule before 0.0.8, kept to recognise earlier runs."""
     files = {}
-    for path in sorted(top.rglob("*")):
+    for path in _every_file(top):
         inside = path.relative_to(top).parts
         if inside[0] == RUNS_DIR or any(p.startswith(".") for p in inside) or not path.is_file():
             continue
         if len(inside) == 1 and inside[0] == MARKER:
             continue
-        files["/".join(inside)] = _canonical(path)
+        value = _canonical(path)
+        if value is None and not notes_anywhere and not (path.parent / TEAM_FILE).is_file():
+            value = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        files["/".join(inside)] = value
     return {k: v for k, v in files.items() if v is not None}
+
+
+def _every_file(top: Path) -> list[Path]:
+    """Every file under `top`, a linked folder's files included, as the copy made for a run
+    has them: left out, the copy's hash differed from the plan's and every run stopped with
+    "changed while the experiment was running" (review 2026-11-21, NE17). A link back to a
+    folder already walked is not followed again."""
+    found, seen = [], set()
+    for folder, dirs, names in os.walk(top, followlinks=True):
+        real = os.path.realpath(folder)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
+        found += [Path(folder) / name for name in names]
+    return sorted(found)
 
 
 def _without_ids(data):
@@ -955,18 +1068,19 @@ def _canonical(path: Path):
     return {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
-def study_hash(top: Path, inputs: dict, seed: int) -> str:
+def study_hash(top: Path, inputs: dict, seed: int, notes_anywhere: bool = False) -> str:
     """Per condition: the resolved team, the task inputs and the seed (D138 (9))."""
-    blob = json.dumps({"team": canonical_files(top), "inputs": inputs, "seed": seed},
+    blob = json.dumps({"team": canonical_files(top, notes_anywhere), "inputs": inputs, "seed": seed},
                       sort_keys=True, ensure_ascii=False, default=str)
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def experiment_hash(exp: Experiment) -> str | None:
+def experiment_hash(exp: Experiment, before: bool = False) -> str | None:
     """The whole study: every condition's study hash. A run counts toward the study
     it was made in; when this changes, the command stops until --restart or
-    --keep-unchanged says what to do (D138 (9), amended)."""
-    hashes = {c.name: c.study_hash for c in exp.conditions}
+    --keep-unchanged says what to do (D138 (9), amended). `before`: as 0.0.7 and
+    earlier computed it (see `canonical_files`)."""
+    hashes = {c.name: c.study_hash_before if before else c.study_hash for c in exp.conditions}
     if any(h is None for h in hashes.values()):
         return None
     blob = json.dumps(hashes, sort_keys=True)

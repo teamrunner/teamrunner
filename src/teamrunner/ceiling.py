@@ -40,6 +40,26 @@ def max_reply(model: str, params: dict) -> int | None:
         return None
 
 
+def cannot_keep(uses, prices: Prices) -> list[str]:
+    """Why a hard ceiling could not be kept for these calls, each reason once: a model with
+    no list price, or one whose longest reply is not known. `uses` is (who, model, params).
+    Asked before anything runs, by an experiment and by a single run with --max-cost."""
+    found = []
+    for name, model, params in uses:
+        price = model_price(model, prices)
+        if price["input_per_million"] is None:
+            line = f"{model} has no list price; add it to {prices.shown}"
+        elif price["input_per_million"] == 0 and price.get("output_per_million") == 0:
+            continue  # a free model (the demo, a local one) fits any ceiling, as `worst_case` says (NU4)
+        elif max_reply(model, params) is None:
+            line = f"{name} on {model}: no known longest reply; give it `params: {{max_tokens: …}}`"
+        else:
+            continue
+        if line not in found:
+            found.append(line)
+    return found
+
+
 def prompt_tokens(model: str, messages: list[dict], schema: dict | None, tools: list[dict] | None) -> int:
     import litellm
     litellm.suppress_debug_info = True

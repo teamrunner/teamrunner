@@ -72,14 +72,14 @@ def insert_at_top(text: str, block: str) -> str:
 def reads_with_id(text: str, ulid: str, member: bool = False) -> bool:
     """Whether `text` still reads as settings, holding `id: <ulid>`."""
     from ruamel.yaml import YAML
-    from .loader import split_frontmatter
+    from .loader import load_tabs_as_spaces, split_frontmatter
     if member:
         parts = split_frontmatter(text)
         if parts is None or parts[1] is None:
             return False
         text = parts[0]
     try:
-        data = YAML(typ="safe").load(text)
+        data = load_tabs_as_spaces(YAML(typ="safe").load, text)
     except Exception:  # noqa: BLE001 — any failure to read means the id did not go in cleanly
         return False
     return isinstance(data, dict) and str(data.get("id")) == ulid
@@ -126,5 +126,17 @@ def _write_checked(path: Path, before: str, after: str, ulid: str, member: bool 
 
 
 def _write(path: Path, text: str) -> None:
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        stream.write(text)
+    """Written beside the file and moved into place, so another run starting at the same
+    moment reads the file whole, before or after, never half-written (review 2026-11-21,
+    NC10: of eight first runs at once, one read an empty team.yaml)."""
+    import os
+    import shutil
+    real = Path(os.path.realpath(path))  # a linked member keeps its link; the file it names is written
+    new = real.with_name(f".{real.name}.{os.getpid()}.new")
+    try:
+        with new.open("w", encoding="utf-8", newline="") as stream:
+            stream.write(text)
+        shutil.copymode(real, new)
+        os.replace(new, real)
+    finally:
+        new.unlink(missing_ok=True)

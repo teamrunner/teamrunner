@@ -73,6 +73,8 @@ def test_page_and_assets_require_token_and_ship_offline(tmp_path):
         status, headers, body = get(server, "/?" + urlencode({"token": server.token}), token=False)
         assert status == 200
         assert b"__TOKEN__" not in body
+        from teamrunner import __version__
+        assert f"Version {__version__}</p>".encode() in body and b"__VERSION__" not in body  # About & notices
         assert b"https://" not in body
         assert b"Serenity Partners LLC" in get(server, "/legal.txt")[2]
         assert b"cost overruns" in get(server, "/legal.txt")[2].lower()
@@ -847,6 +849,10 @@ def test_start_rehearsal_streams_to_completion_and_resumes_by_event_id(ui_team):
         assert len([e for e in logs if e["event"] == "agent_message"]) == 3
         assert [e["seq"] for e in logs] == list(range(1, len(logs) + 1))
         assert frames[-1]["event"] == "done" and frames[-1]["data"]["done"]
+        # The run timeline's rows come with the log, one per turn so far, and whole again on resume.
+        rows = [frame["data"] for frame in frames if frame["event"] == "digest"]
+        assert [turn["seq"] for turn in rows[-1]] == [e["seq"] for e in logs if e["event"] == "agent_message"]
+        assert frames[-2]["event"] == "digest"
         final = finish_job(server, job)
         record = json.loads((ui_team / final["folder"] / "record.json").read_text())
         assert record["status"] == "completed" and record["cost_usd"] == 0
@@ -855,6 +861,7 @@ def test_start_rehearsal_streams_to_completion_and_resumes_by_event_id(ui_team):
         route = "/api/live-events?" + urlencode({"id":job["id"]})
         resumed = sse_frames(get(server, route, headers={"Last-Event-ID":"3"})[2])
         assert [int(f["id"]) for f in resumed if f["event"] == "log"] == list(range(4, len(logs) + 1))
+        assert [f["data"] for f in resumed if f["event"] == "digest"][-1] == rows[-1]
         assert get(server, "/api/live-events?id=missing")[0] == 404
 
 
@@ -1113,10 +1120,236 @@ def test_the_run_dialog_is_given_an_estimate(ui_team):
     team_file.write_text(team_file.read_text().replace("teamrunner/demoLLM", "openai/gpt-5"))
     copy_from(EXAMPLES / "round_robin", ui_team / "demo_team")
     with running(ui_team) as server:
-        estimate = json.loads(get(server, "/api/run-setup?path=priced")[2])["estimate"]
+        estimate = json.loads(get(server, "/api/run-estimate?path=priced")[2])["estimate"]
         assert estimate["typical_usd"] > 0 and estimate["most_usd"] >= estimate["typical_usd"]
         assert estimate["calls"] == 3 and estimate["unpriced"] == []
-        free = json.loads(get(server, "/api/run-setup?path=demo_team")[2])["estimate"]
+        free = json.loads(get(server, "/api/run-estimate?path=demo_team")[2])["estimate"]
         assert free["typical_usd"] == 0 and free["most_usd"] == 0
-        unknown = json.loads(get(server, "/api/run-setup?path=debate")[2])["estimate"]
+        unknown = json.loads(get(server, "/api/run-estimate?path=debate")[2])["estimate"]
         assert unknown["typical_usd"] is None and unknown["unpriced"] == ["openrouter/google/gemma-4-31b-it"]
+
+
+# --- review 2026-11-21: security (NS7, NS9) and the browser page (NU1 to NU12) -----------------
+
+def test_the_estimate_is_capped_and_made_without_holding_the_file_lock(ui_team, monkeypatch):
+    """NU5: the Run dialog's request made the estimate while holding the file lock, and a chair
+    with thousands of steps held the whole page for minutes. The dialog no longer asks for it;
+    its own request reads the team under the lock, then walks the flow with the lock let go,
+    and gives up at a deadline."""
+    from threading import Thread
+    from teamrunner.build import load_team
+    from teamrunner.ui import jobs
+    team, _ = load_team(ui_team / "debate")
+    late = jobs.run_estimate(team, seconds=-1)  # the deadline has passed before the first turn
+    assert late["too_long"] and late["walks"] == 0 and late["typical_usd"] is None and "too many turns" in late["note"]
+    whole = jobs.run_estimate(team)
+    assert not whole["too_long"] and whole["walks"] == whole["of"] == 8 and whole["calls"] == 3
+    free = []
+    with running(ui_team) as server:
+        def walking(team):
+            def other():  # another request's thread: Save, say
+                free.append(server.files_lock.acquire(timeout=2))
+                if free[-1]:
+                    server.files_lock.release()
+            thread = Thread(target=other)
+            thread.start()
+            thread.join()
+            return {"typical_usd": 1.0}
+        monkeypatch.setattr(jobs, "run_estimate", walking)
+        setup = json.loads(get(server, "/api/run-setup?path=debate")[2])
+        assert "estimate" not in setup and free == []  # opening the dialog walks nothing
+        status, _, body = get(server, "/api/run-estimate?path=debate")
+        assert status == 200 and json.loads(body) == {"team": "debate", "estimate": {"typical_usd": 1.0}}
+        assert free == [True]
+        assert get(server, "/api/run-estimate?path=../outside")[0] == 403
+        assert get(server, "/api/run-estimate?path=debate", token=False)[0] == 403
+
+
+def experiment_on_debate(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEAMRUNNER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("TEAMRUNNER_WORKSPACE", raising=False)
+    root = tmp_path / "teamrunner"
+    (root / "teams").mkdir(parents=True)
+    with running(root) as server:
+        assert post(server, "/api/new", {"path": "debate", "example": "multi_agent_debate"})[0] == 200
+        assert post(server, "/api/new-experiment", {"name": "study", "team": "teams/debate"})[0] == 200
+    return root, "experiments/study"
+
+
+def test_variant_metric_and_task_stay_inside_the_opened_folder(tmp_path, monkeypatch):
+    """NS7: + Variant, + Metric and + Task never passed their target through the check every
+    other write gets. A `variants` that is a link wrote outside the folder, a link waiting at
+    the new file's name had its target created, and a source such as `.env` was copied into
+    a variant the page then shows."""
+    root, exp = experiment_on_debate(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / exp / "variants").symlink_to(outside, target_is_directory=True)
+    (root / exp / "metrics").symlink_to(root / "teams", target_is_directory=True)  # a link, though it stays inside
+    (root / exp / "tasks").mkdir()
+    (root / exp / "tasks" / "case1.yaml").symlink_to(outside / "made.yaml")  # leads nowhere yet
+    (root / "teams/debate/.env").write_text("OPENAI_API_KEY=sk-secret\n")
+    (root / "teams/debate/linked.md").symlink_to(outside / "notes.md")
+    (outside / "notes.md").write_text("---\ndescription: x\n---\nprivate notes\n")
+    with running(root) as server:
+        refused = [post(server, "/api/variant", {"experiment": exp, "name": "strict", "source": "debate/judge.md"}),
+                   post(server, "/api/metric", {"experiment": exp, "name": "graded", "kind": "evaluator"}),
+                   post(server, "/api/metric", {"experiment": exp, "name": "keyed", "kind": "answer_key"}),
+                   post(server, "/api/task", {"experiment": exp, "name": "case1"})]
+        assert [status for status, _ in refused] == [403] * 4, refused
+        assert all("link" in answer["error"] and str(tmp_path) not in answer["error"] for _, answer in refused)
+        assert sorted(p.name for p in outside.iterdir()) == ["notes.md"]
+        assert not list((root / "teams").glob("graded*")) and not list((root / "teams").glob("keyed*"))
+        (root / exp / "variants").unlink()
+        for source in ("debate/.env", "debate/.env#prompt", "debate/linked.md", "debate/team.yaml", "debate/../debate/judge.md"):
+            status, answer = post(server, "/api/variant", {"experiment": exp, "name": "copied", "source": source})
+            assert status == 400 and answer["error"] == "Choose one of the team's files.", (source, answer)
+        assert not (root / exp / "variants").exists()
+        assert post(server, "/api/variant", {"experiment": exp, "name": "strict", "source": "debate/judge.md"})[0] == 200
+        assert post(server, "/api/variant", {"experiment": exp, "name": "flow", "source": "debate/chair.md"})[0] == 200
+
+
+def test_one_metric_name_is_one_file(tmp_path, monkeypatch):
+    """Review 2026-11-21 (smaller): one name for an answer key and an evaluator made
+    metrics/x.yaml and metrics/x.md, both used by the same line under `metrics:`."""
+    root, exp = experiment_on_debate(tmp_path, monkeypatch)
+    with running(root) as server:
+        assert post(server, "/api/metric", {"experiment": exp, "name": "quality", "kind": "answer_key"})[0] == 200
+        status, answer = post(server, "/api/metric", {"experiment": exp, "name": "quality", "kind": "evaluator"})
+        assert status == 409 and answer["error"] == "metrics/quality.yaml already exists. Choose another name."
+        assert sorted(p.name for p in (root / exp / "metrics").iterdir()) == ["quality.yaml"]
+
+
+def test_open_run_folder_reveals_and_never_launches():
+    """NS9: on macOS `open <folder>` starts a folder that is an app bundle, and a downloaded
+    team can hold a run folder named `results.app`. `open -R` only selects it in Finder."""
+    from teamrunner.ui.runviews import reveal_command
+    folder = Path("/teams/debate/runs/2026-11-06_100000_results.app")
+    assert reveal_command("darwin", folder) == ["open", "-R", str(folder)]
+    assert reveal_command("linux", folder) == ["xdg-open", str(folder)]
+
+
+def test_a_new_team_is_never_made_inside_a_team(ui_team, tmp_path):
+    """NU9: + Team inside a team made a subteam, and the parent then failed with "teams inside
+    teams comes in a later version"."""
+    from teamrunner.validate import validate
+    with running(ui_team) as server:
+        for inner in ("debate/inner", "debate/models/inner"):
+            status, answer = post(server, "/api/new", {"path": inner})
+            assert status == 400 and answer["error"].startswith("debate is a team"), answer
+            assert post(server, "/api/new", {"path": inner, "example": "fact_checked"})[0] == 400
+        status, answer = post(server, "/api/describe", {"path": "debate/inner", "description": "A team.", "model": "x"})
+        assert status == 400 and answer["error"].startswith("debate is a team")
+        assert not (ui_team / "debate/inner").exists() and not (ui_team / "debate/models/inner").exists()
+        assert post(server, "/api/new", {"path": "beside"})[0] == 200
+    assert validate(ui_team / "debate").ok
+    with running(ui_team / "debate") as server:  # the opened folder is itself a team
+        status, answer = post(server, "/api/new", {"path": "inner"})
+        assert status == 400 and "itself a team" in answer["error"] and str(tmp_path) not in answer["error"]
+        assert not (ui_team / "debate/inner").exists()
+
+
+def test_dialogs_get_plain_sentences_without_whole_paths(ui_team, tmp_path):
+    """NU12: "[Errno 17] File exists: '/…/researcher.md'", "invalid literal for int()" and a
+    temporary folder's path in place of the uploaded file's name reached the dialogs."""
+    import base64
+    def raw(answer):
+        text = json.dumps(answer)
+        return "Errno" in text or "invalid literal" in text or str(tmp_path) in text or "teamrunner-ui-input" in text
+    with running(ui_team) as server:
+        assert post(server, "/api/member", {"path": "debate/researcher.md"})[0] == 200
+        status, answer = post(server, "/api/member", {"path": "debate/researcher.md"})
+        assert status == 409 and answer["error"] == "researcher.md already exists in this team. Choose another name."
+        for query in ("limit=many", "offset=x"):
+            status, _, body = get(server, "/api/runs?path=debate&" + query)
+            assert status == 400 and "whole number" in json.loads(body)["error"] and not raw(json.loads(body))
+        for mode, name, content in (("task", "task.yaml", b"not a task"), ("task", "task.yaml", b"inputs: [1\n"),
+                                    ("task", "task.yaml", b"inputs:\n  nobody_uses_this: 1\n")):
+            status, answer = post(server, "/api/start", {"path": "debate", "mode": mode, "rehearse": True,
+                                  "upload": {"name": name, "base64": base64.b64encode(content).decode()}})
+            assert status == 400 and not raw(answer), answer
+        status, answer = post(server, "/api/start", {"path": "debate", "mode": "task", "rehearse": True,
+                              "upload": {"name": "task.yaml", "base64": base64.b64encode(b"not a task").decode()}})
+        assert answer["error"].startswith("task.yaml should hold `inputs:`")
+        assert post(server, "/api/new", {"path": "fresh"})[0] == 200
+        status, answer = post(server, "/api/new", {"path": "fresh"})
+        assert status in (400, 409) and answer["error"].startswith("fresh already exists") and not raw(answer)
+
+
+def test_a_request_refused_for_its_size_is_answered_not_dropped(ui_team):
+    """NU8: a 13 MB request was refused with its body unread, so the connection was reset and
+    the browser reported a failed request, which the page took for the server having stopped."""
+    with running(ui_team) as server:
+        status, answer = post(server, "/api/start", {"path": "debate", "padding": "x" * (13 * 1024 * 1024)})
+        assert status == 413 and "too large" in answer["error"]
+        assert get(server, "/api/info")[0] == 200
+
+
+def test_rename_keeps_the_rules_of_new_member(ui_team):
+    """Review 2026-11-21 (smaller): Rename took names + Member refuses, and made the chair a member."""
+    with running(ui_team) as server:
+        chair = post(server, "/api/chair", {"path": "debate"})[1]
+        status, answer = post(server, "/api/rename", {**chair, "destination": "debate/boss.md"})
+        assert status == 400 and "Keep chair.md" in answer["error"] and (ui_team / "debate/chair.md").exists()
+        status, member = post(server, "/api/member", {"path": "debate/researcher.md"})
+        for name in ("chair.md", "manager.md", "readme.md", "done.md", "two words.md", "9.md"):
+            assert post(server, "/api/rename", {**member, "destination": f"debate/{name}"})[0] == 400, name
+        assert (ui_team / "debate/researcher.md").exists()
+        assert post(server, "/api/rename", {**member, "destination": "debate/04_reviewer.md"})[0] == 200
+
+
+def test_the_runs_list_names_an_input_file_and_the_folder_it_read(ui_team):
+    """Review 2026-11-21 (smaller): a file run showed the start of the file's whole path, the
+    same for every file run; and the footer's command was given the file chosen in the sidebar."""
+    import base64
+    with running(ui_team) as server:
+        status, job = post(server, "/api/start", {"path": "debate", "rehearse": True, "mode": "file",
+                           "upload": {"name": "brief.txt", "base64": base64.b64encode(b"The brief.").decode()}})
+        assert status == 200
+        finish_job(server, job)
+        listed = json.loads(get(server, "/api/runs?path=debate/team.yaml")[2])
+        assert listed["source"] == "debate" and [run["message"] for run in listed["runs"]] == ["brief.txt (file)"]
+
+
+def test_the_digest_gives_one_row_per_turn_for_any_team():
+    """The run timeline and the run wall are drawn from this, so it names no field or member:
+    a tool call counts with the member's next message, or its last when none follows; a
+    route decision counts with the decider's turn; a long output is never a value."""
+    from teamrunner.ui.runviews import digest
+    events = [
+        {"event": "run_started", "seq": 1},
+        {"event": "tool_call", "seq": 2, "from": "reader", "tool": "read_email", "access": "refused"},
+        {"event": "agent_message", "seq": 3, "from": "reader", "content": "It needs an answer.", "read": [],
+         "output": {"lines": "10, 12,  15", "Urgent": True, "why": "x" * 40}, "usage": {"input": 100, "output": 9},
+         "cost_usd": 0.002, "latency_ms": 1500, "stage": "sort"},
+        {"event": "route_decision", "seq": 4, "decider": "reader", "field": "lines", "option": "10, 12, 15",
+         "to": "answer", "bound_applied": True},
+        {"event": "agent_message", "seq": 5, "from": "clerk", "content": "", "read": [3], "block": "answer",
+         "pass": {"number": 2, "of": 3}, "usage": {}},
+        {"event": "tool_call", "seq": 6, "from": "clerk", "tool": "save_draft", "access": "allowed"},
+        {"event": "agent_message", "seq": 7},          # an event of an unexpected shape is still a turn
+        "not an event",
+    ]
+    reader, clerk, odd = digest(events)
+    assert reader["outputs"] == {"lines": "10,12,15", "Urgent": "true"} and reader["long"] == ["why"]
+    assert reader["tools"] == [{"tool": "read_email", "access": "refused"}]
+    assert reader["route"] == {"field": "lines", "option": "10, 12, 15", "to": "answer", "limit": True}
+    assert (reader["words"], reader["tokens_read"], reader["cost"], reader["ms"]) == (4, 100, 0.002, 1500)
+    assert (reader["group"], reader["round"], reader["read"]) == ("sort", None, [])
+    assert (clerk["group"], clerk["round"], clerk["words"], clerk["read"]) == ("answer", 2, 0, [3])
+    assert clerk["tools"] == [{"tool": "save_draft", "access": "allowed"}] and clerk["route"] is None
+    assert odd["member"] == "member" and odd["read"] is None and odd["outputs"] == {}
+    assert "read" not in digest(events, reads=False)[0]
+
+
+def test_a_run_and_the_wall_carry_the_digest(recorded_runs):
+    with running(recorded_runs) as server:
+        assert "digest" not in json.loads(get(server, "/api/runs")[2])["runs"][0]
+        wall = json.loads(get(server, "/api/runs?wall=1")[2])["runs"]
+        middle = next(r for r in wall if r["path"].endswith("2026-11-06_100000_debate"))
+        assert [t["member"] for t in middle["digest"]] == ["for", "judge"]
+        assert middle["digest"][1]["outputs"] == {"winner": "for"} and "read" not in middle["digest"][1]
+        one = json.loads(get(server, "/api/run?" + urlencode({"path": middle["path"]}))[2])
+        assert one["digest"][1]["read"] == [3, 4] and one["digest"][1]["route"]["field"] == "winner"
+        assert [c["access"] for c in one["digest"][1]["tools"]] == ["allowed", "retry"]
+        assert get(server, "/picture.js")[0] == 200

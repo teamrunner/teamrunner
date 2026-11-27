@@ -173,8 +173,54 @@ def plan(folder: Path, out, prices=None, walks: int = WALKS, max_cost: float | N
     _estimate(exp, out, prices if prices is not None else load_prices(), walks, *ceiling_of(exp, max_cost))
     for w in warnings:
         say(out.paint.yellow(f"! {_where(w, root)}  {w.message}"))
+    needed = keys_needed(exp)
+    if needed:  # so a missing key is known before the first real run, not at it
+        say("Keys needed: " + ", ".join(f"{name} ({'found' if e['found'] else 'missing'})"
+                                        for name, e in needed.items()))
+        if say_missing_keys(out, needed):
+            say(out.paint.yellow("! a real run will not start until every key is found; "
+                                 "--rehearse needs none"))
     say(out.paint.dim("Nothing was run and nothing was spent."))
     return 0
+
+
+def keys_needed(exp: Experiment, members: bool = True, evaluators: bool = True) -> dict[str, dict]:
+    """Every key the experiment's runs and evaluations need, each once: who needs it (the
+    conditions, the evaluators) and whether it is found, looked up as a run looks it up.
+    One place for `--plan`, the check before round 1 and the page (review 2026-11-21, ND7)."""
+    from .checks import needed_keys
+    from .keys import PROVIDER_KEYS, find_keys
+    from .loader import find_top
+    from .metrics import Evaluator
+    found: dict[str, dict] = {}
+    if members:
+        for c in exp.conditions:
+            if c.report is None or not c.report.ok or c.folder is None:
+                continue
+            names = needed_keys(_team(c.report))
+            missing = set(find_keys(names, find_top(c.folder), None).missing)
+            for name in names:
+                entry = found.setdefault(name, {"who": [], "found": True})
+                entry["who"].append(c.name)
+                entry["found"] = entry["found"] and name not in missing
+    if evaluators:
+        for ev in [m for m in exp.measures if isinstance(m, Evaluator)]:
+            name = PROVIDER_KEYS.get(ev.model.split("/", 1)[0])
+            if name:
+                entry = found.setdefault(name, {"who": [], "found": name not in find_keys([name], None, None).missing})
+                entry["who"].append(f"the evaluator {ev.name}")
+    return found
+
+
+def say_missing_keys(out, needed: dict[str, dict]) -> bool:
+    """Name every missing key and who needs it, as `validate` words it. True when any is missing."""
+    missing = {name: e for name, e in needed.items() if not e["found"]}
+    for name, entry in missing.items():
+        out.say(f"  {name}: needed by {', '.join(entry['who'])}; not found in ~/.teamrunner/.env, "
+                "your shell or the package")
+    if missing:
+        out.say("  add each to ~/.teamrunner/.env as NAME=value, or with Set up keys in `teamrunner ui`")
+    return bool(missing)
 
 
 def per_run(exp: Experiment, prices, walks: int = WALKS, reply_tokens: int | None = REPLY_TOKENS
@@ -235,7 +281,7 @@ def _estimate(exp: Experiment, out, prices, walks: int, ceiling: float | None, c
     say(out.paint.dim("  it is made again from real costs after round 1"))
     say(f"  at most ≈ {_money(most)} if every reply ran to its max_tokens"
         + (out.paint.dim(" — above the ceiling, but no real run comes near it: the ceiling stops "
-                         "new calls before then") if ceiling is not None and most > ceiling else ""))
+                         "new calls before then") if ceiling is not None and most is not None and most > ceiling else ""))
     for line in litellm_max_lines(exp):
         say(f"    {line}")
     unpriced = c["unpriced"]

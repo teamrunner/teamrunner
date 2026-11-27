@@ -48,6 +48,10 @@ class Options:
     message: str | None = None
     file: Path | None = None
     task_file: Path | None = None
+    # An experiment gives every run the task inputs it read when it was built, so a task file
+    # edited while it runs cannot put two tasks under one study (review 2026-11-21, NE3)
+    task_inputs: dict | None = None
+    inputs: list[str] | None = None  # `--input name=value`, as typed
     runs_dir: Path | None = None
     verbose: bool = False
     quiet: bool = False
@@ -193,7 +197,7 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         console = Console(options.verbose)
 
     try:
-        given = resolve(team, options.message, options.file, options.task_file)
+        given = resolve(team, options.message, options.file, options.task_file, options.task_inputs, options.inputs)
     except InputError as e:
         if console:
             console.say(console.paint.red(f"✗ {e}"))
@@ -239,6 +243,20 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         return Outcome("could_not_start", EXIT["could_not_start"], report=report,
                        reason="the check before the first turn found problems", check=check)
 
+    # A single run's own ceiling is checked before the run, as an experiment's is before round
+    # 1: found at a member's first turn, the turns before it were already paid (NC8).
+    if wrap is None and options.max_cost is not None and prices is not None:
+        from .ceiling import cannot_keep
+        missing = cannot_keep([(m.name, m.model.value, {k: s.value for k, s in m.params.items()})
+                               for m in team.members.values() if m.kind != "toolkeeper"], prices)
+        if missing:
+            if console:
+                console.say(console.paint.red("✗ the ceiling cannot be kept, so nothing was run:"))
+                for line in missing:
+                    console.say(f"  {line}")
+            return Outcome("could_not_start", EXIT["could_not_start"], report=report,
+                           reason="the ceiling cannot be kept: " + "; ".join(missing))
+
     if options.run_folder is not None:
         options.run_folder.mkdir(parents=True, exist_ok=True)
         run = RunFolder(options.run_folder)
@@ -246,16 +264,29 @@ def run_team(folder: Path, options: Options, model_factory: Callable[..., Model]
         run = RunFolder.create(team.package_top, team.name, options.runs_dir)
     if on_folder:
         on_folder(run.path)
-    copy_files(given, run.inputs_dir)
-    values = {name: item.value for name, item in given.items()}
-    secrets = list(keys.values.values())
-    log = Log(on_event=lambda e: (run.write_event(e), console.on_event(e) if console else None,
-                                 on_event(e) if on_event else None), secrets=secrets)
-    started_at = datetime.now(timezone.utc)
-    inputs_record = {name: {"value": item.value, "source": item.source,
-                            **({"file": item.file} if item.file else {})} for name, item in given.items()}
-    print_fp = fingerprint(team.package_top)
-    price_list = _price_list(team, prices) if prices is not None else None
+    # Anything that goes wrong while the run is set up (a file that cannot be copied or read)
+    # ends it as a run that could not start, with the reason, and leaves no empty folder (NC3).
+    try:
+        copy_files(given, run.inputs_dir)
+        values = {name: item.value for name, item in given.items()}
+        secrets = list(keys.values.values())
+        log = Log(on_event=lambda e: (run.write_event(e), console.on_event(e) if console else None,
+                                     on_event(e) if on_event else None), secrets=secrets)
+        started_at = datetime.now(timezone.utc)
+        inputs_record = {name: {"value": item.value, "source": item.source,
+                                **({"file": item.file} if item.file else {}),
+                                **({"via": item.via} if item.via else {})} for name, item in given.items()}
+        print_fp = fingerprint(team.package_top)
+        price_list = _price_list(team, prices) if prices is not None else None
+    except (OSError, UnicodeError) as e:
+        run.close()
+        if options.run_folder is None:
+            import shutil
+            shutil.rmtree(run.path, ignore_errors=True)
+        reason = f"the run could not be set up: {e}"
+        if console:
+            console.say(console.paint.red(f"✗ {reason}"))
+        return Outcome("could_not_start", EXIT["could_not_start"], report=report, reason=reason)
     try:
         members_record = _members_record(team, values)
     except MissingInput as e:  # validate and resolve make this unreachable; kept as a guard

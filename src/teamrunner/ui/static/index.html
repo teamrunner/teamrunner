@@ -14,6 +14,7 @@
   <script defer src="/vendor/mermaid.js?token=__TOKEN__"></script>
   <script defer src="/app.js?token=__TOKEN__"></script>
   <script defer src="/runs.js?token=__TOKEN__"></script>
+  <script defer src="/picture.js?token=__TOKEN__"></script>
   <script defer src="/diagrams.js?token=__TOKEN__"></script>
   <script defer src="/run.js?token=__TOKEN__"></script>
   <script defer src="/experiments.js?token=__TOKEN__"></script>
@@ -24,6 +25,7 @@
     <span class="topbar-end"><button id="legal-notices" type="button">About &amp; notices</button><button id="feedback" type="button" title="Report a bug, ask a question or suggest an idea">Feedback</button><span class="local"><span aria-hidden="true">●</span> On your computer</span></span>
   </header>
   <div id="server-lost" class="server-lost" role="alert" hidden><p><b>TeamRunner has stopped running on your computer.</b> Nothing on this page can be saved or run until it is started again. Unsaved text is still in the editor: copy it before you close this tab. To carry on, run <code>teamrunner ui</code> again and open the address it prints.</p><button type="button" id="copy-unsaved">Copy the editor’s text</button></div>
+  <div id="crash-bar" class="server-lost crash-bar" role="alert" hidden><p><b>TeamRunner hit a problem it did not expect.</b> <span id="crash-what"></span> Reporting it opens a bug report on GitHub, filled in with your version, your system and where it happened; nothing is posted until you press Submit. <span id="crash-details"></span> <span id="crash-sent"></span></p><button type="button" id="crash-report">Report this problem</button><span>No GitHub account? Write to <a id="crash-mail"></a></span><button type="button" id="crash-dismiss">Dismiss</button></div>
   <div class="subnav"><nav aria-label="What you are working on" class="modes"><button id="teams-mode" type="button" aria-pressed="true" title="Your teams: their files, their runs and the run history">Teams<span id="run-dot" hidden title="A run is in progress"> ●</span></button><button id="experiments-mode" type="button" aria-pressed="false" title="Your experiments: their plans, runs by condition and summaries (teamrunner experiment)">Experiments<span id="experiments-dot" hidden title="An experiment is running"> ●</span></button></nav><nav class="views" aria-label="View"><button id="files-view" type="button" aria-pressed="true" title="Edit the files in the sidebar">Files</button><button id="flow-view" type="button" aria-pressed="false" title="The selected team’s flow, drawn from chair.md (teamrunner explain --diagram)">Flow diagram</button><button id="plan-view" type="button" aria-pressed="false" hidden title="The selected experiment’s conditions, differences, order of runs and cost (teamrunner experiment --plan)">Plan</button><button id="runs-view" type="button" aria-pressed="false" title="The selected team’s runs; open one to read it (teamrunner runs)">Runs</button><button id="summary-view" type="button" aria-pressed="false" hidden title="The selected experiment’s results by condition (teamrunner experiment --summary)">Summary</button></nav></div>
   <main>
     <aside aria-label="Package files">
@@ -97,6 +99,7 @@
         <div class="live-heading"><h3 id="live-title">Run in progress</h3><button id="stop-run" type="button">Stop run</button><button id="browse-finished" type="button" hidden>Browse saved run</button></div>
         <p id="live-status" role="status" aria-live="polite"></p><p id="live-waiting" role="status" aria-live="polite" hidden></p><p id="live-cost"></p>
         <p id="live-connection" role="status"></p><pre id="live-check" hidden></pre>
+        <section id="live-picture" class="picture" hidden aria-label="Run timeline"></section>
         <div id="live-events" aria-label="Live conversation"></div>
         <code id="live-command"></code>
       </section>
@@ -104,6 +107,7 @@
                 <h3 id="run-title"></h3><p id="run-meta"></p>
         <div class="raw-links"><button id="open-run-folder" type="button">Open folder</button><button id="refresh-run" type="button">Refresh</button><button id="rerun" type="button">Re-run with these inputs…</button><span id="raw-run-files"></span></div>
         <p id="run-warnings" role="status"></p>
+        <section id="run-picture" class="picture" hidden aria-label="Run timeline"></section>
         <nav class="run-tabs" aria-label="Run view"><button type="button" id="conversation-tab" aria-pressed="true">Conversation</button><button type="button" id="output-tab" aria-pressed="false">Output</button><button type="button" id="path-tab" aria-pressed="false">Path</button><button type="button" id="record-tab" aria-pressed="false">Record</button></nav>
         <section id="run-conversation" aria-label="Conversation"></section>
         <section id="run-output" class="markdown" hidden aria-label="Output"></section>
@@ -121,9 +125,10 @@
           <label>Status<select id="runs-status"><option value="">All statuses</option></select></label>
           <label class="run-search">Search message and output<input id="runs-search" type="search" placeholder="Find a topic, phrase or result…"></label>
         </div>
-        <p id="runs-count" role="status"></p><button id="compare-runs" type="button" disabled>Compare selected runs</button>
+        <p id="runs-count" role="status"></p><div class="picture-choice" id="runs-shape"><span class="bar-label">SHOW AS</span><button id="runs-as-table" type="button" aria-pressed="true">Table</button><button id="runs-as-wall" type="button" aria-pressed="false" title="Every run as a small picture of its turns">Wall</button></div><button id="compare-runs" type="button" disabled>Compare selected runs</button>
         <div id="run-column-controls" hidden><button id="previous-columns" type="button">← Previous columns</button><button id="next-columns" type="button">More columns →</button></div>
         <div class="runs-table-wrap" tabindex="0" role="region" aria-label="Run list; scroll horizontally for all columns"><table id="runs-table"><thead><tr><th>Compare</th><th>When</th><th>Team</th><th>Message</th><th>Result</th><th>Status</th><th>Turns</th><th>Length</th><th>Cost ≈</th></tr></thead><tbody id="runs-rows"></tbody></table></div>
+        <div id="runs-wall" hidden aria-label="Run wall"></div>
         <button id="more-runs" type="button" hidden>Show more runs</button>
       </div>
       <article id="run-comparison" hidden></article>
@@ -205,10 +210,11 @@
   </dialog>
   <dialog id="legal-dialog" aria-labelledby="legal-title">
     <h2 id="legal-title">About TeamRunner</h2>
+    <p class="about-version">Version __VERSION__</p>
     <p>Copyright 2026 Kumar Muthuraman.<br>Publisher and demo gateway operator: Serenity Partners LLC.<br>Contact: hello@teamrunner.ai.</p>
     <p>The engine is GPL-3.0-or-later; designated examples and templates are MIT-0. You may redistribute and modify the engine under GPL-3.0-or-later. Provided as is, without warranty, subject to applicable law.</p>
     <p><strong>All costs are estimates. Actual provider charges can exceed estimates and configured budgets.</strong> Budget checks do not cap provider billing. Monitor your account and set provider spending controls where available. You are responsible for your account's charges. To the maximum extent permitted by law, the publisher, author, copyright holders, and contributors disclaim liability for provider charges and cost overruns.</p>
-    <p>Model requests go to your configured endpoint. The sponsored demo sends prompts through the Serenity Partners LLC gateway to the demo's model provider (currently Anthropic), and stores IP-based quota counters. Do not send private or sensitive information to the demo. The local client has no separate usage telemetry; tools and downloads can still make network requests. Local logs can contain sensitive inputs and outputs.</p>
+    <p>Model requests go to your configured endpoint. The sponsored demo sends prompts through the Serenity Partners LLC gateway to the demo's model provider (currently Anthropic), and stores IP-based quota counters. Do not send private or sensitive information to the demo. Once a day the local client checks its version, and when it hits a problem it did not expect it sends a small crash report (its version, your system, the kind of error and where in TeamRunner's code; TEAMRUNNER_NO_CRASH_REPORTS=1 stops this). It has no other usage telemetry; tools and downloads can still make network requests. Local logs can contain sensitive inputs and outputs.</p>
     <p>Verify AI outputs independently, review unfamiliar teams and tool permissions, and redact logs before sharing.</p>
     <p><a href="/legal.txt?token=__TOKEN__" target="_blank" rel="noopener noreferrer">Full notices and data disclosures</a> · <a href="/license.txt?token=__TOKEN__" target="_blank" rel="noopener noreferrer">GPL license and warranty terms</a></p>
     <form method="dialog"><button type="submit">Close</button></form>

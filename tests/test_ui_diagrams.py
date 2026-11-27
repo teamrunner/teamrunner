@@ -102,6 +102,20 @@ def test_saved_team_copy_preserves_history_and_restamps(tmp_path):
         assert post(server,'/api/restore-team',{'path':a,'destination':'links'})[0]==403
 
 
+def test_saved_team_copy_goes_in_the_workspaces_teams_and_never_in_a_team(tmp_path):
+    """Review 2026-11-21, NU11: in a workspace the copy was put at its top, where the Teams
+    sidebar never shows it."""
+    (tmp_path/'teams').mkdir()
+    team,a,_=history(tmp_path)
+    shutil.copytree(team,tmp_path/a/'resolved',ignore=shutil.ignore_patterns('runs'))
+    with running(tmp_path) as server:
+        status,data=post(server,'/api/restore-team',{'path':a,'destination':'saved_copy'})
+        assert status==200 and data['path']=='teams/saved_copy/team.yaml'
+        assert not (tmp_path/'saved_copy').exists()
+        status,data=post(server,'/api/restore-team',{'path':a,'destination':'teams/saved_copy/inner'})
+        assert status==400 and data['error'].startswith('teams/saved_copy is a team')
+
+
 def test_stopped_path_has_no_invented_finish(tmp_path):
     from threading import Event
     from teamrunner.ui.runviews import detail

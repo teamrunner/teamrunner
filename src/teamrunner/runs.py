@@ -238,7 +238,7 @@ def replay(record: RunRecord, out: Console) -> None:
         if kind == "run_started":
             started = event
             out.on_event(event)  # the console learns who decides and which outputs to show
-            inputs = {k: SimpleNamespace(value=v.get("value"), source=v.get("source"))
+            inputs = {k: SimpleNamespace(value=v.get("value"), source=v.get("source"), via=v.get("via"))
                       for k, v in (event.get("inputs") or {}).items()}
             out.header(record.team, inputs)
             if event.get("rehearsal"):

@@ -88,6 +88,12 @@ class Console:
             shown = shown if len(shown) <= 60 else shown[:57] + "…"
             parts.append(f"{item.source} input {name}: \"{shown}\"")
         self.say(" · ".join(parts))
+        for name, item in inputs.items():  # no `message_goes_to:` line chose it (§8)
+            via = getattr(item, "via", None)
+            if via:
+                what = "your message" if via == "--message" else "your file"
+                why = "the input named message" if name == "message" else "the team's only input"
+                self.say(f"  {what} went to {name}, {why}")
 
     def check(self, check, keys, refusing: str = "the run cannot start") -> None:
         p = self.paint
@@ -211,6 +217,10 @@ class Console:
 
     def _retry(self, e: dict) -> None:
         who = e["instance_path"].rsplit("/", 1)[-1]
+        if e["kind"] == "unfinished":  # the run's last line says why it ended; this keeps the cost
+            if self.verbose:
+                self.say(self.paint.dim(f"    {who}: {e['reason']}"))
+            return
         if self.verbose:  # kept in the output, as a record of each retry
             if e["kind"] == "output":
                 self.say(self.paint.yellow(f"    ↻ {who}'s reply did not fit: {e['reason']}"))

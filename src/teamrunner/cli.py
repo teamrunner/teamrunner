@@ -7,10 +7,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import __version__
 from .ids import short
+from .keys import KeyFileError
 from .problems import ERROR
 from .validate import NotATeam, Report, validate
 
@@ -103,6 +105,10 @@ def cmd_validate(args) -> int:
         print(json.dumps(data, indent=2, ensure_ascii=False))
         return 0 if data["ok"] else 1
     print_problems(report, out)
+    for note in report.package.team.notes:  # said, not warned: notes beside the members are allowed (D91)
+        if note.name.lower() != "readme.md":
+            print(out.dim(f"· {note.name} has no settings block (the `---` lines at the top), so it is a "
+                          "note, not a member"))
     if args.verbose:
         team = report.package.team
         for member in team.members:
@@ -147,7 +153,7 @@ def cmd_run(args) -> int:
     from .run import EXIT, Options, run_team
     out = Style(sys.stdout)
     interactive = sys.stdin.isatty() and sys.stdout.isatty() and not args.quiet
-    options = Options(message=args.message, file=args.file, task_file=args.task_file,
+    options = Options(message=args.message, file=args.file, task_file=args.task_file, inputs=args.input,
                       runs_dir=args.runs_dir, verbose=args.verbose, quiet=args.quiet,
                       ask=ask_at_keyboard if interactive else None, rehearse=args.rehearse,
                       max_cost=args.max_cost, max_cost_from="--max-cost" if args.max_cost is not None else None)
@@ -242,6 +248,13 @@ def cmd_gather(args) -> int:
         if ask_at_keyboard("Replace each with a real copy, here in the package?", ["Yes", "No"]) != "Yes":
             print(out.dim("nothing changed"))
             return 1
+    gone = [link for link, target in links if not target.exists()]
+    if gone:  # before any is replaced: stopping part-way left some links copied and some not
+        for link in gone:
+            print(out.red(f"✗ {link.relative_to(top.parent)} leads to something that is not there"),
+                  file=sys.stderr)
+        print(out.dim("nothing changed; remove or fix those links, then run gather again"))
+        return 1
     for link, target in links:
         replace(link, target)
         print(f"{out.green('✓')} {link.relative_to(top.parent)} is now a copy")
@@ -386,6 +399,8 @@ def cmd_explain(args) -> int:
     elif args.diagram:
         if args.save:
             page = team.folder / f"{team.folder.name}_flow.html"
+            if page.is_symlink():  # a link planted under that name: the page replaces the link,
+                page.unlink()      # never the file it leads to (review 2026-11-21, NS11)
             page.write_text(diagram_page(team), encoding="utf-8")
         else:  # a new name each time, made only for this user: nothing else can write it first
             import os
@@ -425,7 +440,8 @@ def cmd_skill(args) -> int:
 def cmd_update(args) -> int:
     """Update TeamRunner the way it was installed (uv tool, pipx, uv pip or pip)."""
     import subprocess
-    from .version_check import how_installed
+    import tempfile
+    from .version_check import SAFE_PATH, how_installed
     out, err = Style(sys.stdout), Style(sys.stderr)
     command, how = how_installed()
     if command is None:
@@ -436,20 +452,24 @@ def cmd_update(args) -> int:
                       f"Run `{' '.join(command)}` where it is."), file=sys.stderr)
         return 1
     print(out.dim(f"Updating TeamRunner {__version__} with {how}: {' '.join(command)}"), flush=True)
-    try:
-        done = subprocess.run(command)
-    except OSError as e:
-        print(err.red(f"✗ Could not run {command[0]}: {e}"), file=sys.stderr)
-        return 1
-    if done.returncode != 0:
-        print(err.red(f"✗ The update did not finish ({how} stopped with code {done.returncode}); "
-                      "TeamRunner is unchanged."), file=sys.stderr)
-        return 1
-    try:  # the version now installed, asked of the updated copy rather than this running one
-        now = subprocess.run([sys.executable, "-c", "import teamrunner; print(teamrunner.__version__)"],
-                             capture_output=True, text=True, timeout=30).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        now = ""
+    # Both commands run from an empty folder, never the one you are in: Python would import a
+    # `pip.py` or `teamrunner.py` lying there, and uv would read a `uv.toml` (review 2026-11-21, NS3).
+    with tempfile.TemporaryDirectory(prefix="teamrunner-update-") as empty:
+        try:
+            done = subprocess.run(command, cwd=empty)
+        except OSError as e:
+            print(err.red(f"✗ Could not run {command[0]}: {e}"), file=sys.stderr)
+            return 1
+        if done.returncode != 0:
+            print(err.red(f"✗ The update did not finish ({how} stopped with code {done.returncode}); "
+                          "TeamRunner is unchanged."), file=sys.stderr)
+            return 1
+        try:  # the version now installed, asked of the updated copy rather than this running one
+            now = subprocess.run([sys.executable, *SAFE_PATH, "-c",
+                                  "import teamrunner; print(teamrunner.__version__)"], cwd=empty,
+                                 capture_output=True, text=True, timeout=30).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            now = ""
     if now and now == __version__:
         print(f"{out.green('✓')} TeamRunner is still {now}: {how} found nothing newer to install.")
     else:
@@ -614,6 +634,8 @@ def main(argv=None) -> int:
     given.add_argument("--message", "-m", help="text for the input `message_goes_to:` names")
     given.add_argument("--file", type=Path, help="a file for the input `message_goes_to:` names")
     r.add_argument("--task-file", type=Path, help="a YAML file of inputs, under `inputs:`")
+    r.add_argument("--input", "-i", action="append", metavar="NAME=VALUE",
+                   help="one input by name, as plain text; repeat it for several")
     r.add_argument("--runs-dir", type=Path, help="keep the run somewhere other than the package's runs/")
     r.add_argument("--rehearse", action="store_true",
                    help="no model: placeholder words and random answers, to check the flow for free")
@@ -709,6 +731,11 @@ def main(argv=None) -> int:
                          help="when the study has changed: keep the runs of conditions that did not change")
     e.set_defaults(func=cmd_experiment)
 
+    rp = commands.add_parser("report", help="report a problem: opens a bug report in your browser, filled in "
+                             "with the last crash; nothing is posted until you press Submit")
+    rp.add_argument("--no-browser", action="store_true", help="print the address instead of opening it")
+    rp.set_defaults(func=cmd_report)
+
     args = parser.parse_args(argv)
     if args.update:  # before the version check, so a copy that refuses to run can still update itself
         if args.command:
@@ -721,33 +748,85 @@ def main(argv=None) -> int:
     if refused is not None:
         return refused
     try:
-        return args.func(args)
+        with _stopped_like_ctrl_c():
+            return args.func(args)
     except NotFound as e:
         print(Style(sys.stderr).red(f"✗ {e}"), file=sys.stderr)
         return 2 if args.func is cmd_validate else 1  # what each command gave for a missing folder before
+    except KeyFileError as e:  # a key file no command can read: say which, and how to save it (NC2)
+        print(Style(sys.stderr).red(f"✗ {e}"), file=sys.stderr)
+        return 1
     except Exception as e:  # the last resort: one plain line, never a traceback (review 2026-11-16, C5)
         return _unexpected(e)
 
 
-def _unexpected(error: Exception) -> int:
-    """Say plainly that something unforeseen went wrong, and keep the details for a bug report
-    in ~/.teamrunner/last-error.txt, with any key hidden."""
-    import traceback
-    from .keys import hide, key_file, read_env
-    details = hide(traceback.format_exc(), list(read_env(key_file()).values()))
-    kept = key_file().parent / "last-error.txt"
+@contextmanager
+def _stopped_like_ctrl_c():
+    """While a command runs, being asked to end (`kill`, or the terminal closing) stops it as
+    Ctrl-C does: runs in progress write their records, so what they spent is counted the next
+    time (review 2026-11-21, NE13). Before, such runs were left with no record at all."""
+    import signal
+    import threading
+
+    def stop(number, frame):
+        raise KeyboardInterrupt
+
+    before = {}
+    if threading.current_thread() is threading.main_thread():
+        for name in ("SIGTERM", "SIGHUP"):
+            number = getattr(signal, name, None)
+            if number is not None:
+                try:
+                    before[number] = signal.signal(number, stop)
+                except (ValueError, OSError):
+                    pass
     try:
-        kept.parent.mkdir(parents=True, exist_ok=True)
-        kept.write_text(f"teamrunner {__version__}\n{' '.join(sys.argv[1:])}\n\n{details}", encoding="utf-8")
-        where = f"; the details are in {kept}"
-    except OSError:
-        where = ""
-    message = hide(str(error).splitlines()[0] if str(error) else type(error).__name__,
-                   list(read_env(key_file()).values()))
-    print(Style(sys.stderr).red(f"✗ TeamRunner hit a problem it did not expect: {message}{where}. "
-                                "Please report it: https://github.com/teamrunner/teamrunner/issues"),
-          file=sys.stderr)
+        yield
+    finally:
+        for number, handler in before.items():
+            try:
+                signal.signal(number, handler)
+            except (ValueError, OSError, TypeError):
+                pass
+
+
+def _unexpected(error: Exception) -> int:
+    """Say plainly that something unforeseen went wrong (a crash, D165): keep the details for
+    a bug report in ~/.teamrunner/last-error.txt, with any key hidden, send the small crash
+    report, and name the command that files a bug report."""
+    from . import crash
+    from .keys import hide, stored_secrets
+    found = crash.record(error, " ".join(sys.argv[1:]))
+    where = f"; the details are in {found['kept']}" if found["kept"] else ""
+    message = hide(str(error).splitlines()[0] if str(error) else type(error).__name__, stored_secrets())
+    err = Style(sys.stderr)
+    print(err.red(f"✗ TeamRunner hit a problem it did not expect: {message}{where}. "
+                  "To report it: teamrunner report"), file=sys.stderr)
+    if found["sent"]:
+        print(f"  {crash.SENT}", file=sys.stderr)
     return 3
+
+
+def cmd_report(args) -> int:
+    """Open a bug report in the browser, filled in with the last crash (D165 (7)). Nothing is
+    posted from here: the person reads the page and presses Submit themselves."""
+    import webbrowser
+    from . import crash
+    found = crash.last()
+    url = crash.report_url(found)
+    print(f"A bug report on GitHub, filled in with: teamrunner {__version__} · {crash.system()}"
+          + (f" · {crash.what(found)}" if found else ""))
+    print("Nothing is posted until you press Submit.")
+    if found and crash.details_path().is_file():
+        print(f"The full details are in {crash.details_path()}: read it, and paste only what you are "
+              "happy to make public. Never paste a key.")
+    try:
+        opened = not args.no_browser and webbrowser.open(url)
+    except (webbrowser.Error, OSError):
+        opened = False
+    print("Opened in your browser." if opened else f"Open this address in your browser:\n{url}")
+    print(f"No GitHub account? Write to {crash.HELLO}")
+    return 0
 
 
 if __name__ == "__main__":

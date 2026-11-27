@@ -14,11 +14,24 @@ function quoteArg(value) {
 // What one real run would cost, as an experiment's plan says it (review 2026-11-16, U9).
 function estimateLine(estimate) {
   if (!estimate) return "";
+  if (estimate.too_long) return `No estimate: ${estimate.note}`;
   if (estimate.unpriced?.length) return `No estimate: ${estimate.note}`;
   if (estimate.typical_usd === 0 && estimate.most_usd === 0) return "This team’s models cost nothing to call (the demo, or a local model).";
   if (typeof estimate.typical_usd !== "number") return "";
   const most = typeof estimate.most_usd === "number" ? `; at most ≈ ${cost(estimate.most_usd)} if every reply ran to its limit, which real runs rarely approach` : "";
-  return `Estimated ≈ ${cost(estimate.typical_usd)} a run with its default inputs, at list prices${most}. Tools are extra.`;
+  // A long flow is walked fewer times than usual, within a time limit (review 2026-11-21, NU5).
+  const few = estimate.walks < estimate.of ? ` The flow is long: this is from ${estimate.walks} of the usual ${estimate.of} walks through it.` : "";
+  return `Estimated ≈ ${cost(estimate.typical_usd)} a run with its default inputs, at list prices${most}. Tools are extra.${few}`;
+}
+// The estimate is asked for only once a real run is in view, and apart from the dialog's own
+// request: it walks every turn of the flow, which a rehearsal never needs and a long flow
+// makes slow (review 2026-11-21, NU5).
+function wantEstimate() {
+  const setup = runSetup;
+  if (!setup || setup.estimate !== undefined || setup.estimating) return;
+  setup.estimating = true;
+  api("/api/run-estimate" + pathQuery(setup.team)).then(result => { setup.estimate = result.estimate; }, () => { setup.estimate = null; })
+    .finally(() => { setup.estimating = false; if (runSetup === setup && byId("run-dialog").open) updateRunForm(); });
 }
 function updateRunForm() {
   const mode = byId("input-mode").value, rehearsal = byId("run-rehearse").checked;
@@ -29,7 +42,8 @@ function updateRunForm() {
   byId("input-mode-label").hidden = Boolean(rerunSource);
   byId("rerun-inputs").hidden = !rerunSource;
   byId("start-run").textContent = rehearsal ? "Rehearse team" : "Run with models";
-  byId("run-cost-note").textContent = rehearsal ? "Free: placeholder words and random answers to test the flow. No model or tool is called." : `${estimateLine(runSetup?.estimate)} Live runs send inputs to configured model/tool providers, or through our gateway for the sponsored demo. Do not send sensitive data to the demo. All costs are estimates; actual charges may exceed estimates and budgets. Monitor provider billing. See About & notices.`;
+  if (!rehearsal) wantEstimate();
+  byId("run-cost-note").textContent = rehearsal ? "Free: placeholder words and random answers to test the flow. No model or tool is called." : `${runSetup?.estimating ? "Working out what a run would cost…" : estimateLine(runSetup?.estimate)} Live runs send inputs to configured model/tool providers, or through our gateway for the sponsored demo. Do not send sensitive data to the demo. All costs are estimates; actual charges may exceed estimates and budgets. Monitor provider billing. See About & notices.`;
   let shown = runSetup?.command_base || "teamrunner run";
   if (rerunSource) {
     const inputs = Object.values(runData.record.inputs || {});
@@ -92,6 +106,7 @@ byId("run-form").addEventListener("submit", async event => {
 });
 function updateLiveStatus(state) {
   liveJob = state;
+  if (state.crash) showCrash(state.crash, `run ${state.id}`);
   if (!state.done) { byId("run-dot").textContent = " ●"; byId("run-dot").title = "A run is in progress"; }
   byId("live-title").textContent = `${state.rehearse ? "Rehearsal" : "Run"} · ${state.name || runSetup?.name || state.team || "."}`;
   byId("run-dot").hidden = Boolean(state.done);
@@ -148,7 +163,8 @@ function connectJob(job) {
   if (eventSource) eventSource.close();
   if (liveRender !== null) cancelAnimationFrame(liveRender);
   liveConversation = null; liveTotals = {known:0, unknown:false, turns:0};
-  liveJob = job; liveData = {events:[], members:[], artifacts:[], raw_files:[]}; seenEvents = new Set(); clearWaiting();
+  liveJob = job; liveData = {events:[], members:[], artifacts:[], raw_files:[], digest:[], summary:{team:job.name || job.team || "run", path:`live:${job.id}`}};
+  seenEvents = new Set(); clearWaiting(); byId("live-picture").hidden = true;
   showRunPane("live"); byId("live-connection").textContent = "Connecting to the run log…";
   updateLiveStatus(job); renderLive();
   eventSource = new EventSource("/api/live-events?" + new URLSearchParams({id:job.id, token}));
@@ -159,6 +175,11 @@ function connectJob(job) {
     if (value.event === "retry" && value.kind === "provider") showWaiting(value); else clearWaiting();
     if (value.event === "run_started") liveData.members = Array.isArray(value.members) ? value.members : [];
     if (!liveRender) liveRender = requestAnimationFrame(renderLive);
+  });
+  // The run timeline as it grows: the server sends its rows after each new event.
+  eventSource.addEventListener("digest", event => {
+    liveData.digest = JSON.parse(event.data);
+    showRunTimeline(byId("live-picture"), liveData, sequence => showMessage(sequence, byId("live-events")));
   });
   eventSource.addEventListener("log-warning", event => { byId("live-connection").textContent = JSON.parse(event.data).message; });
   eventSource.addEventListener("done", event => {
@@ -176,7 +197,7 @@ function connectJob(job) {
     if (liveJob.done) return;
     byId("live-connection").textContent = "Connection interrupted; reconnecting…";
     api("/api/job").then(() => { if (!liveJob.done) byId("live-connection").textContent = "Connection interrupted; reconnecting. The run continues on your computer."; })
-      .catch(() => { eventSource.close(); byId("live-connection").textContent = "TeamRunner has stopped running on your computer, so this run stopped with it. What it recorded so far is kept in its run folder."; });
+      .catch(() => { if (!serverGone) return; eventSource.close(); byId("live-connection").textContent = "TeamRunner has stopped running on your computer, so this run stopped with it. What it recorded so far is kept in its run folder."; });
   };
 }
 byId("stop-run").addEventListener("click", async () => {

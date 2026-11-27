@@ -120,6 +120,11 @@ class Spend:
         charged = getattr(reply, "cost_charged_usd", None)
         self.charged = None if charged is None or self.charged is None else self.charged + charged
 
+    @property
+    def spent(self) -> bool:
+        """Some call has been made and not yet reported."""
+        return bool(self.usage["input"] or self.usage["output"] or self.cost or self.unknown or self.latency)
+
     def take(self) -> dict:
         out = {"usage": dict(self.usage), "cost_usd": None if self.unknown else round(self.cost, 8),
                "cost_source": "; ".join(sorted(self.sources)) or None, "latency_ms": self.latency,
@@ -255,45 +260,56 @@ class Members:
                     for t in offered) + 2
         attempt, pending, said, output, reply = 1, None, "", {}, None
 
-        while True:
-            reply = await self._call(member, params, messages, schema, tools if trips > 0 else None)
-            spend.add(reply)
-            if reply.tool_calls:
-                trips -= 1
-                messages.append(_assistant(reply))
-                for call in reply.tool_calls:
-                    arguments = parse_arguments(call.arguments)
-                    if must and call.name == must.name and pending is None:
-                        pending = arguments
-                        text = f"Sent to {must.name}; you will read the reply at your next turn."
-                    elif call.name in self.team.members and self.team.members[call.name].kind == "toolkeeper":
-                        text, _ = await self.desk.ask(self.team.members[call.name], member.name,
-                                                      arguments, card, mandatory=False)
-                    else:
-                        text = f"There is no toolkeeper called {call.name} that you may ask."
-                    messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
-                if pending is not None:
-                    said = reply.text.strip()
+        # A turn that ends without its message (the model fails, the ceiling stops it, Ctrl-C)
+        # has still paid for the calls it made; they are written before the turn is given up,
+        # or the run's cost and the next ceiling would leave them out (review 2026-11-21, NC1).
+        try:
+            while True:
+                reply = await self._call(member, params, messages, schema, tools if trips > 0 else None)
+                spend.add(reply)
+                if reply.tool_calls:
+                    trips -= 1
+                    messages.append(_assistant(reply))
+                    for call in reply.tool_calls:
+                        arguments = parse_arguments(call.arguments)
+                        if must and call.name == must.name and pending is None:
+                            pending = arguments
+                            text = f"Sent to {must.name}; you will read the reply at your next turn."
+                        elif call.name in self.team.members and self.team.members[call.name].kind == "toolkeeper":
+                            text, _ = await self.desk.ask(self.team.members[call.name], member.name,
+                                                          arguments, card, mandatory=False)
+                        else:
+                            text = f"There is no toolkeeper called {call.name} that you may ask."
+                        messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
+                    if pending is not None:
+                        said = reply.text.strip()
+                        break
+                    continue
+                if must:
+                    said, output, wrong = reply.text.strip(), {}, [f"your turn must end with a request to {must.name}"]
+                else:
+                    said, output, wrong = read_reply(reply.text, fields)
+                if not wrong:
                     break
-                continue
-            if must:
-                said, output, wrong = reply.text.strip(), {}, [f"your turn must end with a request to {must.name}"]
-            else:
-                said, output, wrong = read_reply(reply.text, fields)
-            if not wrong:
-                break
-            self.log.emit({"event": "retry", "kind": "output", **self._who(member),
-                           "attempt": attempt, "reason": "; ".join(wrong), "reply": reply.text,
-                           **spend.take()})
-            if attempt == MAX_TRIES:
-                raise TurnFailed(f"{member.name}'s reply did not fit after {MAX_TRIES} tries: "
-                                 + "; ".join(wrong))
-            attempt += 1
-            messages += [
-                {"role": "assistant", "content": reply.text},
-                {"role": "user", "content": "Your reply did not fit: " + "; ".join(wrong)
-                 + ". Answer again."},
-            ]
+                self.log.emit({"event": "retry", "kind": "output", **self._who(member),
+                               "attempt": attempt, "reason": "; ".join(wrong), "reply": reply.text,
+                               **spend.take()})
+                if attempt == MAX_TRIES:
+                    raise TurnFailed(f"{member.name}'s reply did not fit after {MAX_TRIES} tries: "
+                                     + "; ".join(wrong))
+                attempt += 1
+                messages += [
+                    {"role": "assistant", "content": reply.text},
+                    {"role": "user", "content": "Your reply did not fit: " + "; ".join(wrong)
+                     + ". Answer again."},
+                ]
+        except BaseException as e:
+            if spend.spent:
+                why = str(e) or type(e).__name__
+                self.log.emit({"event": "retry", "kind": "unfinished", **self._who(member), "attempt": attempt,
+                               "reason": f"the turn did not finish ({why}); its calls so far are counted",
+                               **spend.take()})
+            raise
 
         inner = turn.passes[-1] if turn.passes else None
         seq = self.log.emit({

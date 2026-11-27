@@ -10,6 +10,7 @@ exception: it writes an `id:` into a team or member file that has none
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,7 +26,7 @@ from .schema_check import check_schema
 from .tool_registry import TOOLS, guardrails_of
 
 PLACEHOLDER = re.compile(r"\{\{\s*([^}]*?)\s*\}\}")
-WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
 
 # Things that look like API keys (D27). Better a false alarm than a leak.
 SECRET = re.compile(
@@ -168,6 +169,9 @@ def _check_team(team: Team, package: Package, report: Report) -> None:
         words = V.check_words(team.doc, V.TEAM, problems, TEAM_FILE)
         check_schema(team.doc, "team", problems, words)
 
+    if team.doc is not None and not any(m.kind != "toolkeeper" for m in team.members) and not team.broken:
+        problems.warning(team_file, "this team has no member that speaks yet, so a run takes no turns",
+                         fix="add a member: a `.md` file that starts with a settings block (`---` lines)")
     for sub in team.subteams:
         problems.error(sub.folder / TEAM_FILE, f"teams inside teams (subteams) {V.LATER}",
                        fix="run this subteam on its own, or keep its members in one team for now")
@@ -223,7 +227,7 @@ def _cast(team: Team) -> Cast:
             others = "others" in m.front.data and m.front.data["others"] != "deny"
             may_ask[m.name] = (lambda name, access=access, others=others:
                                access[name] != "deny" if name in access else others)
-    return Cast(kinds, outputs, may_ask)
+    return Cast(kinds, outputs, may_ask, frozenset(member_name(path) for path in team.notes))
 
 
 # What each guardrail's value must be; a value of another shape is an error, not a crash
@@ -317,6 +321,14 @@ def _check_model_ref(path, written: str, line, package: Package, problems: Probl
         _check_one_model(path, model, line, package, problems)
 
 
+def _exact_file(folder: Path, name: str) -> bool:
+    """`name` is a file in `folder`, spelled exactly so, whatever the disk does with capitals."""
+    try:
+        return name in os.listdir(folder) and (folder / name).is_file()
+    except OSError:
+        return False
+
+
 def _check_one_model(path, model: str, line, package: Package, problems: Problems) -> None:
     if model.endswith(".yaml"):
         if "/" in model or "\\" in model:  # profiles are read from models/ itself, not its folders
@@ -324,9 +336,12 @@ def _check_one_model(path, model: str, line, package: Package, problems: Problem
             problems.error(path, f"`{model}` names a folder: model profiles sit directly in models/, "
                            "and its folders are not read", line=line, value=model,
                            fix=f"move the file to {MODELS_DIR}/{name} and write `{name}`")
-        elif model not in package.models and not (package.top / MODELS_DIR / model).is_file():
+        elif model not in package.models and not _exact_file(package.top / MODELS_DIR, model):
+            # The exact name: a disk that ignores capitals finds `Careful.yaml` for
+            # `careful.yaml`, and then everything after `validate` fails (review 2026-11-21, NC4).
             known = list(package.models)
-            hint = V.suggest(model, known)
+            same = [k for k in known if k.lower() == model.lower()]
+            hint = same[0] if same else V.suggest(model, known)
             problems.error(path, f"there is no model profile `{model}` in models/",
                            line=line, value=model,
                            fix=f"did you mean `{hint}`?" if hint else
@@ -363,10 +378,10 @@ def _check_member(member: Member, team: Team, by_name, default_model, package, r
     if kind == "toolkeeper":
         _check_toolkeeper(member, words, by_name, problems)
     else:
-        _check_worker(member, words, default_model, package, report)
+        _check_worker(member, words, default_model, package, report, team_read=team.doc is not None)
 
 
-def _check_worker(member: Member, words, default_model, package, report) -> None:
+def _check_worker(member: Member, words, default_model, package, report, team_read: bool = True) -> None:
     problems, doc = report.problems, member.front
     for key in ("tools", "access", "others"):
         if key in words:
@@ -381,7 +396,7 @@ def _check_worker(member: Member, words, default_model, package, report) -> None
         report.models[member.path] = ModelChoice(model, "its own `model:`")
     elif isinstance(default_model, str):
         report.models[member.path] = ModelChoice(default_model, "`default_model:` in team.yaml")
-    elif "model" not in doc.data:
+    elif "model" not in doc.data and team_read:  # an unreadable team.yaml may hold `default_model:`
         problems.error(member.path, f"`{member.name}` has no model", line=1,
                        fix="add `model: provider/name` here, or `default_model:` to team.yaml")
     for name in _placeholders(member):
@@ -502,7 +517,7 @@ def _check_inputs(team: Team, words, problems: Problems) -> None:
                              fix=f"did you mean `{hint}`?" if hint else
                              f"use `{{{{{name}}}}}` in a prompt, or remove the line")
     for name, member in used.items():
-        if name not in defaults:
+        if name not in defaults and doc is not None:  # an unreadable team.yaml may hold the default
             problems.warning(member.path, f"the input `{name}` has no default, so every run must give it",
                              line=_body_line(member, name),
                              fix=f"add `{name}:` under `default_inputs:` in team.yaml, "

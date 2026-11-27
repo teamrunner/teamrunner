@@ -71,11 +71,29 @@ def key_file() -> Path:
     return (Path(home) if home else Path.home() / ".teamrunner") / ".env"
 
 
+class KeyFileError(ValueError):
+    """A key file that cannot be read as text. Its message is for the person, whole."""
+
+
+def env_text(path: Path) -> str:
+    """A key file's text, however a Windows tool saved it (review 2026-11-21, NC2): Notepad's
+    "UTF-8" starts the file with a mark that hid the first key, and PowerShell 5's
+    `echo KEY=… > .env` writes UTF-16, which brought every command down."""
+    raw = path.read_bytes()
+    try:
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+            return raw.decode("utf-16")
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise KeyFileError(f"{path} is not plain text that TeamRunner can read; save it as UTF-8 "
+                           "(in Notepad: Save As, Encoding: UTF-8), one NAME=value on each line") from None
+
+
 def read_env(path: Path) -> dict[str, str]:
     values = {}
     if not path.is_file():
         return values
-    for text in path.read_text(encoding="utf-8").splitlines():
+    for text in env_text(path).splitlines():
         if text.strip().startswith("#"):
             continue
         m = LINE.match(text)
@@ -85,6 +103,30 @@ def read_env(path: Path) -> dict[str, str]:
                 value = value[1:-1]
             values[m[1]] = value
     return values
+
+
+def switch(name: str) -> str:
+    """A TeamRunner setting such as `TEAMRUNNER_NO_CRASH_REPORTS`: from the shell, or, for
+    someone who has never set a shell variable, a `NAME=value` line in the key file
+    (review 2026-11-21, ND10). Lower case, without spaces; empty when it is not set."""
+    value = os.environ.get(name, "")
+    if not value.strip():
+        try:
+            value = read_env(key_file()).get(name, "")
+        except (OSError, ValueError):
+            value = ""
+    return value.strip().lower()
+
+
+def stored_secrets() -> list[str]:
+    """The key file's values to hide in anything shown or kept. TeamRunner's own settings
+    there (`TEAMRUNNER_WORKSPACE`, a folder) are not secrets: hiding them turned every path
+    in a crash's message into `[key hidden]`. Never raises."""
+    try:
+        return [value for name, value in read_env(key_file()).items()
+                if value and not name.startswith("TEAMRUNNER_")]
+    except (OSError, ValueError):
+        return []
 
 
 def _make_private(path: Path) -> bool:
@@ -107,7 +149,7 @@ def save_key(path: Path, name: str, value: str) -> None:
     there under that name is replaced, so the old value does not stay in the file;
     the file is never readable by others, not even for a moment (review 2026-11-16, S10)."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing = env_text(path) if path.exists() else ""
     kept = [line for line in existing.splitlines(keepends=True)
             if not ((m := LINE.match(line)) and m[1] == name)]
     if kept and not kept[-1].endswith("\n"):
@@ -124,7 +166,7 @@ def save_key(path: Path, name: str, value: str) -> None:
 
 def remove_key(path: Path, name: str) -> None:
     """Take a key out of a package `.env`; delete the file if nothing else is left."""
-    kept = [line for line in path.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = [line for line in env_text(path).splitlines(keepends=True)
             if not ((m := LINE.match(line)) and m[1] == name)]
     if any(line.strip() and not line.strip().startswith("#") for line in kept):
         path.write_text("".join(kept), encoding="utf-8")

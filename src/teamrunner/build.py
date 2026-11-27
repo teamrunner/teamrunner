@@ -48,6 +48,7 @@ def _team(report: Report) -> ir.Team:
         flow=report.flow,
         inputs=inputs,
         message_goes_to=_message_goes_to(data.get("message_goes_to"), inputs),
+        message_goes_to_inferred=not data.get("message_goes_to"),
     )
 
 

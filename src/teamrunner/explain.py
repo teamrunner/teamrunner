@@ -57,23 +57,28 @@ def _terms(terms: ir.Terms) -> str:
 # --- how many turns ---------------------------------------------------------------------
 
 def turn_range(team: ir.Team) -> tuple[int, int, bool]:
-    """The fewest and most member turns the flow can take, found by running the
-    engine twice: once always leaving, once always looping until the counts force it on.
-    The bool says whether the flow can stop early."""
+    """The fewest and most member turns the flow can take, found by running the engine
+    under four rules for every decision: take the first way on, jump as far forward as an
+    option allows, step forward as little as one allows, and loop until the counts force it
+    on. A decision that jumps over steps made "5 turns" of a flow that took 3 or 5 (review
+    2026-11-21, NC9). The bool says whether the flow can stop early."""
     choices = {}
     for block in [team.flow.main, *team.flow.blocks.values()]:
         for i, d in block.decisions.items():
             choices[(id(block), i)] = (block, i, d)
 
-    def pick(block, i, d: ir.Decision, loop: bool) -> str:
+    def pick(block, i, d: ir.Decision, rule: str) -> str:
         options = list(d.routes)
         looping = [o for o in options if isinstance(d.routes[o], int) and d.routes[o] <= i]
         leaving = [o for o in options if o not in looping and d.routes[o] != STOP]
-        if loop and looping:
+        if rule == "loop" and looping:
             return looping[0]
+        if rule in ("far", "near") and leaving:  # `done` is past every step
+            reach = {o: d.routes[o] if isinstance(d.routes[o], int) else len(block.steps) for o in leaving}
+            return (max if rule == "far" else min)(leaving, key=reach.get)
         return (leaving or options)[0]
 
-    def count(loop: bool) -> int:
+    def count(loop: str) -> int:
         turns = 0
 
         async def actor(turn):
@@ -92,7 +97,8 @@ def turn_range(team: ir.Team) -> tuple[int, int, bool]:
     can_stop = any(STOP in d.routes.values() or (d.bound and d.bound.target == STOP)
                    for _, _, d in choices.values()) or any(
         s.kind == STOP for b in [team.flow.main, *team.flow.blocks.values()] for s in b.steps)
-    return count(False), count(True), can_stop
+    counts = [count(rule) for rule in ("first", "far", "near", "loop")]
+    return min(counts), max(counts), can_stop
 
 
 # --- the flow in words ---------------------------------------------------------------------

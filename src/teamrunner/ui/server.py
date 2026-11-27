@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 import webbrowser
 
 from . import api, parts, describing, diagrams, experiment_jobs, experiments, jobs, runviews, stream
+from .. import crash
 from ..inputs import InputError
 from ..new import NewError, examples
 from ..workspace import is_workspace
@@ -33,6 +34,7 @@ ASSETS["/vendor/mermaid.js"] = "text/javascript; charset=utf-8"
 ASSETS["/diagrams.js"] = "text/javascript; charset=utf-8"
 ASSETS["/run.js"] = "text/javascript; charset=utf-8"
 ASSETS["/experiments.js"] = "text/javascript; charset=utf-8"
+ASSETS["/picture.js"] = "text/javascript; charset=utf-8"
 ASSETS["/favicon.svg"] = "image/svg+xml"
 
 
@@ -81,6 +83,37 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+
+    def discard_body(self, most: int = 1024 * 1024):
+        """Read a refused request's body (up to 1 MB) before the connection closes. On
+        Windows, closing with unread data resets the connection, and the client loses the
+        403 it was sent; found by the release CI on Windows. A request refused for its size
+        is read up to `most`, a piece at a time and kept nowhere: the browser took the
+        reset to mean the server had stopped (review 2026-11-21, NU8)."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return
+        if 0 < length <= most:
+            try:
+                while length > 0:
+                    piece = self.rfile.read(min(length, 65536))
+                    if not piece:
+                        break
+                    length -= len(piece)
+            except OSError:
+                pass
+
+    def plain(self, error: Exception, otherwise: str) -> str:
+        """The sentence a dialog shows for `error`. An error the operating system made
+        ("[Errno 17] File exists: '/…'") is in Python's words, so `otherwise` is said in its
+        place; and a file is named from the opened folder down, never by its whole path
+        (review 2026-11-21, NU12)."""
+        if isinstance(error, OSError) and error.errno is not None:
+            return otherwise
+        text = str(error) or otherwise
+        root = str(self.server.root)
+        return text.replace(root + os.sep, "").replace(root + "/", "")
 
     def authorized(self, mutation=False):
         # Host checking also prevents a DNS-rebinding page from reaching this server.
@@ -135,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(400, {"error": "Choose a run in this server session and a valid event number."})
             return
         # /api/experiment builds generated conditions/ folders, as --plan does.
+        # /api/run-estimate takes the lock itself, to read the team, and lets it go before
+        # the long part (review 2026-11-21, NU5).
         if request.path not in ("/api/show", "/api/keys", "/api/explain", "/api/diagram", "/api/run-setup",
                                 "/api/experiment"):
             self.read_request()
@@ -161,8 +196,10 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(request.query)
         try:
             if request.path == "/":
+                from .. import __version__
                 page = (STATIC / "index.html").read_text(encoding="utf-8")
-                self.send(200, page.replace("__TOKEN__", self.server.token).encode(),
+                page = page.replace("__TOKEN__", self.server.token).replace("__VERSION__", __version__)
+                self.send(200, page.encode(),
                           "text/html; charset=utf-8")
             elif request.path in {"/legal.txt", "/license.txt"}:
                 # Bundled in wheels; use the canonical root files in a source checkout.
@@ -204,8 +241,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, runviews.listing(self.server.root, query.get("path", [""])[0],
                           team=query.get("team", [""])[0], status=query.get("status", [""])[0],
                           search=query.get("search", [""])[0],
-                          limit=max(1, min(200, int(query.get("limit", ["50"])[0]))),
-                          offset=max(0, int(query.get("offset", ["0"])[0]))))
+                          limit=max(1, min(200, whole(query, "limit", 50))),
+                          offset=max(0, whole(query, "offset", 0)),
+                          wall=query.get("wall", [""])[0] == "1"))
             elif request.path == "/api/run":
                 self.send(200, runviews.detail(self.server.root, query.get("path", [""])[0], self.server.versions_cache))
             elif request.path == "/api/run-file":
@@ -223,6 +261,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, self.server.describing.status())
             elif request.path == "/api/run-setup":
                 self.send(200, self.server.jobs.setup(query.get("path", [""])[0]))
+            elif request.path == "/api/run-estimate":
+                self.send(200, self.server.jobs.estimate(query.get("path", [""])[0]))
             else:
                 self.send(404, {"error": "That page could not be found."})
         except api.OutsideRoot as error:
@@ -232,23 +272,30 @@ class Handler(BaseHTTPRequestHandler):
         except UnicodeError:
             self.send(400, {"error": "This file isn’t plain text. Choose a UTF-8 text file."})
         except ValueError as error:
-            self.send(400, {"error": str(error)})
+            self.send(400, {"error": self.plain(error, "That file or folder could not be opened.")})
         except (OSError, RuntimeError):
             self.send(400, {"error": "That file or folder could not be opened."})
+        except Exception as error:  # noqa: BLE001 — a crash (D165): say so, with the report button
+            self.crashed(error, 500, UNEXPECTED)
 
     def do_POST(self):
         if not self.authorized(mutation=True):
+            self.discard_body()
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 12 * 1024 * 1024:
-                self.send(413, {"error": "The request is too large or empty."})
+                self.discard_body(64 * 1024 * 1024)
+                self.send(413, {"error": "The request is too large or empty. A file sent from this page "
+                                         "can be 8 MB at most."})
                 return
             if self.headers.get_content_type() != "application/json":
                 raise ValueError("Send a JSON request.")
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise ValueError("Send a JSON object.")
+            if isinstance(data.get("value"), str):
+                self.typed = (data["value"],)
             route = urlsplit(self.path).path
             root = self.server.root
             if route == "/api/stop":
@@ -313,20 +360,46 @@ class Handler(BaseHTTPRequestHandler):
         except jobs.InvalidTeam as error:
             self.send(422, {"error": str(error), "validation": error.report})
         except FileNotFoundError as error:
-            self.send(404, {"error": str(error)})
+            self.send(404, {"error": self.plain(error, "That file or folder could not be found.")})
         except (api.Conflict, FileExistsError) as error:
-            self.send(409, {"error": str(error) or "That filename already exists."})
+            self.send(409, {"error": self.plain(error, "That filename already exists.")})
         except UnicodeError:
             self.send(400, {"error": "This file isn’t plain text. Choose a UTF-8 text file."})
         except (ValueError, NewError, InputError) as error:
-            self.send(400, {"error": str(error)})
-        except (TypeError, KeyError, AttributeError, OSError, RuntimeError, subprocess.SubprocessError):
+            self.send(400, {"error": self.plain(error, "The action could not be completed. Check the folder, "
+                                                       "filename and values.")})
+        except (OSError, RuntimeError, subprocess.SubprocessError):
             # Do not echo request values: the request may be a key submission.
             self.send(400, {"error": "The action could not be completed. Check the folder, filename and values."})
+        except (TypeError, KeyError, AttributeError) as error:
+            # The page never sends a request these can come from, so this is a fault of
+            # TeamRunner's own (D165). Request values are still not echoed.
+            self.crashed(error, 400, "The action could not be completed. Check the folder, filename and values.")
+        except Exception as error:  # noqa: BLE001 — a crash (D165)
+            self.crashed(error, 500, UNEXPECTED)
+
+    def crashed(self, error: Exception, status: int, message: str):
+        """Answer a request that hit an error TeamRunner did not foresee: keep the details,
+        send the small crash report, and give the page what its report button needs."""
+        typed = getattr(self, "typed", ())  # a key being saved is hidden in the kept details
+        found = crash.record(error, f"ui {self.command} {urlsplit(self.path).path}", typed)
+        try:
+            self.send(status, {"error": message, "crash": crash.shown(found)})
+        except OSError:
+            pass
 
 
-ISSUES = "https://github.com/teamrunner/teamrunner/issues/new"
-HELLO = "hello@teamrunner.ai"
+def whole(query: dict, name: str, default: int) -> int:
+    """A whole number from the address, refused in a sentence and not in Python's
+    "invalid literal for int()" (review 2026-11-21, NU12)."""
+    try:
+        return int(query.get(name, [str(default)])[0])
+    except ValueError:
+        raise ValueError(f"Give `{name}` as a whole number.") from None
+
+
+ISSUES, HELLO = crash.ISSUES, crash.HELLO
+UNEXPECTED = "TeamRunner hit a problem it did not expect."
 
 
 def feedback() -> dict:

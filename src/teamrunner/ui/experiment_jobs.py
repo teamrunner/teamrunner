@@ -23,6 +23,7 @@ from ..console import Console
 from ..experiment import EXPERIMENT_FILE, read_experiment
 from ..experiment_run import _paid, run_experiment
 from . import api, experiments
+from .. import crash
 from .jobs import command
 
 KEEP = 400  # the most lines kept for the page; the run folders hold everything
@@ -66,6 +67,7 @@ class Job:
     running: dict = field(default_factory=dict)  # (condition, replicate) -> run folder, from root
     finished: int = 0
     out: Lines | None = None
+    crash: dict | None = None  # an error TeamRunner did not foresee: what the report button needs (D165)
     thread: Thread | None = None
 
 
@@ -110,7 +112,7 @@ class ExperimentJobs:
         shown = {"id": job.id, "path": job.path, "state": job.state, "rehearse": job.rehearse,
                  "evaluating": job.evaluating, "spent_usd": job.spent,
                  "command": job.command, "done": job.done.is_set(), "code": job.code,
-                 "finished": job.finished,
+                 "finished": job.finished, "crash": job.crash,
                  "running": [{"condition": c, "replicate": r, "folder": f} for (c, r), f in job.running.items()]}
         if lines:
             with job.out.lock:
@@ -177,8 +179,9 @@ class ExperimentJobs:
                 job.state = "stopped" if job.cancel.is_set() else "finished" if code in (0, 2) else "failed"
         except Exception as error:  # the lines so far stay; the run folders hold the rest
             job.out.write(f"\n✗ the experiment could not finish: {type(error).__name__}: {error}\n")
+            found = None if isinstance(error, OSError) else crash.shown(crash.record(error, "ui experiment"))
             with self.lock:
-                job.state = "failed"
+                job.state, job.crash = "failed", found
         finally:
             job.out.write("\n" if job.out.pending else "")
             with self.lock:

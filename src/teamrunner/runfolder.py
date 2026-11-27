@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -78,42 +76,83 @@ class RunFolder:
         self._events.close()
 
 
-# A team folder may come from someone else with its own .git/config, and git
-# runs the commands some of its settings name. These switch off every such
-# setting the two questions below could reach; `_git_dirty` covers the one
-# kind that cannot be switched off by name.
-SAFE_GIT = ("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull,
-            "-c", "core.untrackedCache=false", "-c", "status.submoduleSummary=false",
-            "-c", "safe.bareRepository=explicit", "--no-optional-locks")
-# Settings in a repository's own config that run a command when files are
-# compared (a content filter), or that bring in settings from another file.
-UNSAFE_CONFIG = ("filter.", "include.", "includeif.", "extensions.worktreeconfig")
+# TeamRunner never runs the git program. A team folder may come from someone
+# else with its own .git/config, and git runs the commands some of its
+# settings name (review 2026-11-16 S3, 2026-11-21 NS1). The commit is two small
+# text files, so it is read as text; it works without git installed, too.
+COMMIT = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+REF = re.compile(r"refs(?:/[A-Za-z0-9._+@-]+)+")
+SMALL = 4096
 
 
-def _git(package_top: Path, *args: str):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-    return subprocess.run([*SAFE_GIT, "-C", str(package_top), *args], env=env, stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True, encoding="utf-8", timeout=5)
+def _small(path: Path) -> str:
+    """The first lines of a small text file inside .git; empty when it cannot be read."""
+    try:
+        if not path.is_file():
+            return ""
+        with path.open("rb") as f:
+            return f.read(SMALL).decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
 
 
-def _git_dirty(package_top: Path) -> bool | None:
-    """Whether the package has uncommitted changes; None when asking is not safe.
+def _git_dir(package_top: Path) -> Path | None:
+    """The .git folder of the repository `package_top` is in, if any."""
+    for folder in (package_top, *package_top.parents):
+        dot = folder / ".git"
+        if dot.is_dir():
+            return dot
+        if dot.is_file():  # a worktree or a submodule: one line, `gitdir: <folder>`
+            line = _small(dot)
+            where = (folder / line[len("gitdir:"):].strip()) if line.startswith("gitdir:") else None
+            return where if where is not None and where.is_dir() else None
+    return None
 
-    `git status` runs the content filters a repository's config names, so a
-    repository that names any is not asked. The content hash still says
-    whether two runs used the same files."""
-    config = _git(package_top, "config", "--local", "--no-includes", "--name-only", "--list")
-    if config.returncode != 0 or any(line.strip().lower().startswith(UNSAFE_CONFIG)
-                                     for line in config.stdout.splitlines()):
-        return None
-    dirty = _git(package_top, "status", "--porcelain", "--ignore-submodules=all", "--", ".")
-    return bool(dirty.stdout.strip()) if dirty.returncode == 0 else None
+
+def git_commit(package_top: Path) -> str | None:
+    """The commit `package_top` is checked out at, read from .git as text; None when it is
+    not in a repository or the files do not say. Only a commit id is ever returned."""
+    try:
+        git_dir = _git_dir(Path(package_top).resolve())
+        if git_dir is None:
+            return None
+        shared = _small(git_dir / "commondir")  # a worktree keeps its branches in the main .git
+        places = [git_dir] + ([(git_dir / shared)] if shared else [])
+        value = _small(git_dir / "HEAD")
+        for _ in range(5):  # HEAD names a branch; a branch may name another
+            if COMMIT.fullmatch(value):
+                return value
+            ref = value[len("ref:"):].strip() if value.startswith("ref:") else ""
+            if not REF.fullmatch(ref) or ".." in ref:
+                return None
+            value = next((text for text in (_small(place / ref) for place in places) if text), "")
+            if not value:
+                return _packed(places, ref)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _packed(places: list[Path], ref: str) -> str | None:
+    """A branch git has packed away is one line of `packed-refs`: `<commit> <name>`."""
+    for place in places:
+        try:
+            if not (place / "packed-refs").is_file():
+                continue
+            with (place / "packed-refs").open(encoding="utf-8", errors="replace") as lines:
+                for line in lines:
+                    commit, _, name = line.strip().partition(" ")
+                    if name == ref and COMMIT.fullmatch(commit):
+                        return commit
+        except OSError:
+            continue
+    return None
 
 
 def fingerprint(package_top: Path) -> dict:
     """The package as it was run (D69): its git commit if it is in a
-    repository, and always a hash over its spec files."""
+    repository, and always a hash over its spec files. The hash is what says
+    whether two runs used the same files, committed or not."""
     digest = hashlib.sha256()
     for path in sorted(package_top.rglob("*")):
         inside = path.relative_to(package_top).parts
@@ -121,17 +160,7 @@ def fingerprint(package_top: Path) -> dict:
             continue
         if path.is_file() and path.suffix in SPEC_SUFFIXES:
             digest.update("/".join(inside).encode() + b"\0" + path.read_bytes() + b"\0")
-    result = {"content_hash": "sha256:" + digest.hexdigest(), "git_commit": None}
-    try:
-        commit = _git(package_top, "rev-parse", "HEAD")
-        if commit.returncode == 0:
-            result["git_commit"] = commit.stdout.strip()
-            dirty = _git_dirty(package_top)
-            if dirty is not None:
-                result["git_dirty"] = dirty
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return result
+    return {"content_hash": "sha256:" + digest.hexdigest(), "git_commit": git_commit(package_top)}
 
 
 def version_hash(path: Path, content: bytes | None = None) -> str:
