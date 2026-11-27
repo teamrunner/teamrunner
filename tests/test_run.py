@@ -694,6 +694,7 @@ def test_a_team_s_git_settings_run_no_command(tmp_path):
                     ("remote.origin.promisor", "true"), ("remote.origin.url", "x"),
                     ("remote.origin.uploadpack", command))
     for found in (partial / ".git" / "objects").glob("??/*"):
+        found.chmod(0o644)  # git writes objects read-only, and Windows refuses to delete a read-only file
         found.unlink()
     assert len(fingerprint(partial)["git_commit"]) == 40
     assert not proof.exists()
